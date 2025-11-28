@@ -407,7 +407,8 @@
                     name: file.name,
                     size: formatSize(file.size),
                     preview: URL.createObjectURL(file),
-                    status: 'ready'
+                    status: 'ready',
+                    pdfUrl: null
                 });
             });
             renderFiles();
@@ -423,7 +424,10 @@
 
         function removeFile(id) {
             const file = files.find(f => f.id === id);
-            if (file) URL.revokeObjectURL(file.preview);
+            if (file) {
+                URL.revokeObjectURL(file.preview);
+                if (file.pdfUrl) URL.revokeObjectURL(file.pdfUrl);
+            }
             files = files.filter(f => f.id !== id);
             renderFiles();
         }
@@ -441,10 +445,17 @@
 
             let html = '';
             files.forEach(f => {
-                const btnText = f.status === 'converting' ? '⏳...' : 
-                               f.status === 'success' ? '✓ Tamam' : '📄 PDF';
+                const btnText = f.status === 'converting' ? '⏳...' :
+                               f.status === 'success' ? '🔗 Aç' : '📄 PDF';
                 const btnClass = f.status === 'success' ? 'btn btn-primary success' : 'btn btn-primary';
                 const disabled = f.status === 'converting' ? 'disabled' : '';
+
+                let pdfButton = '';
+                if (f.pdfUrl) {
+                    pdfButton = `<a href="${f.pdfUrl}" target="_blank" class="${btnClass}" style="text-decoration: none;">${btnText}</a>`;
+                } else {
+                    pdfButton = `<button class="${btnClass}" onclick="convertToPDF('${f.id}')" ${disabled}>${btnText}</button>`;
+                }
 
                 html += `
                     <div class="file-item" data-id="${f.id}">
@@ -456,7 +467,7 @@
                             </div>
                         </div>
                         <div class="file-actions">
-                            <button class="${btnClass}" onclick="convertToPDF('${f.id}')" ${disabled}>${btnText}</button>
+                            ${pdfButton}
                             <button class="btn btn-danger" onclick="removeFile('${f.id}')" ${disabled}>✕</button>
                         </div>
                     </div>
@@ -499,18 +510,18 @@
 
                 pdf.addImage(compressedImage, 'JPEG', 0, 0, mmWidth, mmHeight);
 
-                const pdfName = fileItem.name.replace(/\.(png|jpg|jpeg|gif|webp|heic)$/i, '') + '.pdf';
-                pdf.save(pdfName);
+                // PDF'i blob olarak oluştur
+                const pdfBlob = pdf.output('blob');
+                const pdfUrl = URL.createObjectURL(pdfBlob);
 
+                // Blob URL'yi kaydet ve yeni sekmede aç
+                fileItem.pdfUrl = pdfUrl;
                 fileItem.status = 'success';
-                renderFiles();
 
-                setTimeout(() => {
-                    if (fileItem.status === 'success') {
-                        fileItem.status = 'ready';
-                        renderFiles();
-                    }
-                }, 2500);
+                // Yeni sekmede aç
+                window.open(pdfUrl, '_blank');
+
+                renderFiles();
 
             } catch (error) {
                 console.error('Hata:', error);
