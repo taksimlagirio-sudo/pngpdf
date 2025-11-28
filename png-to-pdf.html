@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>Resim to PDF Dönüştürücü</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 30px;
+            max-width: 700px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 28px;
+            text-align: center;
+        }
+
+        .subtitle {
+            color: #666;
+            text-align: center;
+            margin-bottom: 25px;
+            font-size: 14px;
+        }
+
+        .drop-zone {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 50px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #f8f9ff;
+            margin-bottom: 25px;
+        }
+
+        .drop-zone:hover, .drop-zone.active {
+            border-color: #764ba2;
+            background: #e8ebff;
+        }
+
+        .drop-zone-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        .drop-zone-text {
+            color: #667eea;
+            font-size: 17px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .drop-zone-subtext {
+            color: #999;
+            font-size: 14px;
+        }
+
+        .quality-control {
+            background: #f8f9ff;
+            border-radius: 12px;
+            padding: 18px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .quality-control.show {
+            display: block;
+        }
+
+        .quality-label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            color: #333;
+            font-weight: 600;
+        }
+
+        .quality-value {
+            color: #667eea;
+            font-size: 18px;
+        }
+
+        .quality-slider {
+            width: 100%;
+            height: 8px;
+            border-radius: 4px;
+            background: #e0e0e0;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .quality-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+        }
+
+        .quality-description {
+            color: #666;
+            font-size: 12px;
+            margin-top: 10px;
+            text-align: center;
+        }
+
+        .file-list {
+            margin-bottom: 20px;
+        }
+
+        .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px;
+            background: #f8f9ff;
+            border-radius: 12px;
+            margin-bottom: 10px;
+            gap: 10px;
+        }
+
+        .file-info {
+            display: flex;
+            align-items: center;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .file-preview {
+            width: 55px;
+            height: 55px;
+            border-radius: 8px;
+            object-fit: cover;
+            margin-right: 12px;
+            border: 2px solid #e0e0e0;
+            flex-shrink: 0;
+        }
+
+        .file-details {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .file-name {
+            color: #333;
+            font-weight: 500;
+            margin-bottom: 4px;
+            font-size: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-size {
+            color: #999;
+            font-size: 12px;
+        }
+
+        .file-actions {
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .btn {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:active {
+            transform: scale(0.96);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary.success {
+            background: #10b981;
+        }
+
+        .btn-secondary {
+            background: #f1f3f5;
+            color: #666;
+        }
+
+        .btn-danger {
+            background: #ff4757;
+            color: white;
+            padding: 10px 12px;
+        }
+
+        .actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        .actions .btn {
+            flex: 1;
+            padding: 14px;
+            font-size: 15px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #999;
+        }
+
+        .empty-state-icon {
+            font-size: 60px;
+            margin-bottom: 12px;
+            opacity: 0.5;
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        @media (max-width: 500px) {
+            .container {
+                padding: 20px;
+                border-radius: 16px;
+            }
+
+            h1 {
+                font-size: 24px;
+            }
+
+            .drop-zone {
+                padding: 35px 15px;
+            }
+
+            .file-item {
+                flex-wrap: wrap;
+            }
+
+            .file-info {
+                width: 100%;
+                margin-bottom: 10px;
+            }
+
+            .file-actions {
+                width: 100%;
+                justify-content: flex-end;
+            }
+
+            .actions {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖼️ Resim → PDF</h1>
+        <p class="subtitle">Resimlerinizi kolayca PDF formatına dönüştürün</p>
+
+        <div class="drop-zone" id="dropZone">
+            <div class="drop-zone-icon">📁</div>
+            <div class="drop-zone-text">Resim dosyalarınızı seçin</div>
+            <div class="drop-zone-subtext">Tıklayın veya sürükleyin</div>
+        </div>
+
+        <input type="file" id="fileInput" accept="image/*" multiple>
+
+        <div class="quality-control" id="qualityControl">
+            <div class="quality-label">
+                <span>🎚️ Sıkıştırma Kalitesi</span>
+                <span class="quality-value" id="qualityValue">70%</span>
+            </div>
+            <input type="range" min="10" max="100" step="10" value="70" class="quality-slider" id="qualitySlider">
+            <div class="quality-description" id="qualityDesc">⚖️ Dengeli (orta kalite)</div>
+        </div>
+
+        <div id="fileList"></div>
+
+        <div class="actions" id="actions" style="display: none;">
+            <button class="btn btn-secondary" id="clearBtn">🗑️ Temizle</button>
+            <button class="btn btn-primary" id="convertAllBtn">📄 Tümünü Çevir</button>
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const qualityControl = document.getElementById('qualityControl');
+        const qualitySlider = document.getElementById('qualitySlider');
+        const qualityValue = document.getElementById('qualityValue');
+        const qualityDesc = document.getElementById('qualityDesc');
+        const actions = document.getElementById('actions');
+        const clearBtn = document.getElementById('clearBtn');
+        const convertAllBtn = document.getElementById('convertAllBtn');
+
+        let files = [];
+
+        // Drop zone click
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        // Drag & drop events
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('active');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('active');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('active');
+            const droppedFiles = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+            addFiles(droppedFiles);
+        });
+
+        // File input change
+        fileInput.addEventListener('change', (e) => {
+            const selectedFiles = Array.from(e.target.files).filter(f => f.type.startsWith('image/'));
+            addFiles(selectedFiles);
+            fileInput.value = '';
+        });
+
+        // Quality slider
+        qualitySlider.addEventListener('input', (e) => {
+            const val = parseInt(e.target.value);
+            qualityValue.textContent = val + '%';
+            
+            if (val < 40) {
+                qualityDesc.textContent = '📦 Küçük dosya (düşük kalite)';
+            } else if (val < 70) {
+                qualityDesc.textContent = '⚖️ Dengeli (orta kalite)';
+            } else {
+                qualityDesc.textContent = '🎨 Yüksek kalite (büyük dosya)';
+            }
+        });
+
+        // Clear button
+        clearBtn.addEventListener('click', () => {
+            files = [];
+            renderFiles();
+        });
+
+        // Convert all button
+        convertAllBtn.addEventListener('click', async () => {
+            for (let i = 0; i < files.length; i++) {
+                await convertToPDF(files[i].id);
+                await sleep(300);
+            }
+        });
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function addFiles(newFiles) {
+            newFiles.forEach(file => {
+                const id = Math.random().toString(36).substring(2);
+                files.push({
+                    id,
+                    file,
+                    name: file.name,
+                    size: formatSize(file.size),
+                    preview: URL.createObjectURL(file),
+                    status: 'ready'
+                });
+            });
+            renderFiles();
+        }
+
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        function removeFile(id) {
+            const file = files.find(f => f.id === id);
+            if (file) URL.revokeObjectURL(file.preview);
+            files = files.filter(f => f.id !== id);
+            renderFiles();
+        }
+
+        function renderFiles() {
+            if (files.length === 0) {
+                fileList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🎨</div><p>Henüz resim eklenmedi</p></div>';
+                qualityControl.classList.remove('show');
+                actions.style.display = 'none';
+                return;
+            }
+
+            qualityControl.classList.add('show');
+            actions.style.display = 'flex';
+
+            let html = '';
+            files.forEach(f => {
+                const btnText = f.status === 'converting' ? '⏳...' : 
+                               f.status === 'success' ? '✓ Tamam' : '📄 PDF';
+                const btnClass = f.status === 'success' ? 'btn btn-primary success' : 'btn btn-primary';
+                const disabled = f.status === 'converting' ? 'disabled' : '';
+
+                html += `
+                    <div class="file-item" data-id="${f.id}">
+                        <div class="file-info">
+                            <img src="${f.preview}" alt="${f.name}" class="file-preview">
+                            <div class="file-details">
+                                <div class="file-name">${f.name}</div>
+                                <div class="file-size">${f.size}</div>
+                            </div>
+                        </div>
+                        <div class="file-actions">
+                            <button class="${btnClass}" onclick="convertToPDF('${f.id}')" ${disabled}>${btnText}</button>
+                            <button class="btn btn-danger" onclick="removeFile('${f.id}')" ${disabled}>✕</button>
+                        </div>
+                    </div>
+                `;
+            });
+            fileList.innerHTML = html;
+        }
+
+        async function convertToPDF(id) {
+            const fileItem = files.find(f => f.id === id);
+            if (!fileItem || fileItem.status === 'converting') return;
+
+            fileItem.status = 'converting';
+            renderFiles();
+
+            try {
+                const { jsPDF } = window.jspdf;
+                const img = await loadImage(fileItem.file);
+                
+                const quality = parseInt(qualitySlider.value) / 100;
+                
+                // Canvas ile sıkıştır
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                const compressedImage = canvas.toDataURL('image/jpeg', quality);
+
+                // mm cinsinden boyut (96 DPI)
+                const mmWidth = (img.width / 96) * 25.4;
+                const mmHeight = (img.height / 96) * 25.4;
+
+                const pdf = new jsPDF({
+                    orientation: mmHeight > mmWidth ? 'portrait' : 'landscape',
+                    unit: 'mm',
+                    format: [mmWidth, mmHeight],
+                    compress: true
+                });
+
+                pdf.addImage(compressedImage, 'JPEG', 0, 0, mmWidth, mmHeight);
+
+                const pdfName = fileItem.name.replace(/\.(png|jpg|jpeg|gif|webp|heic)$/i, '') + '.pdf';
+                pdf.save(pdfName);
+
+                fileItem.status = 'success';
+                renderFiles();
+
+                setTimeout(() => {
+                    if (fileItem.status === 'success') {
+                        fileItem.status = 'ready';
+                        renderFiles();
+                    }
+                }, 2500);
+
+            } catch (error) {
+                console.error('Hata:', error);
+                alert('Hata: ' + fileItem.name);
+                fileItem.status = 'ready';
+                renderFiles();
+            }
+        }
+
+        function loadImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = reject;
+                    img.src = e.target.result;
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Initial render
+        renderFiles();
+    </script>
+</body>
+</html>
