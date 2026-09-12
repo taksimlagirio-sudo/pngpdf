@@ -21,7 +21,10 @@
         <div class="header">
             <h1>🧰 Dönüştürücü & İndirici</h1>
             <p class="subtitle">İçeriği algılayın, indirin; resimleri PDF/JPG/PNG'ye çevirin</p>
-            <button class="btn btn-secondary install-btn hidden" id="installBtn">📲 Ana ekrana ekle</button>
+            <div class="header-actions">
+                <button class="btn btn-secondary hidden" id="installBtn">📲 Ana ekrana ekle</button>
+                <button class="btn btn-secondary hidden" id="floatBtn">🪟 Üstte göster</button>
+            </div>
             <p class="hint hidden" id="iosInstallHint">
                 📲 Ana ekrana eklemek için: <strong>Paylaş</strong> → <strong>Ana Ekrana Ekle</strong>
             </p>
@@ -57,8 +60,8 @@
                     <input type="checkbox" id="detectBackground" checked> 🌙 Arka planda indir (uygulama kapalıyken de sürer)
                 </label>
                 <p class="hint" id="floatHint">
-                    🪟 Alt çubuktaki pencere düğmesiyle indirme durumunu <strong>diğer uygulamaların üstünde</strong>
-                    yüzen mini pencerede tutabilirsiniz.
+                    🪟 Yukarıdaki <strong>"Üstte göster"</strong> düğmesi (veya indirme sürerken alt çubuktaki 🪟)
+                    indirme durumunu <strong>diğer uygulamaların üstünde</strong> yüzen mini pencerede tutar.
                 </p>
             </div>
 

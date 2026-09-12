@@ -31,21 +31,28 @@ initHlsTab();
 const detectTab = initDetectTab();
 
 /* ---- Diğer uygulamaların üstünde yüzen mini pencere ---- */
-const floatBtn = $('taskbarFloatBtn');
+// İki giriş noktası var: başlıktaki düğme (her zaman görünür) ve indirme sürerken alt çubuktaki 🪟.
+const floatButtons = [$('floatBtn'), $('taskbarFloatBtn')];
 if (canFloat) {
-    floatBtn.classList.remove('hidden');
-    floatBtn.addEventListener('click', async (event) => {
-        event.stopPropagation(); // alt çubuğun aç/kapa davranışını tetiklemesin
-        try {
-            await toggleFloatingBar();
-        } catch (err) {
-            console.warn('Yüzen pencere açılamadı:', err);
-            floatBtn.title = err.message;
-        }
+    floatButtons.forEach((btn) => {
+        btn.classList.remove('hidden');
+        btn.addEventListener('click', async (event) => {
+            event.stopPropagation(); // alt çubuğun aç/kapa davranışını tetiklemesin
+            try {
+                await toggleFloatingBar();
+            } catch (err) {
+                console.warn('Yüzen pencere açılamadı:', err);
+                btn.title = err.message;
+            }
+        });
     });
+
     onFloatStateChange((open) => {
-        floatBtn.textContent = open ? '✕' : '🪟';
-        floatBtn.title = open ? 'Yüzen pencereyi kapat' : 'Diğer uygulamaların üstünde mini pencere';
+        $('floatBtn').textContent = open ? '✕ Üstteki pencereyi kapat' : '🪟 Üstte göster';
+        $('taskbarFloatBtn').textContent = open ? '✕' : '🪟';
+        floatButtons.forEach((btn) => {
+            btn.title = open ? 'Yüzen pencereyi kapat' : 'Diğer uygulamaların üstünde mini pencere';
+        });
     });
 } else {
     $('floatHint').textContent = '🪟 Yüzen mini pencere bu tarayıcıda desteklenmiyor (Android Chrome ve masaüstü Chrome destekler).';

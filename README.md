@@ -62,7 +62,8 @@ En yakın yol **resim-içinde-resim (PiP)**: indirme durumu bir canvas'a çizili
 PiP penceresinde gösteriliyor. Android Chrome'da bu pencere uygulamadan çıkınca da **diğer uygulamaların
 üstünde yüzer**; masaüstü Chrome'da diğer pencerelerin üstünde kalır.
 
-- Alt çubuktaki **🪟** düğmesiyle açılır/kapanır (tarayıcı izni gereği bir dokunuş gerekir).
+- İki yerden açılır: başlıktaki **🪟 Üstte göster** düğmesi (her zaman görünür, indirme olmasa da açılır) ve
+  indirme sürerken alt çubuktaki **🪟** düğmesi. Tarayıcı izni gereği açmak için bir dokunuş şarttır.
 - Pencerede dosya adı, yüzde, ilerleme çubuğu ve hız/kalan süre görünür; bittiğinde yeşile döner.
 - iOS Safari'de canvas akışıyla PiP desteklenmediği için düğme görünmez.
 - Sekme tamamen arka planda kalırsa tarayıcı zamanlayıcıları yavaşlatabilir; bu yüzden **gerçek** arka plan
