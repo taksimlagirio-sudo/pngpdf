@@ -3,6 +3,7 @@ import {
     $, formatSize, escapeHtml, isHttpUrl, smartFetch, saveBlob,
     fileNameFromUrl, loadImage, drawToCanvas, canvasToBlob, createProgress, sleep
 } from './util.js';
+import { createJob } from './downloads.js';
 
 const FORMATS = {
     jpg: { mime: 'image/jpeg', ext: 'jpg', lossy: true },
@@ -202,8 +203,15 @@ export function initImageTab() {
                 throw new Error(`Tarayıcınız ${format.ext.toUpperCase()} çıktısını desteklemiyor`);
             }
 
-            saveBlob(blob, fileNameFromUrl(item.name, format.ext));
-            item.resultInfo = `${formatSize(blob.size)} (${canvas.width}×${canvas.height})`;
+            const outName = fileNameFromUrl(item.name, format.ext);
+            saveBlob(blob, outName);
+
+            // Alt çubukta geçmiş + "Galeriye kaydet" seçeneği için işi kaydet.
+            const job = createJob(outName, { thumb: item.preview, kind: 'image' });
+            job.attachResult(blob);
+            job.done(`${formatSize(blob.size)} • ${canvas.width}x${canvas.height}`);
+
+            item.resultInfo = `${formatSize(blob.size)} (${canvas.width}x${canvas.height})`;
             item.status = 'success';
         } catch (err) {
             console.error(err);

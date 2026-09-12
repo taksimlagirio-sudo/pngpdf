@@ -1,5 +1,6 @@
 // Sekme 1: Resim -> PDF (mevcut davranış korunur, indirme butonu eklendi)
 import { $, formatSize, sleep, escapeHtml, loadImage, saveBlob, fileNameFromUrl } from './util.js';
+import { createJob } from './downloads.js';
 
 export function initPdfTab() {
     const dropZone = $('pdfDropZone');
@@ -104,9 +105,13 @@ export function initPdfTab() {
 
     function downloadPdf(id) {
         const item = files.find((f) => f.id === id);
-        if (item && item.pdfBlob) {
-            saveBlob(item.pdfBlob, fileNameFromUrl(item.name, 'pdf'));
-        }
+        if (!item || !item.pdfBlob) return;
+        const outName = fileNameFromUrl(item.name, 'pdf');
+        saveBlob(item.pdfBlob, outName);
+
+        const job = createJob(outName, { thumb: item.preview, kind: 'file' });
+        job.attachResult(item.pdfBlob);
+        job.done(formatSize(item.pdfBlob.size));
     }
 
     function render() {

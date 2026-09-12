@@ -1,5 +1,5 @@
 // Bir adresin arkasında ne olduğunu anlar: tür, format, boyut, çözünürlük/süre.
-import { smartFetch, formatSize, fileNameFromUrl } from './util.js';
+import { smartFetch, formatSize, fileNameFromUrl, proxyUrl } from './util.js';
 import { parsePlaylist } from './hls.js';
 
 const SNIFF_BYTES = 65536;
@@ -67,10 +67,12 @@ export function findMediaLinks(html, baseUrl) {
 export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {} } = {}) {
     onStage('Bağlanılıyor...');
 
+    let access = 'direct';
     const res = await smartFetch(url, {
         mode,
         init: { signal, headers: { Range: `bytes=0-${SNIFF_BYTES - 1}` } },
-        onFallback: () => onStage('Doğrudan erişilemedi (CORS), proxy deneniyor...')
+        onFallback: () => onStage('Doğrudan erişilemedi (CORS), proxy deneniyor...'),
+        onAccess: (which) => { access = which; }
     });
 
     const headerType = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
@@ -100,6 +102,7 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
         resumable: partial || (res.headers.get('accept-ranges') || '').includes('bytes'),
         headerType,
         suggestedName: (dispositionName && dispositionName.trim()) || fileNameFromUrl(url, info.ext),
+        access,
         downloadable: true,
         target: 'file',
         warnings: [],
@@ -125,7 +128,7 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
         onStage('Resim okunuyor...');
         await describeImage(result, url, mode, signal);
     } else if (info.kind === 'video' || info.kind === 'audio') {
-        onStage('Medya bilgisi okunuyor...');
+        onStage('Önizleme karesi alınıyor...');
         await describeMedia(result, url, mode);
     }
 
@@ -222,36 +225,98 @@ async function describeImage(result, url, mode, signal) {
     }
 }
 
-// Video/ses süresini ve çözünürlüğünü oynatıcı üzerinden okumayı dener (CORS'a takılabilir).
-function describeMedia(result, url, mode) {
+// Video/ses süresini, çözünürlüğünü ve (videoda) bir önizleme karesini okur.
+// Doğrudan adres CORS'a takılırsa proxy adresiyle yeniden denenir; proxy aynı kökenli
+// olduğu için canvas "tainted" olmaz ve kare yakalanabilir.
+async function describeMedia(result, url, mode) {
+    const candidates = mode === 'proxy'
+        ? [proxyUrl(url)]
+        : mode === 'direct' ? [url] : [url, proxyUrl(url)];
+
+    for (const src of candidates) {
+        const ok = await probeMediaElement(result, src, src !== url);
+        if (ok) return;
+    }
+}
+
+function probeMediaElement(result, src, sameOrigin) {
     return new Promise((resolve) => {
-        const el = document.createElement(result.kind === 'audio' ? 'audio' : 'video');
+        const isVideo = result.kind !== 'audio';
+        const el = document.createElement(isVideo ? 'video' : 'audio');
         el.preload = 'metadata';
         el.muted = true;
-        el.crossOrigin = 'anonymous';
-        el.src = mode === 'proxy' ? `/api/proxy?url=${encodeURIComponent(url)}` : url;
+        el.playsInline = true;
+        if (!sameOrigin) el.crossOrigin = 'anonymous';
+        el.src = src;
 
-        const finish = (ok) => {
-            clearTimeout(timer);
-            if (ok) {
-                if (el.duration && isFinite(el.duration)) result.details.duration = el.duration;
-                if (el.videoWidth) {
-                    result.details.width = el.videoWidth;
-                    result.details.height = el.videoHeight;
-                }
-                const bits = [];
-                if (el.videoWidth) bits.push(`${el.videoWidth}x${el.videoHeight}`);
-                if (result.details.duration) bits.push(formatDuration(result.details.duration));
-                if (bits.length) result.details.summary = bits.join(' • ');
-            }
+        let settled = false;
+        const cleanup = () => {
             el.removeAttribute('src');
             el.load();
-            resolve();
+        };
+        const finish = (ok) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            resolve(ok);
         };
 
-        const timer = setTimeout(() => finish(false), 6000);
-        el.addEventListener('loadedmetadata', () => finish(true), { once: true });
+        const timer = setTimeout(() => finish(false), 8000);
+
         el.addEventListener('error', () => finish(false), { once: true });
+        el.addEventListener('loadedmetadata', async () => {
+            if (el.duration && isFinite(el.duration)) result.details.duration = el.duration;
+            if (el.videoWidth) {
+                result.details.width = el.videoWidth;
+                result.details.height = el.videoHeight;
+            }
+            const bits = [];
+            if (el.videoWidth) bits.push(`${el.videoWidth}x${el.videoHeight}`);
+            if (result.details.duration) bits.push(formatDuration(result.details.duration));
+            if (bits.length) result.details.summary = bits.join(' • ');
+
+            if (!isVideo || !el.videoWidth) return finish(true);
+
+            try {
+                result.previewUrl = await captureFrame(el);
+            } catch (_) {
+                // CORS izni yoksa canvas okunamaz; önizlemesiz devam edilir.
+            }
+            finish(true);
+        }, { once: true });
+    });
+}
+
+// Videonun başından bir kare alıp küçük bir JPEG önizleme üretir.
+function captureFrame(video) {
+    return new Promise((resolve, reject) => {
+        const target = Math.min(1.5, (video.duration || 2) / 3) || 0;
+        const grab = () => {
+            try {
+                const scale = Math.min(1, 480 / video.videoWidth);
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+                canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+                canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob((blob) => {
+                    if (blob) resolve(URL.createObjectURL(blob));
+                    else reject(new Error('kare alınamadı'));
+                }, 'image/jpeg', 0.8);
+            } catch (err) {
+                reject(err);
+            }
+        };
+
+        const timer = setTimeout(() => reject(new Error('kare zaman aşımı')), 6000);
+        video.addEventListener('seeked', () => { clearTimeout(timer); grab(); }, { once: true });
+        video.addEventListener('error', () => { clearTimeout(timer); reject(new Error('oynatıcı hatası')); }, { once: true });
+        try {
+            video.currentTime = target;
+        } catch (err) {
+            clearTimeout(timer);
+            reject(err);
+        }
     });
 }
 

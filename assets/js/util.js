@@ -70,11 +70,14 @@ export function proxyUrl(target) {
  * Önce doğrudan, CORS hatası alırsa proxy üzerinden dener.
  * `mode` "direct" | "proxy" | "auto" olabilir.
  */
-export async function smartFetch(url, { mode = 'auto', init = {}, onFallback } = {}) {
+export async function smartFetch(url, { mode = 'auto', init = {}, onFallback, onAccess } = {}) {
     if (mode !== 'proxy') {
         try {
             const res = await fetch(url, init);
-            if (res.ok || res.status === 206) return res;
+            if (res.ok || res.status === 206) {
+                if (onAccess) onAccess('direct');
+                return res;
+            }
             if (mode === 'direct') {
                 throw new Error(`Sunucu ${res.status} döndü`);
             }
@@ -85,6 +88,7 @@ export async function smartFetch(url, { mode = 'auto', init = {}, onFallback } =
     }
 
     const res = await fetch(proxyUrl(url), init);
+    if (onAccess && (res.ok || res.status === 206)) onAccess('proxy');
     if (!res.ok && res.status !== 206) {
         let detail = '';
         try {
@@ -255,4 +259,30 @@ export async function pumpToSink(response, sink, onProgress = () => {}, signal) 
 export function formatSpeed(bytes, startedAt) {
     const seconds = (Date.now() - startedAt) / 1000;
     return seconds > 0.2 ? formatSize(bytes / seconds) + '/sn' : '';
+}
+
+
+/**
+ * Adresin tarayıcıdan doğrudan okunup okunamadığını yoklar.
+ * Arka plan indirmesinde hangi adresin (doğrudan mı proxy mi) verileceğini belirler.
+ */
+export async function probeAccess(url, mode = 'auto') {
+    if (mode === 'proxy') return 'proxy';
+    try {
+        const res = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+        if (res.ok || res.status === 206) return 'direct';
+    } catch (_) { /* CORS veya ağ hatası */ }
+    return mode === 'direct' ? 'direct' : 'proxy';
+}
+
+export function formatEta(received, total, startedAt) {
+    if (!total || received <= 0) return '';
+    const elapsed = (Date.now() - startedAt) / 1000;
+    if (elapsed < 1) return '';
+    const speed = received / elapsed;
+    const remaining = Math.round((total - received) / speed);
+    if (!isFinite(remaining) || remaining <= 0) return '';
+    if (remaining < 60) return `~${remaining} sn`;
+    if (remaining < 3600) return `~${Math.round(remaining / 60)} dk`;
+    return `~${(remaining / 3600).toFixed(1)} sa`;
 }
