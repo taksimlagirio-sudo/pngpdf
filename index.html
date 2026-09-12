@@ -2,26 +2,81 @@
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
     <title>Dönüştürücü & İndirici — PDF, JPG, PNG, MP4, HLS</title>
+    <meta name="description" content="Resimden PDF/JPG/PNG üretin; MP4 ve HLS içerikleri algılayıp indirin.">
+    <meta name="theme-color" content="#5b62d6">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="assets/icons/icon-192.png" sizes="192x192" type="image/png">
+    <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="İndirici">
     <link rel="stylesheet" href="assets/css/style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body>
     <div class="container">
-        <h1>🧰 Dönüştürücü & İndirici</h1>
-        <p class="subtitle">Resimden PDF/JPG/PNG üretin, MP4 ve HLS (m3u8) içerikleri indirin</p>
+        <div class="header">
+            <h1>🧰 Dönüştürücü & İndirici</h1>
+            <p class="subtitle">İçeriği algılayın, indirin; resimleri PDF/JPG/PNG'ye çevirin</p>
+            <button class="btn btn-secondary install-btn hidden" id="installBtn">📲 Ana ekrana ekle</button>
+            <p class="hint hidden" id="iosInstallHint">
+                📲 Ana ekrana eklemek için: <strong>Paylaş</strong> → <strong>Ana Ekrana Ekle</strong>
+            </p>
+        </div>
 
         <div class="tabs">
-            <button class="tab active" data-tab="pdf">📄 PDF</button>
+            <button class="tab active" data-tab="detect">🔎 Algıla</button>
+            <button class="tab" data-tab="pdf">📄 PDF</button>
             <button class="tab" data-tab="image">🖼️ JPG / PNG</button>
             <button class="tab" data-tab="mp4">🎬 MP4</button>
             <button class="tab" data-tab="hls">📡 HLS</button>
         </div>
 
+        <!-- ============ ALGILA ============ -->
+        <section class="panel active" id="panel-detect">
+            <div class="card">
+                <div class="field">
+                    <label class="field-label" for="detectUrl">🔗 Bağlantıyı yapıştırın</label>
+                    <input type="url" class="input" id="detectUrl" placeholder="https://site.com/video.mp4 veya .m3u8 / .jpg / sayfa adresi">
+                </div>
+                <div class="field">
+                    <label class="field-label" for="detectMode">🌐 Bağlantı yöntemi</label>
+                    <select class="select" id="detectMode">
+                        <option value="auto">Otomatik (önce doğrudan, olmazsa proxy)</option>
+                        <option value="direct">Sadece doğrudan</option>
+                        <option value="proxy">Sadece proxy</option>
+                    </select>
+                </div>
+                <label class="checkbox-row" id="detectDiskRow">
+                    <input type="checkbox" id="detectToDisk"> 💾 Doğrudan seçtiğim konuma kaydet
+                </label>
+                <label class="checkbox-row" id="detectBgRow" style="margin-top: 8px;">
+                    <input type="checkbox" id="detectBackground" checked> 🌙 Arka planda indir (uygulama kapalıyken de sürer)
+                </label>
+            </div>
+
+            <div class="actions">
+                <button class="btn btn-secondary" id="detectPasteBtn">📋 Yapıştır ve algıla</button>
+                <button class="btn btn-primary" id="detectBtn">🔎 Algıla</button>
+            </div>
+
+            <div class="progress-box hidden" id="detectProgress">
+                <div class="progress-head">
+                    <span class="progress-title">Algılanıyor...</span>
+                    <span class="progress-percent"></span>
+                </div>
+                <div class="progress-track"><div class="progress-bar"></div></div>
+                <div class="progress-detail"></div>
+            </div>
+
+            <div id="detectResult"></div>
+        </section>
+
         <!-- ============ PDF ============ -->
-        <section class="panel active" id="panel-pdf">
+        <section class="panel" id="panel-pdf">
             <div class="drop-zone" id="pdfDropZone">
                 <div class="drop-zone-icon">📁</div>
                 <div class="drop-zone-text">Resim dosyalarınızı seçin</div>
@@ -127,12 +182,17 @@
                     </select>
                     <p class="hint">Proxy, Netlify fonksiyonu üzerinden çalışır ve büyük dosyalarda zaman aşımına uğrayabilir; büyük videolar için "doğrudan" tercih edin.</p>
                 </div>
+                <label class="checkbox-row">
+                    <input type="checkbox" id="mp4ToDisk"> 💾 Doğrudan seçtiğim konuma kaydet
+                </label>
+                <label class="checkbox-row" style="margin-top: 8px;">
+                    <input type="checkbox" id="mp4Background" checked> 🌙 Arka planda indir
+                </label>
             </div>
 
             <div class="actions">
                 <button class="btn btn-secondary" id="mp4OpenBtn">↗️ Tarayıcıda aç</button>
                 <button class="btn btn-primary" id="mp4StartBtn">⬇️ İndir</button>
-                <button class="btn btn-danger" id="mp4CancelBtn" style="display: none;">✕ İptal</button>
             </div>
 
             <div class="progress-box hidden" id="mp4Progress">
@@ -169,16 +229,20 @@
                         <option value="proxy">Sadece proxy</option>
                     </select>
                 </div>
+                <label class="checkbox-row">
+                    <input type="checkbox" id="hlsToDisk"> 💾 Doğrudan seçtiğim konuma kaydet
+                </label>
+                <label class="checkbox-row" style="margin-top: 8px;">
+                    <input type="checkbox" id="hlsBackground" checked> 🌙 Arka planda indir (şifresiz yayınlarda)
+                </label>
                 <p class="hint">
-                    Parçalar tarayıcıda birleştirilir. fMP4 yayınlar <strong>.mp4</strong>, klasik TS yayınlar
-                    <strong>.ts</strong> olarak kaydedilir (.ts dosyaları VLC ve çoğu oynatıcıda açılır).
-                    Tüm video belleğe alındığı için çok uzun yayınlarda tarayıcı zorlanabilir.
+                    Parçalar birleştirilir: fMP4 yayınlar <strong>.mp4</strong>, klasik TS yayınlar <strong>.ts</strong>
+                    olarak kaydedilir (.ts dosyaları VLC ve çoğu oynatıcıda açılır).
                 </p>
             </div>
 
             <div class="actions">
                 <button class="btn btn-primary" id="hlsLoadBtn">📥 Playlist'i yükle</button>
-                <button class="btn btn-danger" id="hlsCancelBtn" style="display: none;">✕ İptal</button>
             </div>
 
             <div class="variant-list" id="hlsVariants"></div>
@@ -192,6 +256,17 @@
                 <div class="progress-detail"></div>
             </div>
         </section>
+    </div>
+
+    <!-- Alt mini görev çubuğu: indirmeler sekmeden bağımsız burada görünür -->
+    <div class="taskbar hidden" id="taskbar">
+        <div class="taskbar-main">
+            <span class="taskbar-text" id="taskbarText"></span>
+            <span class="taskbar-percent" id="taskbarPercent"></span>
+            <button class="taskbar-toggle" id="taskbarToggle" aria-label="İndirmeleri göster">▴</button>
+        </div>
+        <div class="taskbar-track"><div class="taskbar-fill" id="taskbarFill"></div></div>
+        <div class="taskbar-list hidden" id="taskbarList"></div>
     </div>
 
     <script type="module" src="assets/js/app.js"></script>

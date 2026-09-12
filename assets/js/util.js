@@ -125,6 +125,7 @@ export function createProgress(boxId) {
             bar.classList.remove('indeterminate');
             const pct = Math.max(0, Math.min(100, Math.round(ratio * 100)));
             bar.style.width = pct + '%';
+            bar.classList.toggle('complete', pct === 100);
             percent.textContent = pct + '%';
         },
         setTitle(text) {
@@ -217,4 +218,41 @@ export function canvasToBlob(canvas, type, quality) {
             quality
         );
     });
+}
+
+/**
+ * Yanıt gövdesini parça parça hedefe yazar (belleği doldurmadan).
+ * Content-Length yoksa toplam 0 raporlanır.
+ */
+export async function pumpToSink(response, sink, onProgress = () => {}, signal) {
+    const total = Number(response.headers.get('content-length')) || 0;
+    let received = 0;
+
+    if (!response.body || typeof response.body.getReader !== 'function') {
+        const buf = new Uint8Array(await response.arrayBuffer());
+        await sink.write(buf);
+        onProgress(buf.length, total || buf.length);
+        return buf.length;
+    }
+
+    const reader = response.body.getReader();
+    try {
+        for (;;) {
+            if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
+            const { done, value } = await reader.read();
+            if (done) break;
+            await sink.write(value);
+            received += value.length;
+            onProgress(received, total);
+        }
+    } catch (err) {
+        try { await reader.cancel(); } catch (_) { /* akış zaten kapalı */ }
+        throw err;
+    }
+    return received;
+}
+
+export function formatSpeed(bytes, startedAt) {
+    const seconds = (Date.now() - startedAt) / 1000;
+    return seconds > 0.2 ? formatSize(bytes / seconds) + '/sn' : '';
 }

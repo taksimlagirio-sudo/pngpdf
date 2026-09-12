@@ -1,11 +1,13 @@
-// Sekme 4: HLS (m3u8) indirici — parçaları indirip tek dosyada birleştirir.
+// HLS (m3u8) ayrıştırma ve indirme — hem "HLS" sekmesi hem algılama sekmesi kullanır.
 import {
-    $, formatSize, isHttpUrl, smartFetch, saveBlob, fileNameFromUrl,
-    createProgress, escapeHtml
+    $, formatSize, isHttpUrl, smartFetch, fileNameFromUrl,
+    createProgress, escapeHtml, formatSpeed
 } from './util.js';
+import { createJob, createSink, startBackgroundDownload, canBackgroundFetch } from './downloads.js';
 
 const MAX_PARALLEL = 4;
 const SEGMENT_RETRY = 3;
+const MAX_BG_SEGMENTS = 400;
 
 /** m3u8 metnini ayrıştırır: master ise varyantlar, media ise parçalar döner. */
 export function parsePlaylist(text, baseUrl) {
@@ -39,7 +41,7 @@ export function parsePlaylist(text, baseUrl) {
     let totalDuration = 0;
     let seq = 0;
     let lastByteEnd = 0;
-    let isLive = !lines.includes('#EXT-X-ENDLIST');
+    const isLive = !lines.includes('#EXT-X-ENDLIST');
 
     for (const line of lines) {
         if (line.startsWith('#EXT-X-MEDIA-SEQUENCE')) {
@@ -64,9 +66,8 @@ export function parsePlaylist(text, baseUrl) {
                 range: attrs.BYTERANGE ? parseByteRange(attrs.BYTERANGE, 0) : null
             };
         } else if (!line.startsWith('#')) {
-            const url = resolve(line);
             segments.push({
-                url,
+                url: resolve(line),
                 duration,
                 range: pendingRange,
                 key,
@@ -112,133 +113,81 @@ function hexToBytes(hex) {
 // IV verilmemişse HLS spesifikasyonu medya sırası numarasını IV olarak kullanır.
 function ivFromSequence(seq) {
     const iv = new Uint8Array(16);
-    const view = new DataView(iv.buffer);
-    view.setUint32(12, seq >>> 0);
+    new DataView(iv.buffer).setUint32(12, seq >>> 0);
     return iv;
 }
 
-export function initHlsTab() {
-    const urlInput = $('hlsUrl');
-    const nameInput = $('hlsName');
-    const modeSelect = $('hlsMode');
-    const loadBtn = $('hlsLoadBtn');
-    const cancelBtn = $('hlsCancelBtn');
-    const variantBox = $('hlsVariants');
-    const progress = createProgress('hlsProgress');
+/** Playlist'i (master ise verilen varyantı) indirir. */
+export async function downloadHls({
+    url, name, mode = 'auto', toDisk = false, background = false,
+    onStage = () => {}, onProgress = () => {}
+}) {
+    if (!isHttpUrl(url)) throw new Error('Geçerli bir .m3u8 adresi girin.');
 
-    let controller = null;
+    onStage('Playlist okunuyor...');
+    const controller = new AbortController();
+    const listRes = await smartFetch(url, {
+        mode,
+        init: { signal: controller.signal },
+        onFallback: () => onStage('Doğrudan erişilemedi (CORS), proxy deneniyor...')
+    });
+    const playlist = parsePlaylist(await listRes.text(), url);
+
+    if (playlist.type === 'master') {
+        return { type: 'master', variants: playlist.variants };
+    }
+
+    const { segments, map } = playlist;
+    if (segments.length === 0) throw new Error('Playlist içinde parça bulunamadı');
+
+    const drm = segments.find((s) => s.key && s.key.method !== 'AES-128');
+    if (drm) {
+        throw new Error(`Bu yayın DRM korumalı (${drm.key.method}). DRM korumalı içerikler indirilemez.`);
+    }
+
+    const encrypted = segments.some((s) => s.key);
+    const isFmp4 = Boolean(map);
+    const ext = isFmp4 ? 'mp4' : 'ts';
+    const mime = isFmp4 ? 'video/mp4' : 'video/mp2t';
+    const base = name || fileNameFromUrl(url, ext);
+    const fileName = base.endsWith('.' + ext) ? base : `${base}.${ext}`;
+
+    // Şifresiz ve makul uzunluktaki yayınlar service worker'a devredilebilir:
+    // parçalar sırasıyla indirilir, birleştirme kullanıcı döndüğünde yapılır.
+    if (background && canBackgroundFetch && !toDisk && !encrypted && !playlist.isLive
+        && segments.length <= MAX_BG_SEGMENTS) {
+        const urls = (map ? [map.url] : []).concat(segments.map((s) => s.url));
+        const job = await startBackgroundDownload({ urls, name: fileName });
+        if (job) {
+            onStage('Arka planda indiriliyor — uygulamayı kapatabilirsiniz.');
+            return { type: 'background', fileName };
+        }
+    }
+
+    const sink = await createSink(fileName, { toDisk, mime });
+    const job = createJob(fileName, { onCancel: () => controller.abort() });
     const keyCache = new Map();
+    const started = Date.now();
 
-    loadBtn.addEventListener('click', () => load());
-    urlInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') load();
-    });
-    cancelBtn.addEventListener('click', () => {
-        if (controller) controller.abort();
-    });
+    let downloaded = 0;
+    let bytes = 0;
+    let nextToWrite = 0;
+    const buffered = new Map();
 
-    variantBox.addEventListener('click', (e) => {
-        const btn = e.target.closest('button[data-url]');
-        if (btn) downloadMedia(btn.dataset.url);
-    });
+    const report = () => {
+        job.progress(downloaded, segments.length);
+        job.setDetail(`${downloaded}/${segments.length} parça • ${formatSize(bytes)}`);
+        onProgress(downloaded, segments.length, bytes, formatSpeed(bytes, started));
+    };
 
-    async function fetchText(url) {
-        const res = await smartFetch(url, {
-            mode: modeSelect.value,
-            init: { signal: controller.signal },
-            onFallback: () => progress.setDetail('Doğrudan erişilemedi (CORS), proxy deneniyor...')
-        });
-        return res.text();
-    }
+    try {
+        if (playlist.isLive) onStage('Canlı yayın: playlist anındaki parçalar indiriliyor.');
 
-    async function load() {
-        const url = urlInput.value.trim();
-        if (!isHttpUrl(url)) {
-            progress.show('HLS');
-            progress.setDetail('Geçerli bir .m3u8 adresi girin.', true);
-            return;
+        if (map) {
+            const initPart = await fetchSegment({ url: map.url, range: map.range, key: null });
+            await sink.write(initPart);
+            bytes += initPart.length;
         }
-
-        controller = new AbortController();
-        setBusy(true);
-        variantBox.innerHTML = '';
-        progress.show('Playlist okunuyor...');
-        progress.set(null);
-
-        try {
-            const text = await fetchText(url);
-            if (!text.includes('#EXTM3U')) {
-                throw new Error('Bu adres bir m3u8 playlist gibi görünmüyor');
-            }
-
-            const playlist = parsePlaylist(text, url);
-
-            if (playlist.type === 'master') {
-                progress.setTitle('Kalite seçin');
-                progress.set(1);
-                progress.setDetail(`${playlist.variants.length} farklı kalite bulundu.`);
-                variantBox.innerHTML = playlist.variants.map((v) => {
-                    const label = v.resolution || 'bilinmeyen çözünürlük';
-                    const mbps = v.bandwidth ? (v.bandwidth / 1000000).toFixed(2) + ' Mbps' : '';
-                    return `<button class="variant" data-url="${escapeHtml(v.url)}">
-                        <span><strong>${escapeHtml(label)}</strong>${mbps ? ' • ' + mbps : ''}</span>
-                        <span>⬇️</span>
-                    </button>`;
-                }).join('');
-                setBusy(false);
-                return;
-            }
-
-            await runDownload(playlist, url);
-        } catch (err) {
-            reportError(err);
-            setBusy(false);
-        }
-    }
-
-    async function downloadMedia(mediaUrl) {
-        controller = new AbortController();
-        setBusy(true);
-        variantBox.innerHTML = '';
-        progress.show('Playlist okunuyor...');
-        progress.set(null);
-
-        try {
-            const text = await fetchText(mediaUrl);
-            const playlist = parsePlaylist(text, mediaUrl);
-            if (playlist.type !== 'media') throw new Error('Seçilen adres parça listesi içermiyor');
-            await runDownload(playlist, mediaUrl);
-        } catch (err) {
-            reportError(err);
-            setBusy(false);
-        }
-    }
-
-    async function runDownload(playlist, sourceUrl) {
-        const { segments, map } = playlist;
-        if (segments.length === 0) throw new Error('Playlist içinde parça bulunamadı');
-
-        const drmSegment = segments.find((s) => s.key && s.key.method !== 'AES-128');
-        if (drmSegment) {
-            throw new Error(
-                `Bu yayın DRM korumalı (${drmSegment.key.method}). DRM korumalı içerikler indirilemez.`
-            );
-        }
-
-        if (playlist.isLive) {
-            progress.setDetail('Canlı yayın algılandı: playlist anındaki parçalar indirilecek.');
-        }
-
-        const parts = new Array(segments.length);
-        let done = 0;
-        let bytes = 0;
-        const started = Date.now();
-
-        progress.setTitle(`Parçalar indiriliyor (0/${segments.length})`);
-        progress.set(0);
-
-        const initPart = map ? await fetchSegment({ url: map.url, range: map.range, key: null }) : null;
-        if (initPart) bytes += initPart.length;
 
         let cursor = 0;
         const worker = async () => {
@@ -246,37 +195,38 @@ export function initHlsTab() {
                 const index = cursor++;
                 if (index >= segments.length) return;
                 const data = await fetchSegment(segments[index]);
-                parts[index] = data;
                 bytes += data.length;
-                done++;
+                buffered.set(index, data);
 
-                const seconds = (Date.now() - started) / 1000;
-                const speed = seconds > 0 ? formatSize(bytes / seconds) + '/sn' : '';
-                progress.setTitle(`Parçalar indiriliyor (${done}/${segments.length})`);
-                progress.set(done / segments.length);
-                progress.setDetail(`${formatSize(bytes)} • ${speed}`);
+                // Paralel indiriyoruz ama dosyaya sırayla yazıyoruz.
+                while (buffered.has(nextToWrite)) {
+                    const chunk = buffered.get(nextToWrite);
+                    buffered.delete(nextToWrite);
+                    await sink.write(chunk);
+                    nextToWrite++;
+                }
+
+                downloaded++;
+                report();
             }
         };
 
-        await Promise.all(
-            Array.from({ length: Math.min(MAX_PARALLEL, segments.length) }, worker)
-        );
+        await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL, segments.length) }, worker));
+        await sink.close();
 
-        const isFmp4 = Boolean(map);
-        const ext = isFmp4 ? 'mp4' : 'ts';
-        const mime = isFmp4 ? 'video/mp4' : 'video/mp2t';
-        const blobParts = initPart ? [initPart, ...parts] : parts;
-
-        const name = nameInput.value.trim() || fileNameFromUrl(sourceUrl, ext);
-        saveBlob(new Blob(blobParts, { type: mime }), name.endsWith('.' + ext) ? name : `${name}.${ext}`);
-
-        progress.setTitle('✅ Tamamlandı');
-        progress.set(1);
-        progress.setDetail(
-            `${segments.length} parça • ${formatSize(bytes)}` +
-            (isFmp4 ? '' : ' • .ts dosyası VLC ve çoğu oynatıcıda açılır')
-        );
-        setBusy(false);
+        job.done(`${segments.length} parça • ${formatSize(bytes)}`);
+        return {
+            type: 'done',
+            fileName: sink.name || fileName,
+            segments: segments.length,
+            bytes,
+            container: ext,
+            sinkMode: sink.mode
+        };
+    } catch (err) {
+        await sink.abort();
+        if (err.name === 'AbortError') job.cancel(); else job.fail(err.message);
+        throw err;
     }
 
     async function fetchSegment(segment) {
@@ -290,7 +240,7 @@ export function initHlsTab() {
                         Range: `bytes=${segment.range.offset}-${segment.range.offset + segment.range.length - 1}`
                     };
                 }
-                const res = await smartFetch(segment.url, { mode: modeSelect.value, init });
+                const res = await smartFetch(segment.url, { mode, init });
                 const buffer = new Uint8Array(await res.arrayBuffer());
                 return segment.key ? decryptSegment(buffer, segment) : buffer;
             } catch (err) {
@@ -307,10 +257,7 @@ export function initHlsTab() {
         if (!key.uri) throw new Error('Şifreleme anahtarı adresi bulunamadı');
 
         if (!keyCache.has(key.uri)) {
-            const res = await smartFetch(key.uri, {
-                mode: modeSelect.value,
-                init: { signal: controller.signal }
-            });
+            const res = await smartFetch(key.uri, { mode, init: { signal: controller.signal } });
             const raw = new Uint8Array(await res.arrayBuffer());
             if (raw.length !== 16) throw new Error('Geçersiz AES-128 anahtarı');
             keyCache.set(key.uri, await crypto.subtle.importKey('raw', raw, 'AES-CBC', false, ['decrypt']));
@@ -320,24 +267,91 @@ export function initHlsTab() {
         const plain = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, keyCache.get(key.uri), buffer);
         return new Uint8Array(plain);
     }
+}
 
-    function reportError(err) {
-        if (err.name === 'AbortError') {
-            progress.setTitle('İptal edildi');
-            progress.setDetail('İndirme durduruldu.');
+export function initHlsTab() {
+    const urlInput = $('hlsUrl');
+    const nameInput = $('hlsName');
+    const modeSelect = $('hlsMode');
+    const diskCheck = $('hlsToDisk');
+    const bgCheck = $('hlsBackground');
+    const loadBtn = $('hlsLoadBtn');
+    const variantBox = $('hlsVariants');
+    const progress = createProgress('hlsProgress');
+
+    loadBtn.addEventListener('click', () => run(urlInput.value.trim()));
+    urlInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') run(urlInput.value.trim());
+    });
+    variantBox.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-url]');
+        if (btn) run(btn.dataset.url);
+    });
+
+    async function run(url) {
+        if (!isHttpUrl(url)) {
+            progress.show('HLS');
+            progress.setDetail('Geçerli bir .m3u8 adresi girin.', true);
             return;
         }
-        console.error(err);
-        progress.setTitle('❌ Başarısız');
-        progress.set(0);
-        progress.setDetail(err.message || 'Bilinmeyen hata', true);
-    }
 
-    function setBusy(busy) {
-        loadBtn.disabled = busy;
-        cancelBtn.style.display = busy ? 'flex' : 'none';
-        if (!busy) controller = null;
-    }
+        loadBtn.disabled = true;
+        variantBox.innerHTML = '';
+        progress.show('Playlist okunuyor...');
+        progress.set(null);
 
-    setBusy(false);
+        try {
+            const result = await downloadHls({
+                url,
+                name: nameInput.value.trim() || undefined,
+                mode: modeSelect.value,
+                toDisk: diskCheck.checked,
+                background: bgCheck.checked,
+                onStage: (text) => progress.setDetail(text),
+                onProgress: (done, total, bytes, speed) => {
+                    progress.setTitle(`Parçalar indiriliyor (${done}/${total})`);
+                    progress.set(done / total);
+                    progress.setDetail(`${formatSize(bytes)} • ${speed}`);
+                }
+            });
+
+            if (result.type === 'master') {
+                progress.setTitle('Kalite seçin');
+                progress.set(1);
+                progress.setDetail(`${result.variants.length} farklı kalite bulundu.`);
+                variantBox.innerHTML = result.variants.map((v) => {
+                    const label = v.resolution || 'bilinmeyen çözünürlük';
+                    const mbps = v.bandwidth ? (v.bandwidth / 1000000).toFixed(2) + ' Mbps' : '';
+                    return `<button class="variant" data-url="${escapeHtml(v.url)}">
+                        <span><strong>${escapeHtml(label)}</strong>${mbps ? ' • ' + mbps : ''}</span>
+                        <span>⬇️</span>
+                    </button>`;
+                }).join('');
+            } else if (result.type === 'background') {
+                progress.setTitle('📥 Arka planda');
+                progress.set(1);
+                progress.setDetail('Parçalar arka planda iniyor; bitince alt çubuktan kaydedin.');
+            } else {
+                progress.setTitle('✅ Tamamlandı');
+                progress.set(1);
+                progress.setDetail(
+                    `${result.segments} parça • ${formatSize(result.bytes)}` +
+                    (result.container === 'ts' ? ' • .ts dosyası VLC ve çoğu oynatıcıda açılır' : '') +
+                    (result.sinkMode === 'disk' ? ' • diske yazıldı' : '')
+                );
+            }
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                progress.setTitle('İptal edildi');
+                progress.setDetail('İndirme durduruldu.');
+            } else {
+                console.error(err);
+                progress.setTitle('❌ Başarısız');
+                progress.set(0);
+                progress.setDetail(err.message || 'Bilinmeyen hata', true);
+            }
+        } finally {
+            loadBtn.disabled = false;
+        }
+    }
 }

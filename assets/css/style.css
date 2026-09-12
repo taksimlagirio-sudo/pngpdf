@@ -9,10 +9,29 @@ body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     min-height: 100vh;
+    min-height: 100dvh;
     padding: 20px;
+    padding-top: calc(20px + env(safe-area-inset-top));
     display: flex;
     align-items: flex-start;
     justify-content: center;
+}
+
+body.has-taskbar {
+    padding-bottom: calc(130px + env(safe-area-inset-bottom));
+}
+
+.hidden {
+    display: none !important;
+}
+
+.header {
+    margin-bottom: 22px;
+}
+
+.install-btn {
+    margin: 0 auto;
+    padding: 10px 18px;
 }
 
 .container {
@@ -402,6 +421,10 @@ h1 {
     transition: width 0.2s ease;
 }
 
+.progress-bar.complete {
+    background: #10b981;
+}
+
 .progress-bar.indeterminate {
     width: 40%;
     animation: slide 1.2s ease-in-out infinite;
@@ -492,5 +515,220 @@ h1 {
 
     .actions {
         flex-direction: column;
+    }
+}
+
+
+/* ---- Algılama kartı ---- */
+.detect-card {
+    display: flex;
+    gap: 14px;
+    background: #f8f9ff;
+    border-radius: 12px;
+    padding: 16px;
+    margin-top: 18px;
+    align-items: flex-start;
+}
+
+.detect-preview {
+    width: 96px;
+    height: 96px;
+    border-radius: 10px;
+    object-fit: cover;
+    border: 2px solid #e4e7f5;
+    background: white;
+    flex-shrink: 0;
+}
+
+.detect-preview.placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 42px;
+}
+
+.detect-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.detect-kind {
+    font-size: 15px;
+    font-weight: 700;
+    color: #333;
+    margin-bottom: 4px;
+}
+
+.detect-url {
+    font-size: 12px;
+    color: #8a8fa3;
+    word-break: break-all;
+    margin-bottom: 12px;
+}
+
+.detect-rows {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+}
+
+.detect-rows > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+    border-bottom: 1px solid #ecefff;
+    padding-bottom: 5px;
+}
+
+.detect-rows dt {
+    color: #8a8fa3;
+}
+
+.detect-rows dd {
+    color: #333;
+    font-weight: 600;
+    text-align: right;
+    word-break: break-word;
+}
+
+.checkbox-row.unsupported {
+    opacity: 0.5;
+}
+
+/* ---- Alt mini görev çubuğu ---- */
+.taskbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    background: rgba(24, 24, 40, 0.97);
+    color: white;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.25);
+    padding-bottom: env(safe-area-inset-bottom);
+}
+
+.taskbar-main {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    font-size: 13px;
+}
+
+.taskbar-text {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 600;
+}
+
+.taskbar-percent {
+    color: #a5b4fc;
+    font-variant-numeric: tabular-nums;
+}
+
+.taskbar-toggle {
+    background: rgba(255, 255, 255, 0.12);
+    border: none;
+    color: white;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+}
+
+.taskbar-track {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.15);
+    overflow: hidden;
+}
+
+.taskbar-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #667eea, #a5b4fc);
+    transition: width 0.25s ease;
+}
+
+.taskbar-fill.complete {
+    background: #10b981;
+}
+
+.taskbar-fill.indeterminate {
+    width: 35% !important;
+    animation: taskbar-slide 1.3s ease-in-out infinite;
+}
+
+@keyframes taskbar-slide {
+    0% { margin-left: 0; }
+    50% { margin-left: 65%; }
+    100% { margin-left: 0; }
+}
+
+.taskbar-list {
+    max-height: 42vh;
+    overflow-y: auto;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.taskbar-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.taskbar-item-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.taskbar-item-name {
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.taskbar-item-detail {
+    font-size: 11.5px;
+    color: #b9bdd4;
+    margin-top: 3px;
+}
+
+.taskbar-act {
+    background: rgba(255, 255, 255, 0.12);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+    font-family: inherit;
+}
+
+.taskbar-act.primary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+@media (max-width: 500px) {
+    .detect-card {
+        flex-direction: column;
+    }
+
+    .detect-preview {
+        width: 100%;
+        height: 150px;
     }
 }
