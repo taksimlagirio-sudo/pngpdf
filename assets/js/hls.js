@@ -1,7 +1,7 @@
 // HLS (m3u8) ayrıştırma ve indirme — hem "HLS" sekmesi hem algılama sekmesi kullanır.
 import {
     $, formatSize, isHttpUrl, smartFetch, fileNameFromUrl,
-    createProgress, escapeHtml, formatSpeed
+    createProgress, escapeHtml, formatSpeed, proxyUrl, probeAccess
 } from './util.js';
 import { createJob, createSink, startBackgroundDownload, canBackgroundFetch } from './downloads.js';
 
@@ -119,7 +119,7 @@ function ivFromSequence(seq) {
 
 /** Playlist'i (master ise verilen varyantı) indirir. */
 export async function downloadHls({
-    url, name, mode = 'auto', toDisk = false, background = false,
+    url, name, mode = 'auto', toDisk = false, background = false, thumb = null,
     onStage = () => {}, onProgress = () => {}
 }) {
     if (!isHttpUrl(url)) throw new Error('Geçerli bir .m3u8 adresi girin.');
@@ -156,8 +156,10 @@ export async function downloadHls({
     // parçalar sırasıyla indirilir, birleştirme kullanıcı döndüğünde yapılır.
     if (background && canBackgroundFetch && !toDisk && !encrypted && !playlist.isLive
         && segments.length <= MAX_BG_SEGMENTS) {
-        const urls = (map ? [map.url] : []).concat(segments.map((s) => s.url));
-        const job = await startBackgroundDownload({ urls, name: fileName });
+        const access = await probeAccess(segments[0].url, mode);
+        const rawUrls = (map ? [map.url] : []).concat(segments.map((s) => s.url));
+        const urls = access === 'proxy' ? rawUrls.map((u) => proxyUrl(u)) : rawUrls;
+        const job = await startBackgroundDownload({ urls, name: fileName, thumb, kind: 'hls' });
         if (job) {
             onStage('Arka planda indiriliyor — uygulamayı kapatabilirsiniz.');
             return { type: 'background', fileName };
@@ -165,7 +167,7 @@ export async function downloadHls({
     }
 
     const sink = await createSink(fileName, { toDisk, mime });
-    const job = createJob(fileName, { onCancel: () => controller.abort() });
+    const job = createJob(fileName, { onCancel: () => controller.abort(), thumb, kind: 'hls' });
     const keyCache = new Map();
     const started = Date.now();
 
@@ -212,7 +214,8 @@ export async function downloadHls({
         };
 
         await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL, segments.length) }, worker));
-        await sink.close();
+        const blob = await sink.close();
+        if (blob) job.attachResult(blob);
 
         job.done(`${segments.length} parça • ${formatSize(bytes)}`);
         return {

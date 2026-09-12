@@ -3,7 +3,7 @@ import { $, escapeHtml, isHttpUrl, formatSize, createProgress } from './util.js'
 import { analyzeUrl, formatDuration } from './detect.js';
 import { downloadFile } from './video.js';
 import { downloadHls } from './hls.js';
-import { canSaveToDisk, canBackgroundFetch } from './downloads.js';
+import { canSaveToDisk, canBackgroundFetch, isThumbInUse } from './downloads.js';
 
 const KIND_LABELS = {
     video: { icon: '🎬', label: 'Video' },
@@ -94,7 +94,8 @@ export function initDetectTab() {
                 mode: modeSelect.value,
                 onStage: (text) => progress.setDetail(text)
             });
-            if (previewUrl) URL.revokeObjectURL(previewUrl);
+            // Önizleme indirme çubuğunda küçük resim olarak kullanılıyorsa serbest bırakma.
+            if (previewUrl && !isThumbInUse(previewUrl)) URL.revokeObjectURL(previewUrl);
             previewUrl = info.previewUrl || null;
             current = info;
             progress.hide();
@@ -192,6 +193,7 @@ export function initDetectTab() {
                 const result = await downloadHls({
                     url,
                     name: info.suggestedName,
+                    thumb: info.previewUrl || null,
                     mode: modeSelect.value,
                     toDisk: diskCheck.checked,
                     background: bgCheck.checked,
@@ -220,6 +222,8 @@ export function initDetectTab() {
                     name: info.suggestedName,
                     mime: info.mime,
                     size: info.size,
+                    thumb: info.previewUrl || null,
+                    kind: info.kind,
                     mode: modeSelect.value,
                     toDisk: diskCheck.checked,
                     background: bgCheck.checked,

@@ -28,19 +28,27 @@ Netlify üzerinde statik site olarak yayınlanır.
 
 - İlk 64 KB indirilip **başlıklar + magic number** ile tür belirlenir (mp4, mov, webm, mp3, m4a, wav, flac, ogg,
   png, jpg, gif, webp, pdf, zip, MPEG-TS, m3u8, mpd, html).
-- Resimlerde önizleme ve piksel boyutu, video/seste süre ve çözünürlük, HLS'te parça sayısı, süre, kapsayıcı
-  (TS/fMP4) ve şifreleme durumu gösterilir.
+- Resimlerde önizleme ve piksel boyutu gösterilir; **videolarda oynatıcıdan bir kare yakalanıp küçük
+  önizleme (poster) üretilir** ve bu görsel indirme çubuğunda da kullanılır. Süre ve çözünürlük okunur.
+  (Doğrudan erişimde CORS izni yoksa kare proxy üzerinden alınır; HLS yayınlarında kare üretilmez.)
+- HLS'te parça sayısı, süre, kapsayıcı (TS/fMP4) ve şifreleme durumu gösterilir.
 - Adres bir **web sayfasıysa** indirme kapatılır ve sayfa kaynağındaki `.m3u8`, `.mp4`, `.webm`, `.mp3`
   bağlantıları listelenir; birine dokunup onu analiz edebilirsiniz.
 - **DRM korumalı** yayınlarda indirme düğmesi çıkmaz, sebebi yazılır.
 - Master playlist algılanırsa kalite listesi çıkar; seçtiğiniz kalite indirilir.
 
-## Arka planda indirme ve alt çubuk
+## Arka planda indirme, alt çubuk ve galeriye kaydetme
 
-- Ekranın altındaki **mini görev çubuğu** tüm indirmeleri sekmeden bağımsız gösterir: ad, yüzde, hız, iptal.
-  Dokununca liste açılır.
+- Ekranın altındaki **mini görev çubuğu** tüm indirmeleri sekmeden bağımsız gösterir. Dokununca liste açılır;
+  her satırda küçük önizleme, ad, yüzde, hız ve kalan süre, ayrıca iptal düğmesi vardır. Biten işler
+  **indirme geçmişi** olarak listede kalır (en fazla 12 kayıt, "Kapat" ile silinir).
+- Biten bir dosyada **📤 Galeriye kaydet** düğmesi çıkar: Web Share ile sistem paylaşım sayfası açılır,
+  oradan Fotoğraflar/Galeri veya Dosyalar'a kaydedebilirsiniz (Android ve iOS'ta çalışır; masaüstü
+  tarayıcılarda düğme görünmez).
+- Resim dönüştürme ve PDF indirmeleri de çubukta görünür; onlar da paylaşılabilir.
 - **🌙 Arka planda indir** seçiliyken indirme service worker'a devredilir (Background Fetch): uygulamayı
-  kapatsanız bile sürer ve Android'de sistem indirme çubuğunda görünür. Bittiğinde uygulamaya döndüğünüzde
+  kapatsanız bile sürer ve Android'de sistem indirme çubuğunda görünür. Kaynak siteye tarayıcıdan
+  doğrudan erişilemiyorsa (CORS) arka plan isteği otomatik olarak `/api/proxy` üzerinden yapılır. Bittiğinde uygulamaya döndüğünüzde
   alt çubukta **💾 Kaydet** olarak belirir (dosya, siz kaydedene kadar önbellekte durur).
 - HLS'te arka plan yalnızca şifresiz, canlı olmayan ve 400 parçadan kısa yayınlarda kullanılır; diğerlerinde
   indirme uygulama açıkken sürer ve destekleyen cihazlarda ekran kilidi (wake lock) alınır.

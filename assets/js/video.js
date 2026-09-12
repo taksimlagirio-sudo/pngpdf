@@ -1,7 +1,7 @@
 // Doğrudan dosya (MP4 vb.) indirme — hem "MP4" sekmesi hem algılama sekmesi kullanır.
 import {
     $, formatSize, isHttpUrl, smartFetch, fileNameFromUrl,
-    createProgress, pumpToSink, formatSpeed, proxyUrl
+    createProgress, pumpToSink, formatSpeed, formatEta, proxyUrl, probeAccess
 } from './util.js';
 import { createJob, createSink, startBackgroundDownload, canBackgroundFetch } from './downloads.js';
 
@@ -12,23 +12,35 @@ import { createJob, createSink, startBackgroundDownload, canBackgroundFetch } fr
  * Diske doğrudan yazma (toDisk) kullanıcı hareketi gerektirdiği için ilk iş olarak yapılır.
  */
 export async function downloadFile({
-    url, name, mode = 'auto', toDisk = false, background = false,
+    url, name, mode = 'auto', toDisk = false, background = false, thumb = null, kind = 'file',
     mime = 'application/octet-stream', size = 0, onProgress = () => {}, onStage = () => {}
 }) {
     if (!isHttpUrl(url)) throw new Error('Geçerli bir http(s) adresi girin.');
     const fileName = name || fileNameFromUrl(url);
 
     if (background && canBackgroundFetch && !toDisk) {
-        const job = await startBackgroundDownload({ urls: [url], name: fileName, total: size });
+        // Arka plan indirmesi service worker'dan yapılır; CORS'a kapalı kaynaklar proxy üzerinden verilir.
+        onStage('Kaynak yoklanıyor...');
+        const access = await probeAccess(url, mode);
+        const job = await startBackgroundDownload({
+            urls: [access === 'proxy' ? proxyUrl(url) : url],
+            name: fileName,
+            total: size,
+            thumb,
+            kind
+        });
         if (job) {
+            if (access === 'proxy') {
+                job.setDetail('Arka planda (proxy üzerinden) indiriliyor — çok büyük dosyalarda zaman aşımı olabilir.');
+            }
             onStage('Arka planda indiriliyor — uygulamayı kapatabilirsiniz.');
-            return { mode: 'background' };
+            return { mode: 'background', access };
         }
     }
 
     const sink = await createSink(fileName, { toDisk, mime });
     const controller = new AbortController();
-    const job = createJob(fileName, { onCancel: () => controller.abort() });
+    const job = createJob(fileName, { onCancel: () => controller.abort(), thumb, kind });
     const started = Date.now();
 
     try {
@@ -41,13 +53,17 @@ export async function downloadFile({
 
         const received = await pumpToSink(res, sink, (got, total) => {
             job.progress(got, total);
+            job.setDetail(total
+                ? `${formatSize(got)} / ${formatSize(total)} • ${formatSpeed(got, started)} ${formatEta(got, total, started)}`
+                : `${formatSize(got)} • ${formatSpeed(got, started)}`);
             onProgress(got, total, formatSpeed(got, started));
         }, controller.signal);
 
-        await sink.close();
+        const blob = await sink.close();
+        if (blob) job.attachResult(blob);
         const detail = `${formatSize(received)}${sink.mode === 'disk' ? ' • diske yazıldı' : ''}`;
         job.done(detail);
-        return { mode: sink.mode, size: received, name: sink.name, detail };
+        return { mode: sink.mode, size: received, name: sink.name, detail, blob };
     } catch (err) {
         await sink.abort();
         if (err.name === 'AbortError') {
