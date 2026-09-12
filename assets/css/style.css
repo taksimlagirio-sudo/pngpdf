@@ -40,6 +40,14 @@ body.has-taskbar {
     padding: 10px 18px;
 }
 
+/* "Üstte göster": Algıla sekmesinin en başında, bağlantı alanının hemen üstünde */
+.float-btn {
+    width: 100%;
+    padding: 14px;
+    font-size: 15px;
+    margin-bottom: 16px;
+}
+
 .container {
     background: white;
     border-radius: 20px;

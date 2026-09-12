@@ -23,7 +23,6 @@
             <p class="subtitle">İçeriği algılayın, indirin; resimleri PDF/JPG/PNG'ye çevirin</p>
             <div class="header-actions">
                 <button class="btn btn-secondary hidden" id="installBtn">📲 Ana ekrana ekle</button>
-                <button class="btn btn-secondary hidden" id="floatBtn">🪟 Üstte göster</button>
             </div>
             <p class="hint hidden" id="iosInstallHint">
                 📲 Ana ekrana eklemek için: <strong>Paylaş</strong> → <strong>Ana Ekrana Ekle</strong>
@@ -40,6 +39,8 @@
 
         <!-- ============ ALGILA ============ -->
         <section class="panel active" id="panel-detect">
+            <button class="btn btn-primary float-btn hidden" id="floatBtn">🪟 Üstte göster (diğer uygulamaların üstünde)</button>
+
             <div class="card">
                 <div class="field">
                     <label class="field-label" for="detectUrl">🔗 Bağlantıyı yapıştırın</label>
@@ -60,7 +61,7 @@
                     <input type="checkbox" id="detectBackground" checked> 🌙 Arka planda indir (uygulama kapalıyken de sürer)
                 </label>
                 <p class="hint" id="floatHint">
-                    🪟 Yukarıdaki <strong>"Üstte göster"</strong> düğmesi (veya indirme sürerken alt çubuktaki 🪟)
+                    🪟 En üstteki <strong>"Üstte göster"</strong> düğmesi (veya indirme sürerken alt çubuktaki 🪟)
                     indirme durumunu <strong>diğer uygulamaların üstünde</strong> yüzen mini pencerede tutar.
                 </p>
             </div>

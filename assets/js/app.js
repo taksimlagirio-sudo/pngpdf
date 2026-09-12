@@ -48,7 +48,9 @@ if (canFloat) {
     });
 
     onFloatStateChange((open) => {
-        $('floatBtn').textContent = open ? '✕ Üstteki pencereyi kapat' : '🪟 Üstte göster';
+        $('floatBtn').textContent = open
+            ? '✕ Üstteki pencereyi kapat'
+            : '🪟 Üstte göster (diğer uygulamaların üstünde)';
         $('taskbarFloatBtn').textContent = open ? '✕' : '🪟';
         floatButtons.forEach((btn) => {
             btn.title = open ? 'Yüzen pencereyi kapat' : 'Diğer uygulamaların üstünde mini pencere';
