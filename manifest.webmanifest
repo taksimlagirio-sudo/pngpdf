@@ -1,0 +1,32 @@
+{
+  "name": "Dönüştürücü & İndirici",
+  "short_name": "İndirici",
+  "description": "Resimden PDF/JPG/PNG üretin; MP4 ve HLS içerikleri algılayıp indirin.",
+  "lang": "tr",
+  "start_url": "./?src=pwa",
+  "scope": "./",
+  "id": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#5b62d6",
+  "theme_color": "#5b62d6",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "share_target": {
+    "action": "./",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": { "title": "title", "text": "text", "url": "url" }
+  },
+  "shortcuts": [
+    { "name": "Bağlantı algıla", "short_name": "Algıla", "url": "./#detect" },
+    { "name": "MP4 indir", "short_name": "MP4", "url": "./#mp4" },
+    { "name": "HLS indir", "short_name": "HLS", "url": "./#hls" },
+    { "name": "Resim dönüştür", "short_name": "Resim", "url": "./#image" }
+  ]
+}

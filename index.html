@@ -2,551 +2,273 @@
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <title>Dönüştürücü & İndirici — PDF, JPG, PNG, MP4, HLS</title>
+    <meta name="description" content="Resimden PDF/JPG/PNG üretin; MP4 ve HLS içerikleri algılayıp indirin.">
+    <meta name="theme-color" content="#5b62d6">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="assets/icons/icon-192.png" sizes="192x192" type="image/png">
+    <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <title>Resim to PDF Dönüştürücü</title>
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="İndirici">
+    <link rel="stylesheet" href="assets/css/style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            -webkit-tap-highlight-color: transparent;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .container {
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            padding: 30px;
-            max-width: 700px;
-            width: 100%;
-        }
-
-        h1 {
-            color: #333;
-            margin-bottom: 8px;
-            font-size: 28px;
-            text-align: center;
-        }
-
-        .subtitle {
-            color: #666;
-            text-align: center;
-            margin-bottom: 25px;
-            font-size: 14px;
-        }
-
-        .drop-zone {
-            border: 3px dashed #667eea;
-            border-radius: 15px;
-            padding: 50px 20px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            background: #f8f9ff;
-            margin-bottom: 25px;
-        }
-
-        .drop-zone:hover, .drop-zone.active {
-            border-color: #764ba2;
-            background: #e8ebff;
-        }
-
-        .drop-zone-icon {
-            font-size: 48px;
-            margin-bottom: 12px;
-        }
-
-        .drop-zone-text {
-            color: #667eea;
-            font-size: 17px;
-            font-weight: 600;
-            margin-bottom: 8px;
-        }
-
-        .drop-zone-subtext {
-            color: #999;
-            font-size: 14px;
-        }
-
-        .quality-control {
-            background: #f8f9ff;
-            border-radius: 12px;
-            padding: 18px;
-            margin-bottom: 20px;
-            display: none;
-        }
-
-        .quality-control.show {
-            display: block;
-        }
-
-        .quality-label {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-            color: #333;
-            font-weight: 600;
-        }
-
-        .quality-value {
-            color: #667eea;
-            font-size: 18px;
-        }
-
-        .quality-slider {
-            width: 100%;
-            height: 8px;
-            border-radius: 4px;
-            background: #e0e0e0;
-            outline: none;
-            -webkit-appearance: none;
-        }
-
-        .quality-slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            cursor: pointer;
-            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
-        }
-
-        .quality-description {
-            color: #666;
-            font-size: 12px;
-            margin-top: 10px;
-            text-align: center;
-        }
-
-        .file-list {
-            margin-bottom: 20px;
-        }
-
-        .file-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 12px;
-            background: #f8f9ff;
-            border-radius: 12px;
-            margin-bottom: 10px;
-            gap: 10px;
-        }
-
-        .file-info {
-            display: flex;
-            align-items: center;
-            flex: 1;
-            min-width: 0;
-        }
-
-        .file-preview {
-            width: 55px;
-            height: 55px;
-            border-radius: 8px;
-            object-fit: cover;
-            margin-right: 12px;
-            border: 2px solid #e0e0e0;
-            flex-shrink: 0;
-        }
-
-        .file-details {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .file-name {
-            color: #333;
-            font-weight: 500;
-            margin-bottom: 4px;
-            font-size: 14px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .file-size {
-            color: #999;
-            font-size: 12px;
-        }
-
-        .file-actions {
-            display: flex;
-            gap: 8px;
-            flex-shrink: 0;
-        }
-
-        .btn {
-            padding: 10px 16px;
-            border: none;
-            border-radius: 10px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-
-        .btn-primary:active {
-            transform: scale(0.96);
-        }
-
-        .btn-primary:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .btn-primary.success {
-            background: #10b981;
-        }
-
-        .btn-secondary {
-            background: #f1f3f5;
-            color: #666;
-        }
-
-        .btn-danger {
-            background: #ff4757;
-            color: white;
-            padding: 10px 12px;
-        }
-
-        .actions {
-            display: flex;
-            gap: 12px;
-            margin-top: 20px;
-        }
-
-        .actions .btn {
-            flex: 1;
-            padding: 14px;
-            font-size: 15px;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 40px 20px;
-            color: #999;
-        }
-
-        .empty-state-icon {
-            font-size: 60px;
-            margin-bottom: 12px;
-            opacity: 0.5;
-        }
-
-        #fileInput {
-            display: none;
-        }
-
-        @media (max-width: 500px) {
-            .container {
-                padding: 20px;
-                border-radius: 16px;
-            }
-
-            h1 {
-                font-size: 24px;
-            }
-
-            .drop-zone {
-                padding: 35px 15px;
-            }
-
-            .file-item {
-                flex-wrap: wrap;
-            }
-
-            .file-info {
-                width: 100%;
-                margin-bottom: 10px;
-            }
-
-            .file-actions {
-                width: 100%;
-                justify-content: flex-end;
-            }
-
-            .actions {
-                flex-direction: column;
-            }
-        }
-    </style>
 </head>
 <body>
     <div class="container">
-        <h1>🖼️ Resim → PDF</h1>
-        <p class="subtitle">Resimlerinizi kolayca PDF formatına dönüştürün</p>
-
-        <div class="drop-zone" id="dropZone">
-            <div class="drop-zone-icon">📁</div>
-            <div class="drop-zone-text">Resim dosyalarınızı seçin</div>
-            <div class="drop-zone-subtext">Tıklayın veya sürükleyin</div>
+        <div class="header">
+            <h1>🧰 Dönüştürücü & İndirici</h1>
+            <p class="subtitle">İçeriği algılayın, indirin; resimleri PDF/JPG/PNG'ye çevirin</p>
+            <button class="btn btn-secondary install-btn hidden" id="installBtn">📲 Ana ekrana ekle</button>
+            <p class="hint hidden" id="iosInstallHint">
+                📲 Ana ekrana eklemek için: <strong>Paylaş</strong> → <strong>Ana Ekrana Ekle</strong>
+            </p>
         </div>
 
-        <input type="file" id="fileInput" accept="image/*" multiple>
+        <div class="tabs">
+            <button class="tab active" data-tab="detect">🔎 Algıla</button>
+            <button class="tab" data-tab="pdf">📄 PDF</button>
+            <button class="tab" data-tab="image">🖼️ JPG / PNG</button>
+            <button class="tab" data-tab="mp4">🎬 MP4</button>
+            <button class="tab" data-tab="hls">📡 HLS</button>
+        </div>
 
-        <div class="quality-control" id="qualityControl">
-            <div class="quality-label">
-                <span>🎚️ Sıkıştırma Kalitesi</span>
-                <span class="quality-value" id="qualityValue">70%</span>
+        <!-- ============ ALGILA ============ -->
+        <section class="panel active" id="panel-detect">
+            <div class="card">
+                <div class="field">
+                    <label class="field-label" for="detectUrl">🔗 Bağlantıyı yapıştırın</label>
+                    <input type="url" class="input" id="detectUrl" placeholder="https://site.com/video.mp4 veya .m3u8 / .jpg / sayfa adresi">
+                </div>
+                <div class="field">
+                    <label class="field-label" for="detectMode">🌐 Bağlantı yöntemi</label>
+                    <select class="select" id="detectMode">
+                        <option value="auto">Otomatik (önce doğrudan, olmazsa proxy)</option>
+                        <option value="direct">Sadece doğrudan</option>
+                        <option value="proxy">Sadece proxy</option>
+                    </select>
+                </div>
+                <label class="checkbox-row" id="detectDiskRow">
+                    <input type="checkbox" id="detectToDisk"> 💾 Doğrudan seçtiğim konuma kaydet
+                </label>
+                <label class="checkbox-row" id="detectBgRow" style="margin-top: 8px;">
+                    <input type="checkbox" id="detectBackground" checked> 🌙 Arka planda indir (uygulama kapalıyken de sürer)
+                </label>
             </div>
-            <input type="range" min="10" max="100" step="10" value="70" class="quality-slider" id="qualitySlider">
-            <div class="quality-description" id="qualityDesc">⚖️ Dengeli (orta kalite)</div>
-        </div>
 
-        <div id="fileList"></div>
+            <div class="actions">
+                <button class="btn btn-secondary" id="detectPasteBtn">📋 Yapıştır ve algıla</button>
+                <button class="btn btn-primary" id="detectBtn">🔎 Algıla</button>
+            </div>
 
-        <div class="actions" id="actions" style="display: none;">
-            <button class="btn btn-secondary" id="clearBtn">🗑️ Temizle</button>
-            <button class="btn btn-primary" id="convertAllBtn">📄 Tümünü Çevir</button>
-        </div>
+            <div class="progress-box hidden" id="detectProgress">
+                <div class="progress-head">
+                    <span class="progress-title">Algılanıyor...</span>
+                    <span class="progress-percent"></span>
+                </div>
+                <div class="progress-track"><div class="progress-bar"></div></div>
+                <div class="progress-detail"></div>
+            </div>
+
+            <div id="detectResult"></div>
+        </section>
+
+        <!-- ============ PDF ============ -->
+        <section class="panel" id="panel-pdf">
+            <div class="drop-zone" id="pdfDropZone">
+                <div class="drop-zone-icon">📁</div>
+                <div class="drop-zone-text">Resim dosyalarınızı seçin</div>
+                <div class="drop-zone-subtext">Tıklayın veya sürükleyin</div>
+            </div>
+            <input type="file" id="pdfFileInput" accept="image/*" multiple hidden>
+
+            <div class="card hidden" id="pdfQualityControl">
+                <div class="quality-label">
+                    <span>🎚️ Sıkıştırma Kalitesi</span>
+                    <span class="quality-value" id="pdfQualityValue">70%</span>
+                </div>
+                <input type="range" min="10" max="100" step="10" value="70" class="quality-slider" id="pdfQualitySlider">
+                <div class="quality-description" id="pdfQualityDesc">⚖️ Dengeli (orta kalite)</div>
+            </div>
+
+            <div id="pdfFileList"></div>
+
+            <div class="actions" id="pdfActions" style="display: none;">
+                <button class="btn btn-secondary" id="pdfClearBtn">🗑️ Temizle</button>
+                <button class="btn btn-primary" id="pdfConvertAllBtn">📄 Tümünü Çevir</button>
+            </div>
+        </section>
+
+        <!-- ============ JPG / PNG ============ -->
+        <section class="panel" id="panel-image">
+            <div class="drop-zone" id="imgDropZone">
+                <div class="drop-zone-icon">🖼️</div>
+                <div class="drop-zone-text">Dönüştürmek istediğiniz resimleri seçin</div>
+                <div class="drop-zone-subtext">JPG, PNG veya WEBP olarak indirin</div>
+            </div>
+            <input type="file" id="imgFileInput" accept="image/*" multiple hidden>
+
+            <div class="card">
+                <label class="field-label" for="imgUrlInput">🔗 Adresten resim ekle (opsiyonel)</label>
+                <div class="actions" style="margin-top: 0;">
+                    <input type="url" class="input" id="imgUrlInput" placeholder="https://site.com/resim.png" style="flex: 2;">
+                    <button class="btn btn-primary" id="imgUrlBtn" style="flex: 1;">Ekle</button>
+                </div>
+                <p class="hint">Site CORS izni vermiyorsa istek otomatik olarak sunucu proxy'sine düşer.</p>
+            </div>
+
+            <div class="card hidden" id="imgSettings">
+                <div class="field">
+                    <label class="field-label" for="imgFormat">📤 Çıktı formatı</label>
+                    <select class="select" id="imgFormat">
+                        <option value="jpg">JPG (küçük dosya)</option>
+                        <option value="png">PNG (kayıpsız, şeffaflık korunur)</option>
+                        <option value="webp">WEBP (modern, küçük)</option>
+                    </select>
+                </div>
+                <div class="field" id="imgQualityField">
+                    <div class="quality-label">
+                        <span>🎚️ Kalite</span>
+                        <span class="quality-value" id="imgQualityValue">85%</span>
+                    </div>
+                    <input type="range" min="10" max="100" step="5" value="85" class="quality-slider" id="imgQualitySlider">
+                </div>
+                <div class="field">
+                    <label class="field-label" for="imgMaxWidth">↔️ Maksimum genişlik (px, boş = orijinal)</label>
+                    <input type="number" class="input" id="imgMaxWidth" min="16" step="1" placeholder="Örn. 1920">
+                </div>
+            </div>
+
+            <div id="imgFileList"></div>
+
+            <div class="actions" id="imgActions" style="display: none;">
+                <button class="btn btn-secondary" id="imgClearBtn">🗑️ Temizle</button>
+                <button class="btn btn-primary" id="imgConvertAllBtn">⬇️ Tümünü İndir</button>
+            </div>
+
+            <div class="progress-box hidden" id="imgProgress">
+                <div class="progress-head">
+                    <span class="progress-title">İşleniyor...</span>
+                    <span class="progress-percent"></span>
+                </div>
+                <div class="progress-track"><div class="progress-bar"></div></div>
+                <div class="progress-detail"></div>
+            </div>
+        </section>
+
+        <!-- ============ MP4 ============ -->
+        <section class="panel" id="panel-mp4">
+            <div class="notice">
+                ⚖️ Yalnızca indirme hakkına sahip olduğunuz içerikleri indirin. DRM korumalı yayınlar desteklenmez.
+            </div>
+
+            <div class="card">
+                <div class="field">
+                    <label class="field-label" for="mp4Url">🎬 Dosya adresi (MP4, WEBM, MP3, JPG...)</label>
+                    <input type="url" class="input" id="mp4Url" placeholder="https://site.com/video.mp4">
+                </div>
+                <div class="field">
+                    <label class="field-label" for="mp4Name">📝 Kaydedilecek ad (opsiyonel)</label>
+                    <input type="text" class="input" id="mp4Name" placeholder="video.mp4">
+                </div>
+                <div class="field">
+                    <label class="field-label" for="mp4Mode">🌐 Bağlantı yöntemi</label>
+                    <select class="select" id="mp4Mode">
+                        <option value="auto">Otomatik (önce doğrudan, olmazsa proxy)</option>
+                        <option value="direct">Sadece doğrudan</option>
+                        <option value="proxy">Sadece proxy</option>
+                    </select>
+                    <p class="hint">Proxy, Netlify fonksiyonu üzerinden çalışır ve büyük dosyalarda zaman aşımına uğrayabilir; büyük videolar için "doğrudan" tercih edin.</p>
+                </div>
+                <label class="checkbox-row">
+                    <input type="checkbox" id="mp4ToDisk"> 💾 Doğrudan seçtiğim konuma kaydet
+                </label>
+                <label class="checkbox-row" style="margin-top: 8px;">
+                    <input type="checkbox" id="mp4Background" checked> 🌙 Arka planda indir
+                </label>
+            </div>
+
+            <div class="actions">
+                <button class="btn btn-secondary" id="mp4OpenBtn">↗️ Tarayıcıda aç</button>
+                <button class="btn btn-primary" id="mp4StartBtn">⬇️ İndir</button>
+            </div>
+
+            <div class="progress-box hidden" id="mp4Progress">
+                <div class="progress-head">
+                    <span class="progress-title">İndiriliyor...</span>
+                    <span class="progress-percent"></span>
+                </div>
+                <div class="progress-track"><div class="progress-bar"></div></div>
+                <div class="progress-detail"></div>
+            </div>
+        </section>
+
+        <!-- ============ HLS ============ -->
+        <section class="panel" id="panel-hls">
+            <div class="notice">
+                ⚖️ Yalnızca indirme hakkına sahip olduğunuz yayınları indirin. Widevine/FairPlay gibi DRM korumalı
+                yayınlar desteklenmez ve indirilemez.
+            </div>
+
+            <div class="card">
+                <div class="field">
+                    <label class="field-label" for="hlsUrl">📡 m3u8 adresi</label>
+                    <input type="url" class="input" id="hlsUrl" placeholder="https://site.com/playlist.m3u8">
+                </div>
+                <div class="field">
+                    <label class="field-label" for="hlsName">📝 Kaydedilecek ad (opsiyonel)</label>
+                    <input type="text" class="input" id="hlsName" placeholder="video">
+                </div>
+                <div class="field">
+                    <label class="field-label" for="hlsMode">🌐 Bağlantı yöntemi</label>
+                    <select class="select" id="hlsMode">
+                        <option value="auto">Otomatik (önce doğrudan, olmazsa proxy)</option>
+                        <option value="direct">Sadece doğrudan</option>
+                        <option value="proxy">Sadece proxy</option>
+                    </select>
+                </div>
+                <label class="checkbox-row">
+                    <input type="checkbox" id="hlsToDisk"> 💾 Doğrudan seçtiğim konuma kaydet
+                </label>
+                <label class="checkbox-row" style="margin-top: 8px;">
+                    <input type="checkbox" id="hlsBackground" checked> 🌙 Arka planda indir (şifresiz yayınlarda)
+                </label>
+                <p class="hint">
+                    Parçalar birleştirilir: fMP4 yayınlar <strong>.mp4</strong>, klasik TS yayınlar <strong>.ts</strong>
+                    olarak kaydedilir (.ts dosyaları VLC ve çoğu oynatıcıda açılır).
+                </p>
+            </div>
+
+            <div class="actions">
+                <button class="btn btn-primary" id="hlsLoadBtn">📥 Playlist'i yükle</button>
+            </div>
+
+            <div class="variant-list" id="hlsVariants"></div>
+
+            <div class="progress-box hidden" id="hlsProgress">
+                <div class="progress-head">
+                    <span class="progress-title">Hazır</span>
+                    <span class="progress-percent"></span>
+                </div>
+                <div class="progress-track"><div class="progress-bar"></div></div>
+                <div class="progress-detail"></div>
+            </div>
+        </section>
     </div>
 
-    <script>
-        const dropZone = document.getElementById('dropZone');
-        const fileInput = document.getElementById('fileInput');
-        const fileList = document.getElementById('fileList');
-        const qualityControl = document.getElementById('qualityControl');
-        const qualitySlider = document.getElementById('qualitySlider');
-        const qualityValue = document.getElementById('qualityValue');
-        const qualityDesc = document.getElementById('qualityDesc');
-        const actions = document.getElementById('actions');
-        const clearBtn = document.getElementById('clearBtn');
-        const convertAllBtn = document.getElementById('convertAllBtn');
+    <!-- Alt mini görev çubuğu: indirmeler sekmeden bağımsız burada görünür -->
+    <div class="taskbar hidden" id="taskbar">
+        <div class="taskbar-main">
+            <span class="taskbar-text" id="taskbarText"></span>
+            <span class="taskbar-percent" id="taskbarPercent"></span>
+            <button class="taskbar-toggle" id="taskbarToggle" aria-label="İndirmeleri göster">▴</button>
+        </div>
+        <div class="taskbar-track"><div class="taskbar-fill" id="taskbarFill"></div></div>
+        <div class="taskbar-list hidden" id="taskbarList"></div>
+    </div>
 
-        let files = [];
-
-        // Drop zone click
-        dropZone.addEventListener('click', () => fileInput.click());
-
-        // Drag & drop events
-        dropZone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            dropZone.classList.add('active');
-        });
-
-        dropZone.addEventListener('dragleave', () => {
-            dropZone.classList.remove('active');
-        });
-
-        dropZone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            dropZone.classList.remove('active');
-            const droppedFiles = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
-            addFiles(droppedFiles);
-        });
-
-        // File input change
-        fileInput.addEventListener('change', (e) => {
-            const selectedFiles = Array.from(e.target.files).filter(f => f.type.startsWith('image/'));
-            addFiles(selectedFiles);
-            fileInput.value = '';
-        });
-
-        // Quality slider
-        qualitySlider.addEventListener('input', (e) => {
-            const val = parseInt(e.target.value);
-            qualityValue.textContent = val + '%';
-            
-            if (val < 40) {
-                qualityDesc.textContent = '📦 Küçük dosya (düşük kalite)';
-            } else if (val < 70) {
-                qualityDesc.textContent = '⚖️ Dengeli (orta kalite)';
-            } else {
-                qualityDesc.textContent = '🎨 Yüksek kalite (büyük dosya)';
-            }
-        });
-
-        // Clear button
-        clearBtn.addEventListener('click', () => {
-            files = [];
-            renderFiles();
-        });
-
-        // Convert all button
-        convertAllBtn.addEventListener('click', async () => {
-            for (let i = 0; i < files.length; i++) {
-                await convertToPDF(files[i].id);
-                await sleep(300);
-            }
-        });
-
-        function sleep(ms) {
-            return new Promise(resolve => setTimeout(resolve, ms));
-        }
-
-        function addFiles(newFiles) {
-            newFiles.forEach(file => {
-                const id = Math.random().toString(36).substring(2);
-                files.push({
-                    id,
-                    file,
-                    name: file.name,
-                    size: formatSize(file.size),
-                    preview: URL.createObjectURL(file),
-                    status: 'ready',
-                    pdfUrl: null
-                });
-            });
-            renderFiles();
-        }
-
-        function formatSize(bytes) {
-            if (bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-        }
-
-        function removeFile(id) {
-            const file = files.find(f => f.id === id);
-            if (file) {
-                URL.revokeObjectURL(file.preview);
-                if (file.pdfUrl) URL.revokeObjectURL(file.pdfUrl);
-            }
-            files = files.filter(f => f.id !== id);
-            renderFiles();
-        }
-
-        function renderFiles() {
-            if (files.length === 0) {
-                fileList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🎨</div><p>Henüz resim eklenmedi</p></div>';
-                qualityControl.classList.remove('show');
-                actions.style.display = 'none';
-                return;
-            }
-
-            qualityControl.classList.add('show');
-            actions.style.display = 'flex';
-
-            let html = '';
-            files.forEach(f => {
-                const btnText = f.status === 'converting' ? '⏳...' :
-                               f.status === 'success' ? '🔗 Aç' : '📄 PDF';
-                const btnClass = f.status === 'success' ? 'btn btn-primary success' : 'btn btn-primary';
-                const disabled = f.status === 'converting' ? 'disabled' : '';
-
-                let pdfButton = '';
-                if (f.pdfUrl) {
-                    pdfButton = `<a href="${f.pdfUrl}" target="_blank" class="${btnClass}" style="text-decoration: none;">${btnText}</a>`;
-                } else {
-                    pdfButton = `<button class="${btnClass}" onclick="convertToPDF('${f.id}')" ${disabled}>${btnText}</button>`;
-                }
-
-                html += `
-                    <div class="file-item" data-id="${f.id}">
-                        <div class="file-info">
-                            <img src="${f.preview}" alt="${f.name}" class="file-preview">
-                            <div class="file-details">
-                                <div class="file-name">${f.name}</div>
-                                <div class="file-size">${f.size}</div>
-                            </div>
-                        </div>
-                        <div class="file-actions">
-                            ${pdfButton}
-                            <button class="btn btn-danger" onclick="removeFile('${f.id}')" ${disabled}>✕</button>
-                        </div>
-                    </div>
-                `;
-            });
-            fileList.innerHTML = html;
-        }
-
-        async function convertToPDF(id) {
-            const fileItem = files.find(f => f.id === id);
-            if (!fileItem || fileItem.status === 'converting') return;
-
-            fileItem.status = 'converting';
-            renderFiles();
-
-            try {
-                const { jsPDF } = window.jspdf;
-                const img = await loadImage(fileItem.file);
-                
-                const quality = parseInt(qualitySlider.value) / 100;
-                
-                // Canvas ile sıkıştır
-                const canvas = document.createElement('canvas');
-                canvas.width = img.width;
-                canvas.height = img.height;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0);
-                const compressedImage = canvas.toDataURL('image/jpeg', quality);
-
-                // mm cinsinden boyut (96 DPI)
-                const mmWidth = (img.width / 96) * 25.4;
-                const mmHeight = (img.height / 96) * 25.4;
-
-                const pdf = new jsPDF({
-                    orientation: mmHeight > mmWidth ? 'portrait' : 'landscape',
-                    unit: 'mm',
-                    format: [mmWidth, mmHeight],
-                    compress: true
-                });
-
-                pdf.addImage(compressedImage, 'JPEG', 0, 0, mmWidth, mmHeight);
-
-                // PDF'i blob olarak oluştur
-                const pdfBlob = pdf.output('blob');
-                const pdfUrl = URL.createObjectURL(pdfBlob);
-
-                // Blob URL'yi kaydet ve yeni sekmede aç
-                fileItem.pdfUrl = pdfUrl;
-                fileItem.status = 'success';
-
-                // Yeni sekmede aç
-                window.open(pdfUrl, '_blank');
-
-                renderFiles();
-
-            } catch (error) {
-                console.error('Hata:', error);
-                alert('Hata: ' + fileItem.name);
-                fileItem.status = 'ready';
-                renderFiles();
-            }
-        }
-
-        function loadImage(file) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const img = new Image();
-                    img.onload = () => resolve(img);
-                    img.onerror = reject;
-                    img.src = e.target.result;
-                };
-                reader.onerror = reject;
-                reader.readAsDataURL(file);
-            });
-        }
-
-        // Initial render
-        renderFiles();
-    </script>
+    <script type="module" src="assets/js/app.js"></script>
 </body>
 </html>
