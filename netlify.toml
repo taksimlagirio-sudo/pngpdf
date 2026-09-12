@@ -2,6 +2,16 @@
   publish = "."
   command = ""
 
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Proxy fonksiyonu: SPA yönlendirmesinden önce gelmeli.
+[[redirects]]
+  from = "/api/proxy"
+  to = "/.netlify/functions/proxy"
+  status = 200
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
