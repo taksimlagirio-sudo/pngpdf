@@ -6,6 +6,7 @@ import { initImageTab } from './image.js';
 import { initVideoTab } from './video.js';
 import { initHlsTab } from './hls.js';
 import { initDetectTab } from './detect-tab.js';
+import { canFloat, toggleFloatingBar, onFloatStateChange } from './floatbar.js';
 
 const tabs = Array.from(document.querySelectorAll('.tab'));
 const panels = Array.from(document.querySelectorAll('.panel'));
@@ -28,6 +29,27 @@ initImageTab();
 initVideoTab();
 initHlsTab();
 const detectTab = initDetectTab();
+
+/* ---- Diğer uygulamaların üstünde yüzen mini pencere ---- */
+const floatBtn = $('taskbarFloatBtn');
+if (canFloat) {
+    floatBtn.classList.remove('hidden');
+    floatBtn.addEventListener('click', async (event) => {
+        event.stopPropagation(); // alt çubuğun aç/kapa davranışını tetiklemesin
+        try {
+            await toggleFloatingBar();
+        } catch (err) {
+            console.warn('Yüzen pencere açılamadı:', err);
+            floatBtn.title = err.message;
+        }
+    });
+    onFloatStateChange((open) => {
+        floatBtn.textContent = open ? '✕' : '🪟';
+        floatBtn.title = open ? 'Yüzen pencereyi kapat' : 'Diğer uygulamaların üstünde mini pencere';
+    });
+} else {
+    $('floatHint').textContent = '🪟 Yüzen mini pencere bu tarayıcıda desteklenmiyor (Android Chrome ve masaüstü Chrome destekler).';
+}
 
 /* ---- Paylaşım hedefi: başka uygulamadan paylaşılan bağlantı ---- */
 const params = new URLSearchParams(location.search);

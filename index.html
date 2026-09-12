@@ -56,6 +56,10 @@
                 <label class="checkbox-row" id="detectBgRow" style="margin-top: 8px;">
                     <input type="checkbox" id="detectBackground" checked> 🌙 Arka planda indir (uygulama kapalıyken de sürer)
                 </label>
+                <p class="hint" id="floatHint">
+                    🪟 Alt çubuktaki pencere düğmesiyle indirme durumunu <strong>diğer uygulamaların üstünde</strong>
+                    yüzen mini pencerede tutabilirsiniz.
+                </p>
             </div>
 
             <div class="actions">
@@ -264,6 +268,7 @@
             <span class="taskbar-icon">⬇️</span>
             <span class="taskbar-text" id="taskbarText"></span>
             <span class="taskbar-percent" id="taskbarPercent"></span>
+            <button class="taskbar-toggle hidden" id="taskbarFloatBtn" title="Diğer uygulamaların üstünde mini pencere" aria-label="Üstte göster">🪟</button>
             <button class="taskbar-toggle" id="taskbarToggle" aria-label="İndirmeleri göster">▴</button>
         </div>
         <div class="taskbar-track"><div class="taskbar-fill" id="taskbarFill"></div></div>

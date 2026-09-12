@@ -9,6 +9,26 @@ let bar, barText, barPercent, barFill, barList, barToggle;
 const jobs = new Map();
 let expanded = false;
 let wakeLock = null;
+const listeners = new Set();
+
+/** İndirme durumu her değiştiğinde çağrılır; abonelikten çıkmak için dönen fonksiyonu çağırın. */
+export function subscribeDownloads(listener) {
+    listeners.add(listener);
+    listener(snapshot());
+    return () => listeners.delete(listener);
+}
+
+function snapshot() {
+    return [...jobs.values()].map((job) => ({
+        id: job.id,
+        name: job.name,
+        status: job.status,
+        detail: job.detail,
+        received: job.received,
+        total: job.total,
+        kind: job.kind
+    }));
+}
 
 /* ---------------- Hedefe yazma (disk veya bellek) ---------------- */
 
@@ -225,6 +245,9 @@ function render() {
     barList.classList.toggle('hidden', !expanded);
     barList.innerHTML = list.map(renderJob).join('');
     updateWakeLock(active.length > 0);
+
+    const state = snapshot();
+    listeners.forEach((listener) => listener(state));
 }
 
 function renderJob(job) {

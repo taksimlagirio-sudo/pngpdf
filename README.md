@@ -55,6 +55,21 @@ Netlify üzerinde statik site olarak yayınlanır.
 - Background Fetch'i desteklemeyen tarayıcılarda (Safari, Firefox) seçenek pasifleşir, indirme normal şekilde
   uygulama açıkken yapılır.
 
+## Diğer uygulamaların üstünde yüzen mini pencere
+
+Web sayfaları Android'deki gibi sistem üstü bir katman (overlay) çizemez; tarayıcıların böyle bir API'si yok.
+En yakın yol **resim-içinde-resim (PiP)**: indirme durumu bir canvas'a çizilip video akışına çevriliyor ve
+PiP penceresinde gösteriliyor. Android Chrome'da bu pencere uygulamadan çıkınca da **diğer uygulamaların
+üstünde yüzer**; masaüstü Chrome'da diğer pencerelerin üstünde kalır.
+
+- Alt çubuktaki **🪟** düğmesiyle açılır/kapanır (tarayıcı izni gereği bir dokunuş gerekir).
+- Pencerede dosya adı, yüzde, ilerleme çubuğu ve hız/kalan süre görünür; bittiğinde yeşile döner.
+- iOS Safari'de canvas akışıyla PiP desteklenmediği için düğme görünmez.
+- Sekme tamamen arka planda kalırsa tarayıcı zamanlayıcıları yavaşlatabilir; bu yüzden **gerçek** arka plan
+  göstergesi Background Fetch'in Android sistem bildirimidir. Yüzen pencere onun görsel tamamlayıcısıdır.
+- Sistem seviyesinde gerçek bir "diğer uygulamaların üstünde çubuk" (SYSTEM_ALERT_WINDOW) yalnızca yerel bir
+  Android uygulamasıyla (TWA/Capacitor sarmalayıcı + overlay izni) mümkündür; bu depo saf web uygulamasıdır.
+
 ## Yerele kaydetme
 
 - **💾 Doğrudan seçtiğim konuma kaydet** seçiliyse File System Access API ile dosya konumu sorulur ve veri
@@ -112,6 +127,7 @@ assets/js/util.js             # ortak yardımcılar (fetch, akış, canvas)
 assets/js/downloads.js        # indirme yöneticisi, alt çubuk, diske yazma, arka plan
 assets/js/detect.js           # tür/format algılama (magic number + başlıklar)
 assets/js/detect-tab.js       # "Algıla" sekmesi arayüzü
+assets/js/floatbar.js         # PiP ile yüzen mini indirme penceresi
 assets/js/pdf.js              # resim -> PDF
 assets/js/image.js            # resim -> JPG/PNG/WEBP
 assets/js/video.js            # doğrudan dosya indirici
