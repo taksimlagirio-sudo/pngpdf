@@ -46,9 +46,12 @@ Netlify üzerinde statik site olarak yayınlanır.
   oradan Fotoğraflar/Galeri veya Dosyalar'a kaydedebilirsiniz (Android ve iOS'ta çalışır; masaüstü
   tarayıcılarda düğme görünmez).
 - Resim dönüştürme ve PDF indirmeleri de çubukta görünür; onlar da paylaşılabilir.
-- **🌙 Arka planda indir** seçiliyken indirme service worker'a devredilir (Background Fetch): uygulamayı
-  kapatsanız bile sürer ve Android'de sistem indirme çubuğunda görünür. Kaynak siteye tarayıcıdan
-  doğrudan erişilemiyorsa (CORS) arka plan isteği otomatik olarak `/api/proxy` üzerinden yapılır. Bittiğinde uygulamaya döndüğünüzde
+- **🌙 Arka planda indir** (varsayılan **kapalı**, isteğe bağlı) seçiliyken indirme service worker'a devredilir
+  (Background Fetch): uygulamayı kapatsanız bile sürer ve Android'de sistem indirme çubuğunda görünür.
+  Kaynak siteye tarayıcıdan doğrudan erişilemiyorsa (CORS) arka plan isteği `/api/proxy` üzerinden yapılır.
+  Bu yol her sitede çalışmaz; bu yüzden **otomatik yedeklemesi** var: arka plan başarısız olursa ya da 25
+  saniye ilerleme olmazsa indirme kendiliğinden normal (uygulama açıkken) yola geçer, çubukta da
+  **⚡ Normal indir** düğmesi çıkar. Yani arka plan denemesi indirmeyi asla yarıda bırakmaz. Bittiğinde uygulamaya döndüğünüzde
   alt çubukta **💾 Kaydet** olarak belirir (dosya, siz kaydedene kadar önbellekte durur).
 - HLS'te arka plan yalnızca şifresiz, canlı olmayan ve 400 parçadan kısa yayınlarda kullanılır; diğerlerinde
   indirme uygulama açıkken sürer ve destekleyen cihazlarda ekran kilidi (wake lock) alınır.

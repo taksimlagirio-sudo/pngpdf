@@ -27,7 +27,12 @@ export async function downloadFile({
             name: fileName,
             total: size,
             thumb,
-            kind
+            kind,
+            // Arka plan takılır veya başarısız olursa indirme normal yoldan sürdürülür.
+            fallback: () => downloadFile({
+                url, name: fileName, mode, toDisk, background: false,
+                thumb, kind, mime, size, onProgress, onStage
+            })
         });
         if (job) {
             if (access === 'proxy') {

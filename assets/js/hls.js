@@ -159,7 +159,15 @@ export async function downloadHls({
         const access = await probeAccess(segments[0].url, mode);
         const rawUrls = (map ? [map.url] : []).concat(segments.map((s) => s.url));
         const urls = access === 'proxy' ? rawUrls.map((u) => proxyUrl(u)) : rawUrls;
-        const job = await startBackgroundDownload({ urls, name: fileName, thumb, kind: 'hls' });
+        const job = await startBackgroundDownload({
+            urls,
+            name: fileName,
+            thumb,
+            kind: 'hls',
+            fallback: () => downloadHls({
+                url, name, mode, toDisk, background: false, thumb, onStage, onProgress
+            })
+        });
         if (job) {
             onStage('Arka planda indiriliyor — uygulamayı kapatabilirsiniz.');
             return { type: 'background', fileName };

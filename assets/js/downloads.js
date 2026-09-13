@@ -106,6 +106,7 @@ export function initDownloadBar() {
         if (btn.dataset.act === 'cancel') job.cancel();
         if (btn.dataset.act === 'save') savePending(job);
         if (btn.dataset.act === 'share') shareJob(job);
+        if (btn.dataset.act === 'fallback') runFallback(job);
         if (btn.dataset.act === 'dismiss') removeJob(job);
     });
 
@@ -115,18 +116,23 @@ export function initDownloadBar() {
             if (data.type === 'bg-download-ready') addPendingSave(data.meta);
             if (data.type === 'bg-download-failed' || data.type === 'bg-download-aborted') {
                 const job = [...jobs.values()].find((j) => j.bgId === data.id);
-                if (job) {
-                    job.status = data.type === 'bg-download-aborted' ? 'cancelled' : 'error';
-                    job.detail = data.type === 'bg-download-aborted'
-                        ? 'İptal edildi'
-                        : 'Arka plan indirmesi başarısız (kaynak site izin vermiyor olabilir)';
+                if (!job) return;
+                if (data.type === 'bg-download-aborted') {
+                    job.status = 'cancelled';
+                    job.detail = 'İptal edildi';
                     render();
+                    return;
                 }
+                job.status = 'error';
+                job.detail = 'Arka plan indirmesi başarısız';
+                render();
+                runFallback(job); // varsa normal indirmeyle tekrar dene
             }
         });
         restorePendingSaves();
     }
 
+    startStallWatch();
     render();
 }
 
@@ -134,7 +140,7 @@ export function initDownloadBar() {
  * Yeni bir indirme/dönüştürme işi kaydeder.
  * `thumb` verilirse listede küçük önizleme gösterilir.
  */
-export function createJob(name, { onCancel, thumb = null, kind = 'file' } = {}) {
+export function createJob(name, { onCancel, thumb = null, kind = 'file', fallback = null } = {}) {
     const id = 'j' + Math.random().toString(36).slice(2);
     const job = {
         id,
@@ -146,7 +152,11 @@ export function createJob(name, { onCancel, thumb = null, kind = 'file' } = {}) 
         status: 'active',
         detail: '',
         blob: null,
+        fallback,
+        fallbackUsed: false,
+        stalled: false,
         started: Date.now(),
+        lastProgressAt: Date.now(),
         cancel() {
             if (job.status !== 'active') return;
             job.status = 'cancelled';
@@ -155,8 +165,10 @@ export function createJob(name, { onCancel, thumb = null, kind = 'file' } = {}) 
             render();
         },
         progress(received, total) {
+            if (received !== job.received) job.lastProgressAt = Date.now();
             job.received = received;
             job.total = total || job.total;
+            job.stalled = false;
             render();
         },
         setThumb(url) {
@@ -259,10 +271,16 @@ function renderJob(job) {
 
     const actions = [];
     if (job.status === 'active') {
+        if (job.stalled && job.fallback && !job.fallbackUsed) {
+            actions.push(`<button class="taskbar-act primary" data-job="${job.id}" data-act="fallback">⚡ Normal indir</button>`);
+        }
         actions.push(`<button class="taskbar-act" data-job="${job.id}" data-act="cancel">İptal</button>`);
     } else if (job.status === 'pending-save') {
         actions.push(`<button class="taskbar-act primary" data-job="${job.id}" data-act="save">💾 Kaydet</button>`);
     } else {
+        if (job.status === 'error' && job.fallback && !job.fallbackUsed) {
+            actions.push(`<button class="taskbar-act primary" data-job="${job.id}" data-act="fallback">⚡ Normal indir</button>`);
+        }
         if (job.blob && canShareFiles) {
             actions.push(`<button class="taskbar-act primary" data-job="${job.id}" data-act="share">📤 Galeriye kaydet</button>`);
         }
@@ -319,6 +337,42 @@ async function updateWakeLock(shouldHold) {
     } catch (_) { /* kilit alınamadıysa indirme yine de sürer */ }
 }
 
+/** Arka plan takılırsa/başarısız olursa aynı indirmeyi normal yoldan tekrar dener. */
+function runFallback(job) {
+    if (!job.fallback || job.fallbackUsed) return;
+    job.fallbackUsed = true;
+    try {
+        job.cancel(); // arka plan işini durdur (detay metnini kendi yazar)
+    } catch (_) { /* arka plan zaten bitmiş olabilir */ }
+    job.status = 'cancelled';
+    job.detail = 'Arka plan başarısız — normal indirmeye geçildi';
+    render();
+    Promise.resolve(job.fallback()).catch((err) => {
+        job.status = 'error';
+        job.detail = err && err.message ? err.message : 'İndirilemedi';
+        render();
+    });
+}
+
+// Arka planda uzun süre ilerleme olmazsa kullanıcıyı bekletmeyip uyarır.
+const STALL_MS = 25000;
+function startStallWatch() {
+    setInterval(() => {
+        let changed = false;
+        for (const job of jobs.values()) {
+            if (job.status !== 'active' || !job.bgId || job.stalled) continue;
+            if (Date.now() - (job.lastProgressAt || job.started) > STALL_MS) {
+                job.stalled = true;
+                job.detail = job.fallback
+                    ? 'Arka planda ilerleme yok — "Normal indir" ile deneyebilirsiniz.'
+                    : 'Arka planda ilerleme yok.';
+                changed = true;
+            }
+        }
+        if (changed) render();
+    }, 5000);
+}
+
 /** Bir önizleme adresi çubukta kullanılıyor mu? (erken revoke edilmesini önler) */
 export function isThumbInUse(url) {
     return [...jobs.values()].some((job) => job.thumb === url);
@@ -332,14 +386,14 @@ export const canBackgroundFetch = 'serviceWorker' in navigator && 'BackgroundFet
  * Dosyayı service worker üzerinden indirir: uygulama kapansa bile sürer ve
  * Android'de sistem indirme çubuğunda görünür. Kaydetme, kullanıcı döndüğünde yapılır.
  */
-export async function startBackgroundDownload({ urls, name, total = 0, thumb = null, kind = 'file' }) {
+export async function startBackgroundDownload({ urls, name, total = 0, thumb = null, kind = 'file', fallback = null }) {
     if (!canBackgroundFetch) return null;
 
     const registration = await navigator.serviceWorker.ready;
     if (!registration.backgroundFetch) return null;
 
     const bgId = `dl-${Date.now()}::${name}`;
-    const job = createJob(name, { thumb, kind });
+    const job = createJob(name, { thumb, kind, fallback });
     job.bgId = bgId;
     job.setDetail('Arka planda indiriliyor...');
 
