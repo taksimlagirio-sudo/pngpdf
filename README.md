@@ -32,8 +32,15 @@ Netlify üzerinde statik site olarak yayınlanır.
   önizleme (poster) üretilir** ve bu görsel indirme çubuğunda da kullanılır. Süre ve çözünürlük okunur.
   (Doğrudan erişimde CORS izni yoksa kare proxy üzerinden alınır; HLS yayınlarında kare üretilmez.)
 - HLS'te parça sayısı, süre, kapsayıcı (TS/fMP4) ve şifreleme durumu gösterilir.
-- Adres bir **web sayfasıysa** indirme kapatılır ve sayfa kaynağındaki `.m3u8`, `.mp4`, `.webm`, `.mp3`
-  bağlantıları listelenir; birine dokunup onu analiz edebilirsiniz.
+- Adres bir **web sayfasıysa** sayfanın tamamı indirilip medya aranır: düz adresler, `src`/`href`/`content`/
+  `data-*` nitelikleri, JSON içindeki kaçışlı adresler (`http:\/\/…`, `\u002F`) ve oynatıcı
+  yapılandırmalarındaki `file`/`hlsUrl`/`playbackUrl` gibi anahtarlar taranır (m3u8, mpd, mp4, webm, mov,
+  mkv, mp3, m4a, aac, ogg, wav, flac). Sayfada bir şey çıkmazsa sayfanın yüklediği ilk birkaç **script
+  dosyası** da taranır. **Tek bir medya bulunursa doğrudan o açılır**, birkaç tane varsa liste çıkar;
+  `<iframe>` gömülüleri de taranmak üzere listelenir.
+- Medya JavaScript ile çalışma anında üretiliyorsa (ya da YouTube/Vimeo gibi platformlarda) kaynak
+  taramada çıkmaz; bu durumda ne yapılacağı (tarayıcının Ağ sekmesinden .m3u8/.mp4 adresini kopyalama)
+  ekranda yazar.
 - **DRM korumalı** yayınlarda indirme düğmesi çıkmaz, sebebi yazılır.
 - Master playlist algılanırsa kalite listesi çıkar; seçtiğiniz kalite indirilir.
 

@@ -29,6 +29,7 @@ export function initDetectTab() {
 
     let current = null;
     let previewUrl = null;
+    let autoHops = 0; // sayfadan medyaya otomatik geçişte sonsuz döngüyü engeller
 
     if (!canSaveToDisk) {
         const row = $('detectDiskRow');
@@ -100,6 +101,16 @@ export function initDetectTab() {
             current = info;
             progress.hide();
             renderResult(info);
+
+            // Sayfada tek bir medya bulunduysa doğrudan onu analiz et.
+            const links = info.details.links || [];
+            if (info.target === 'page' && links.length === 1 && autoHops < 2) {
+                autoHops++;
+                progress.show('Sayfadaki medya açılıyor...');
+                progress.set(null);
+                return analyze(links[0].url);
+            }
+            autoHops = 0;
         } catch (err) {
             console.error(err);
             progress.setTitle('❌ Algılanamadı');
@@ -117,6 +128,7 @@ export function initDetectTab() {
         const meta = KIND_LABELS[info.kind] || KIND_LABELS.unknown;
         const rows = [];
 
+        if (info.details.title) rows.push(['Sayfa başlığı', info.details.title]);
         rows.push(['Format', info.format + (info.headerType ? ` (${info.headerType})` : '')]);
         // HLS'te content-length yalnızca playlist metnini gösterir; yanıltmamak için atlanır.
         if (info.target !== 'hls') rows.push(['Boyut', info.sizeText]);
@@ -155,14 +167,27 @@ export function initDetectTab() {
 
         let links = '';
         if (info.details.links) {
-            links = info.details.links.length
-                ? `<p class="hint">Sayfada bulunan medya bağlantıları:</p><div class="variant-list">${
-                    info.details.links.map((l) => `
-                        <button class="variant" data-act="analyze-link" data-url="${escapeHtml(l.url)}">
-                            <span>${l.kind === 'hls' ? '📡' : '🎬'} ${escapeHtml(l.url.slice(0, 80))}</span><span>🔎</span>
-                        </button>`).join('')
-                }</div>`
-                : '<p class="hint">Sayfa kaynağında doğrudan medya bağlantısı bulunamadı.</p>';
+            const list = info.details.links;
+            const embeds = info.details.embeds || [];
+            const icon = { hls: '📡', video: '🎬', audio: '🎵', dash: '📺' };
+
+            if (list.length) {
+                links = `<p class="hint">🔎 Sayfada <strong>${list.length}</strong> medya bağlantısı bulundu${
+                    info.details.fromScripts ? ' (sayfanın script dosyalarında)' : ''
+                } — indirmek için birine dokunun:</p>
+                <div class="variant-list">${list.map((l) => `
+                    <button class="variant" data-act="analyze-link" data-url="${escapeHtml(l.url)}">
+                        <span>${icon[l.kind] || '📄'} ${escapeHtml(shortUrl(l.url))}</span><span>🔎</span>
+                    </button>`).join('')}</div>`;
+            }
+
+            if (embeds.length) {
+                links += `<p class="hint">🖼️ Sayfadaki gömülü oynatıcılar (içindekini taramak için dokunun):</p>
+                <div class="variant-list">${embeds.map((e) => `
+                    <button class="variant" data-act="analyze-link" data-url="${escapeHtml(e.url)}">
+                        <span>▶️ ${escapeHtml(e.host)}</span><span>🔎</span>
+                    </button>`).join('')}</div>`;
+            }
         }
 
         resultBox.innerHTML = `
@@ -252,6 +277,17 @@ export function initDetectTab() {
                 progress.set(0);
                 progress.setDetail(err.message, true);
             }
+        }
+    }
+
+    /** Uzun adresleri listede okunur kısaltır. */
+    function shortUrl(url) {
+        try {
+            const { hostname, pathname } = new URL(url);
+            const file = pathname.split('/').filter(Boolean).pop() || pathname;
+            return `${hostname}/…/${decodeURIComponent(file).slice(0, 48)}`;
+        } catch (_) {
+            return url.slice(0, 70);
         }
     }
 

@@ -36,28 +36,85 @@ export function sniffFormat(bytes) {
     return null;
 }
 
-// HTML sayfasının içindeki medya adreslerini toplar.
-export function findMediaLinks(html, baseUrl) {
+const MEDIA_EXT = 'm3u8|mpd|mp4|m4v|webm|mov|mkv|mp3|m4a|aac|ogg|wav|flac';
+
+const EMBED_HOSTS = [
+    { test: /youtube\.com|youtu\.be/i, name: 'YouTube' },
+    { test: /vimeo\.com/i, name: 'Vimeo' },
+    { test: /dailymotion\.com/i, name: 'Dailymotion' }
+];
+
+function kindForUrl(url) {
+    if (/\.m3u8(\?|$)/i.test(url)) return 'hls';
+    if (/\.mpd(\?|$)/i.test(url)) return 'dash';
+    if (/\.(mp3|m4a|aac|ogg|wav|flac)(\?|$)/i.test(url)) return 'audio';
+    return 'video';
+}
+
+const RANK = { hls: 0, video: 1, dash: 2, audio: 3 };
+
+/**
+ * Sayfa kaynağındaki medya adreslerini toplar.
+ * Kaçışlı (\/ ve \u002F) JSON adresleri, meta etiketleri ve oynatıcı yapılandırmaları da taranır.
+ */
+export function findMediaLinks(html, baseUrl, { limit = 20 } = {}) {
+    // JSON içine gömülü adresler kaçışlı yazılır; taramadan önce düzleştiriyoruz.
+    const flat = html
+        .replace(/\\u002[fF]/g, '/')
+        .replace(/\\\//g, '/')
+        .replace(/&amp;/g, '&');
+
     const found = new Map();
+    const add = (raw) => {
+        if (!raw || found.size >= limit) return;
+        const cleaned = raw.trim().replace(/\\+$/, '').replace(/["'\s]+$/, '');
+        if (!cleaned || cleaned.startsWith('data:') || cleaned.startsWith('blob:')) return;
+        // Düzleştirmeden sonra kalan ters bölü bozuk adres demektir ("/\..." host sanılıyor).
+        if (cleaned.includes('\\')) return;
+        try {
+            const url = new URL(cleaned, baseUrl).href;
+            if (!/^https?:/.test(url)) return;
+            if (!found.has(url)) found.set(url, kindForUrl(url));
+        } catch (_) { /* bozuk adres */ }
+    };
+
     const patterns = [
-        /https?:\/\/[^"'\s\\<>]+?\.m3u8[^"'\s\\<>]*/gi,
-        /https?:\/\/[^"'\s\\<>]+?\.mp4[^"'\s\\<>]*/gi,
-        /https?:\/\/[^"'\s\\<>]+?\.(?:webm|mov|m4v|mp3|m4a)[^"'\s\\<>]*/gi,
-        /(?:src|href|content)=["']([^"']+?\.(?:m3u8|mp4|webm|mov|mp3))["']/gi
+        // Düz metin/JSON içindeki tam adresler
+        new RegExp(`https?://[^"'\\s<>\\\\)]+?\\.(?:${MEDIA_EXT})(?:\\?[^"'\\s<>\\\\)]*)?`, 'gi'),
+        // src / href / content / data-* nitelikleri (göreli adresler dahil)
+        new RegExp(`(?:src|href|content|data-src|data-video|data-url|data-file)=["']([^"']+?\\.(?:${MEDIA_EXT})(?:\\?[^"']*)?)["']`, 'gi'),
+        // Oynatıcı yapılandırmalarındaki anahtarlar: "file": "...", "url": "...", hlsUrl, playbackUrl
+        // JS/JSON anahtarları tırnaklı da olabilir tırnaksız da: {file:"..."} / {"file":"..."}
+        new RegExp(`["']?(?:file|url|src|source|hlsUrl|hls|playbackUrl|contentUrl|videoUrl|streamUrl|manifestUrl|mediaUrl)["']?\\s*:\\s*["']([^"']+?\\.(?:${MEDIA_EXT})(?:\\?[^"']*)?)["']`, 'gi')
     ];
 
     for (const pattern of patterns) {
         let match;
-        while ((match = pattern.exec(html)) !== null) {
-            const raw = (match[1] || match[0]).replace(/\\\//g, '/');
-            try {
-                const url = new URL(raw, baseUrl).href;
-                if (!found.has(url)) found.set(url, url.includes('.m3u8') ? 'hls' : 'video');
-            } catch (_) { /* bozuk adres */ }
-            if (found.size >= 12) break;
+        while ((match = pattern.exec(flat)) !== null && found.size < limit) {
+            add(match[1] || match[0]);
         }
     }
-    return [...found].map(([url, kind]) => ({ url, kind }));
+
+    return [...found]
+        .map(([url, kind]) => ({ url, kind }))
+        .sort((a, b) => RANK[a.kind] - RANK[b.kind]);
+}
+
+/** Sayfadaki <iframe> gömülülerini (oynatıcı sayfaları) toplar. */
+export function findEmbeds(html, baseUrl) {
+    const embeds = [];
+    const re = /<iframe[^>]+src=["']([^"']+)["']/gi;
+    let match;
+    while ((match = re.exec(html)) !== null && embeds.length < 6) {
+        try {
+            const url = new URL(match[1], baseUrl).href;
+            if (/^https?:/.test(url)) {
+                const known = EMBED_HOSTS.find((h) => h.test.test(url));
+                embeds.push({ url, host: known ? known.name : new URL(url).hostname });
+            }
+        } catch (_) { /* bozuk adres */ }
+    }
+    return embeds;
 }
 
 /**
@@ -115,12 +172,8 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
     } else if (info.kind === 'page') {
         result.downloadable = false;
         result.target = 'page';
-        result.warnings.push('Bu adres bir web sayfası, doğrudan medya dosyası değil.');
-        onStage('Sayfadaki medya bağlantıları aranıyor...');
-        const html = new TextDecoder().decode(head);
-        result.details.links = findMediaLinks(html, url);
-        const title = (html.match(/<title[^>]*>([^<]{0,120})/i) || [])[1];
-        if (title) result.details.title = title.trim();
+        onStage('Sayfadaki medya aranıyor...');
+        await scanPage(result, url, mode, signal, onStage);
     } else if (info.kind === 'dash') {
         result.downloadable = false;
         result.warnings.push('DASH (.mpd) yayınları bu araçta desteklenmiyor; HLS (.m3u8) adresi varsa onu kullanın.');
@@ -133,6 +186,67 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
     }
 
     return result;
+}
+
+/** Sayfayı (ve gerekirse script dosyalarını) tarayıp medya adreslerini bulur. */
+async function scanPage(result, url, mode, signal, onStage) {
+    const res = await smartFetch(url, { mode, init: { signal } });
+    const html = await res.text();
+
+    const title = (html.match(/<title[^>]*>([^<]{0,160})/i) || [])[1];
+    if (title) result.details.title = title.trim();
+
+    let links = findMediaLinks(html, url);
+    const embeds = findEmbeds(html, url);
+
+    // Sayfada bulunamadıysa sayfanın yüklediği script dosyalarına bak.
+    if (links.length === 0) {
+        onStage('Sayfanın script dosyaları taranıyor...');
+        links = await scanScripts(html, url, mode, signal);
+        if (links.length) result.details.fromScripts = true;
+    }
+
+    result.details.links = links;
+    result.details.embeds = embeds;
+
+    if (links.length === 0) {
+        const known = embeds.find((e) => ['YouTube', 'Vimeo', 'Dailymotion'].includes(e.host));
+        result.warnings.push(known
+            ? `Sayfada ${known.host} oynatıcısı var; bu platformlar doğrudan dosya adresi vermez.`
+            : 'Sayfa kaynağında medya adresi bulunamadı. Medya büyük ihtimalle oynatma sırasında ' +
+              'JavaScript ile yükleniyor: videoyu başlatıp tarayıcının geliştirici araçlarındaki Ağ ' +
+              'sekmesinden .m3u8 veya .mp4 adresini kopyalayıp buraya yapıştırın.');
+    }
+}
+
+const MAX_SCRIPTS = 4;
+const MAX_SCRIPT_BYTES = 2 * 1024 * 1024;
+
+async function scanScripts(html, baseUrl, mode, signal) {
+    const sources = [];
+    const re = /<script[^>]+src=["']([^"']+)["']/gi;
+    let match;
+    while ((match = re.exec(html)) !== null && sources.length < MAX_SCRIPTS) {
+        try {
+            sources.push(new URL(match[1], baseUrl).href);
+        } catch (_) { /* bozuk adres */ }
+    }
+
+    const results = await Promise.all(sources.map(async (src) => {
+        try {
+            const res = await smartFetch(src, { mode, init: { signal } });
+            const size = Number(res.headers.get('content-length')) || 0;
+            if (size > MAX_SCRIPT_BYTES) return [];
+            const text = await res.text();
+            return findMediaLinks(text, baseUrl, { limit: 10 });
+        } catch (_) {
+            return [];
+        }
+    }));
+
+    const merged = new Map();
+    results.flat().forEach((item) => merged.set(item.url, item));
+    return [...merged.values()];
 }
 
 function fromMimeType(type) {
