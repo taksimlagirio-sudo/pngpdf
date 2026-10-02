@@ -1,5 +1,5 @@
 // Service worker: çevrimdışı kabuk + arka plan indirmeleri (Background Fetch)
-const VERSION = 'v5';
+const VERSION = 'v6';
 const SHELL_CACHE = `shell-${VERSION}`;
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -66,16 +66,17 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
+    // Önce ağ: sayfa ile JS/CSS her zaman aynı sürümden gelsin (önbellekten eski JS + yeni sayfa
+    // karışımı hatalara yol açıyordu). Çevrimdışıyken önbellekteki kopya kullanılır.
     event.respondWith((async () => {
         const cache = await caches.open(SHELL_CACHE);
-        const cached = await cache.match(request, { ignoreSearch: true });
-        const network = fetch(request)
-            .then((response) => {
-                if (response.ok) cache.put(request, response.clone());
-                return response;
-            })
-            .catch(() => null);
-        return cached || (await network) || Response.error();
+        try {
+            const response = await fetch(request);
+            if (response.ok) cache.put(request, response.clone());
+            return response;
+        } catch (_) {
+            return (await cache.match(request, { ignoreSearch: true })) || Response.error();
+        }
     })());
 });
 

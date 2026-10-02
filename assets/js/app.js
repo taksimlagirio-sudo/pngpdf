@@ -77,6 +77,20 @@ activate(tabs.some((t) => t.dataset.tab === initialTab) ? initialTab : 'detect')
 
 /* ---- Service worker ---- */
 if ('serviceWorker' in navigator) {
+    // Yeni sürüm yüklenip kontrolü devralınca sayfayı bir kez yenile; yoksa bellekteki eski kod
+    // yeni sunucu davranışıyla karışır. İlk kurulumda (önceden kontrolcü yokken) yenileme yapılmaz.
+    let hasController = Boolean(navigator.serviceWorker.controller);
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hasController) {
+            hasController = true; // ilk kurulumda devralma: sayfa zaten güncel, yenileme gerekmez
+            return;
+        }
+        if (reloading) return;
+        reloading = true;
+        location.reload();
+    });
+
     window.addEventListener('load', () => {
         navigator.serviceWorker.register('sw.js').catch((err) => console.warn('SW kaydı başarısız:', err));
     });

@@ -226,7 +226,8 @@ async function scanPage(result, url, mode, signal, onStage) {
         if (links.length) result.details.fromScripts = true;
     }
 
-    result.details.links = links;
+    result.details.links = links.filter((l) => l.url !== url);
+    links = result.details.links;
 
     if (links.length === 0) {
         const known = embeds.find((e) => ['YouTube', 'Vimeo', 'Dailymotion'].includes(e.host));
@@ -273,6 +274,7 @@ async function sniffOnServer(result, url, signal, onStage) {
         for (const item of result.details.links || []) {
             if (!merged.has(item.url)) merged.set(item.url, item);
         }
+        merged.delete(url); // sayfanın kendisi medya değil; listede olursa aynı ekrana döner
         result.details.links = [...merged.values()];
         result.details.fromRender = sniffed.items.length > 0;
         result.details.renderImages = sniffed.items.filter((i) => i.kind === 'image').length;

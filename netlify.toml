@@ -2,10 +2,9 @@
   publish = "."
   command = ""
 
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
+# Bilinmeyen adresler için "ana sayfayı göster" yönlendirmesi bilerek YOK: uygulama tek sayfa
+# ve #sekme ile çalışıyor; o kural silinmiş/eski adreslere (ör. /api/proxy) 404 yerine uygulamanın
+# kendi sayfasını döndürüp Algıla'yı yanıltıyordu.
 
 # Service worker her zaman taze alınmalı, yoksa güncellemeler kullanıcıya ulaşmaz.
 [[headers]]
