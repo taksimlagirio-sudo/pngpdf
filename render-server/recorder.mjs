@@ -10,7 +10,7 @@ import vm from 'node:vm';
 import { randomBytes, createDecipheriv } from 'node:crypto';
 import { Mp4Builder } from '../assets/js/mp4mux.mjs';
 
-const MAX_ACTIVE = 4;
+const MAX_ACTIVE = Number(process.env.MAX_RECORDINGS) || 8;
 const SEGMENT_RETRY = 3;
 const PLAYLIST_FAILURES_LIMIT = 8;
 const KEEP_FINISHED_MS = 48 * 60 * 60 * 1000;
@@ -109,7 +109,7 @@ function loadMux(appRoot) {
 const sameBytes = (a, b) => a && b && a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** Dosyaya sarılabilir MP4 yazan birleştirici (uygulamadaki createMuxer'ın sunucu karşılığı). */
-async function createMuxer(file, appRoot) {
+export async function createMuxer(file, appRoot) {
     const fd = fs.openSync(file, 'w');
     let pos = 0;
     const builder = new Mp4Builder({

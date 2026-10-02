@@ -13,11 +13,12 @@
 // Oynatıcı MediaSource kullanmıyorsa (düz <video src>) dosya, tarayıcının oturumuyla indirilir.
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createDecipheriv } from 'node:crypto';
 import { mergeFmp4 } from './fmp4.mjs';
+import { parsePlaylist, createMuxer } from './recorder.mjs';
 import { installRouting, guardNavigation } from './adblock.mjs';
 
-const MAX_ACTIVE = 2;
+const MAX_ACTIVE = Number(process.env.MAX_CAPTURES) || 4;
 const SPEED = 16;                 // Chrome'un izin verdiği en yüksek oynatma hızı
 const TICK_MS = 700;
 const PLAYER_TIMEOUT_MS = 25000;  // temiz oynatıcıda veri gelmezse sayfaya geç
@@ -144,6 +145,7 @@ const ERROR_TEXT = {
  * @param {object} deps
  * @param {string} deps.dir
  * @param {() => Promise<any>} deps.getBrowser
+ * @param {object} [deps.logins]  sunucu tarayıcısında saklanan girişler (logins.mjs)
  * @param {(page: any, started: number, state: object) => Promise<void>} deps.nudgePlayback
  * @param {(url: URL) => Promise<void>} deps.assertPublicTarget
  * @param {(url: string) => string} deps.refererFor
@@ -151,7 +153,7 @@ const ERROR_TEXT = {
  * @param {string} deps.hlsScript  hls.min.js dosyasının yolu
  * @param {() => Promise<{h264: boolean}>} deps.codecSupport
  */
-export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTarget, refererFor, userAgent, hlsScript, codecSupport }) {
+export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback, assertPublicTarget, refererFor, userAgent, hlsScript, codecSupport }) {
     fs.mkdirSync(dir, { recursive: true });
     const captures = new Map();
     const metaFile = (id) => path.join(dir, `${id}.json`);
@@ -193,10 +195,12 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
     async function run(cap) {
         const browser = await getBrowser();
         const context = await browser.newContext({
+            storageState: logins?.storageState(),
             userAgent,
             viewport: { width: 1280, height: 720 },
             bypassCSP: true // temiz oynatıcıyı sitenin sayfasına yerleştirebilmek için
         });
+        logins?.attach(context);
         cap.context = context;
         const tracks = new Map(); // SourceBuffer kimliği → {mime, ms, fd, file, bytes}
         const msBytes = new Map();
@@ -278,7 +282,7 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
                         cap.state = 'capturing'; // kullanıcı başlattı
                         persist(cap);
                     }
-                    progressive = downloadProgressive(context, video.src, videoFrame.url() || page.url(), cap)
+                    progressive = downloadProgressive(context, video.src, { referer: videoFrame.url() || page.url() }, cap)
                         .catch((err) => { cap.progressiveError = err.message; });
                     videoFrame.evaluate(() => document.querySelectorAll('video').forEach((v) => v.pause())).catch(() => {});
                 }
@@ -325,11 +329,19 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
         };
 
         try {
-            const attempts = [];
-            if (cap.mediaUrl) attempts.push('player');
-            if (cap.pageUrl) attempts.push('page');
             let result = 'nostart';
-            for (const attempt of attempts) {
+            const attempts = [];
+            if (cap.mediaUrl) {
+                // 1) Bağlantıyı tarayıcıya istet; geçerse aynı başlık/çerezlerle oynatmadan indir
+                //    (kodek desteği gerekmez, ağ hızında).
+                cap.phase = 'Bağlantı deneniyor';
+                const direct = await tryDirect(page, context, cap, (on) => { playerMode = on; });
+                if (direct === 'done') result = 'done';
+                // Tarayıcının kendi isteği de reddedildiyse oynatıcıda açmak işe yaramaz.
+                else if (!(cap.directStatus >= 400)) attempts.push('player');
+            }
+            if (cap.pageUrl) attempts.push('page');
+            for (const attempt of result === 'done' ? [] : attempts) {
                 if (attempt === 'player') {
                     cap.phase = 'Video açılıyor';
                     playerMode = true;
@@ -356,9 +368,12 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
                 cap.warning = cap.lastFailure || '';
                 persist(cap);
                 result = await playLoop({ timeoutMs: USER_TIMEOUT_MS, nudge: false, waitingUser: true });
-                if (result === 'nostart') throw new Error('Video başlatılmadı (5 dakika beklendi). ' + (cap.lastFailure || ''));
+                if (result === 'nostart') {
+                    throw new Error('Video başlatılmadı (5 dakika beklendi). ' +
+                        (cap.directStatus >= 400 ? directReason(cap.directStatus, true, cap.sameDevice) : (cap.lastFailure || '')));
+                }
             } else if (result === 'nostart') {
-                throw new Error(cap.lastFailure || 'Video oynatılamadı');
+                throw new Error(cap.directStatus >= 400 ? directReason(cap.directStatus, Boolean(cap.pageUrl), cap.sameDevice) : (cap.lastFailure || 'Video oynatılamadı'));
             }
 
             cap.state = 'capturing';
@@ -396,6 +411,7 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
             for (const track of tracks.values()) {
                 try { fs.closeSync(track.fd); } catch (_) { /* zaten kapalı */ }
             }
+            if (!cap.cancelled) await logins?.save(context);
             await context.close().catch(() => {});
             cap.context = null;
             cap.page = null;
@@ -438,7 +454,160 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
     }
 
     /** Düz video dosyasını tarayıcının çerezleriyle, parça parça (Range) indirir. */
-    async function downloadProgressive(context, src, referer, cap) {
+    /**
+     * Videonun adresini tarayıcıya istetir (önce sayfa/Referer kökeni açılır ki çerezler otursun).
+     * İstek geçerse dosya ya da HLS yayını, tarayıcının o isteğindeki başlıklarla oynatmadan indirilir.
+     * Dönüş: 'done' | 'failed' (cap.directStatus son HTTP durumunu tutar).
+     */
+    async function tryDirect(page, context, cap, setPlayerMode) {
+        const isHls = cap.kind === 'hls' || /\.m3u8(\?|$)/i.test(cap.mediaUrl);
+        const origin = new URL(cap.mediaUrl).origin + '/';
+        const bases = [...new Set([cap.pageUrl, refererFor(cap.mediaUrl), origin].filter(Boolean))];
+        for (const base of bases) {
+            if (cap.cancelled) throw new Error('iptal');
+            await page.goto(base, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+            const waiter = page.waitForResponse((r) => sameResource(r.url(), cap.mediaUrl), { timeout: 15000 }).catch(() => null);
+            if (isHls) {
+                setPlayerMode(true); // başka kökene fetch: sunucu tarafında alınıp CORS izniyle verilir
+                await page.evaluate((u) => { fetch(u, { credentials: 'include' }).catch(() => {}); }, cap.mediaUrl).catch(() => {});
+            } else {
+                const src = cap.mediaUrl.replace(/"/g, '&quot;');
+                await page.setContent(`<video preload="auto" muted src="${src}"></video>`).catch(() => {});
+            }
+            const response = await waiter;
+            setPlayerMode(false);
+            if (!response) continue;
+            cap.directStatus = response.status();
+            if (cap.directStatus >= 400) continue;
+            const headers = replayHeaders(await response.request().allHeaders().catch(() => ({})));
+            if (isHls) {
+                const text = await response.text().catch(() => '');
+                if (!text.includes('#EXTM3U')) continue;
+                const done = await downloadHlsDirect(context, cap, text, headers);
+                if (done) return 'done';
+                return 'failed'; // canlı yayın: oynatıcıyla yakalanır
+            }
+            await page.goto('about:blank').catch(() => {}); // tarayıcının kendi ön yüklemesini durdur
+            // Uzantısız bağlantı aslında HLS playlist'i olabilir (türünden ya da içeriğinden anlaşılır).
+            const type = (response.headers()['content-type'] || '').toLowerCase();
+            const head = await context.request.get(cap.mediaUrl, { headers: { ...headers, range: 'bytes=0-2047' }, timeout: 30000 })
+                .then((r) => (r.status() < 400 ? r.body() : Buffer.alloc(0))).catch(() => Buffer.alloc(0));
+            if (/mpegurl/.test(type) || head.toString('latin1', 0, 7) === '#EXTM3U') {
+                const full = await context.request.get(cap.mediaUrl, { headers, timeout: 30000 });
+                const text = full.status() < 400 ? (await full.body()).toString('utf8') : '';
+                if (text.includes('#EXTM3U') && await downloadHlsDirect(context, cap, text, headers)) return 'done';
+                return 'failed';
+            }
+            await downloadProgressive(context, cap.mediaUrl, headers, cap);
+            cap.reason = cap.stopRequested ? 'durduruldu' : 'video indirildi';
+            return 'done';
+        }
+        return 'failed';
+    }
+
+    /** HLS (VOD): parçalar tarayıcının başlık/çerezleriyle indirilip tek, sarılabilir MP4'e yazılır. */
+    async function downloadHlsDirect(context, cap, text, headers) {
+        const get = async (url, range) => {
+            const h = { ...headers };
+            if (range) h.range = `bytes=${range.offset}-${range.offset + range.length - 1}`;
+            const res = await context.request.get(url, { headers: h, timeout: 60000 });
+            if (res.status() >= 400) throw new Error(`Parça alınamadı (HTTP ${res.status()})`);
+            return res.body();
+        };
+        let playlist = parsePlaylist(text, cap.mediaUrl);
+        let audioUrl = null;
+        if (playlist.type === 'master') {
+            const best = playlist.variants[0];
+            const group = playlist.audio[best.audioGroup] || [];
+            const audio = group.find((a) => a.isDefault) || group[0];
+            if (audio) audioUrl = audio.url;
+            playlist = parsePlaylist((await get(best.url)).toString('utf8'), best.url);
+        }
+        if (playlist.type !== 'media' || playlist.isLive) return false;
+        const streams = [{ id: 'v', playlist }];
+        if (audioUrl) streams.push({ id: 'a', playlist: parsePlaylist((await get(audioUrl)).toString('utf8'), audioUrl) });
+        for (const st of streams) {
+            const drm = st.playlist.segments.find((x) => x.key && x.key.method !== 'AES-128');
+            if (drm) throw new Error(`Video DRM ile korunuyor (${drm.key.method}); kaydedilemez`);
+            let t = 0;
+            for (const seg of st.playlist.segments) {
+                seg.start = t;
+                t += seg.duration;
+            }
+            if (st.id === 'v') cap.duration = t;
+        }
+        const items = streams.flatMap((st) => st.playlist.segments.map((seg) => ({ stream: st.id, seg })))
+            .sort((a, b) => (a.seg.start - b.seg.start) || (a.stream === 'v' ? -1 : 1));
+
+        const file = path.join(cap.work, 'hls.mp4');
+        const muxer = await createMuxer(file, appRoot);
+        const keys = new Map();
+        const maps = new Map();
+        const fetchItem = async ({ seg }) => {
+            let map = null;
+            if (seg.map) {
+                if (!maps.has(seg.map.url)) maps.set(seg.map.url, await get(seg.map.url, seg.map.range));
+                map = maps.get(seg.map.url);
+            }
+            let data = await get(seg.url, seg.range);
+            if (seg.key) {
+                if (!keys.has(seg.key.uri)) keys.set(seg.key.uri, await get(seg.key.uri));
+                const iv = Buffer.alloc(16);
+                if (seg.key.iv) Buffer.from(seg.key.iv.replace(/^0x/i, ''), 'hex').copy(iv);
+                else iv.writeUInt32BE(seg.seq >>> 0, 12);
+                const decipher = createDecipheriv('aes-128-cbc', keys.get(seg.key.uri), iv);
+                data = Buffer.concat([decipher.update(data), decipher.final()]);
+            }
+            return { data, map };
+        };
+
+        cap.phase = 'Kaydediliyor';
+        let cursor = 0;
+        let next = 0;
+        const ready = new Map();
+        let writing = Promise.resolve();
+        let sample = { at: Date.now(), time: 0 };
+        const worker = async () => {
+            for (;;) {
+                if (cap.cancelled) throw new Error('iptal');
+                if (cap.stopRequested) return;
+                const index = cursor++;
+                if (index >= items.length) return;
+                ready.set(index, await fetchItem(items[index]));
+                writing = writing.then(async () => {
+                    while (ready.has(next)) {
+                        const { data, map } = ready.get(next);
+                        ready.delete(next);
+                        await muxer.push(items[next].stream, data, map);
+                        cap.bytes += data.length;
+                        next++;
+                    }
+                    cap.mediaSec = muxer.builder.duration;
+                    const now = Date.now();
+                    if (now - sample.at >= 2000) {
+                        cap.speed = (cap.mediaSec - sample.time) / ((now - sample.at) / 1000);
+                        sample = { at: now, time: cap.mediaSec };
+                    }
+                });
+                await writing;
+            }
+        };
+        try {
+            await Promise.all(Array.from({ length: Math.min(4, items.length) }, worker));
+            await writing;
+            const result = await muxer.finish();
+            cap.mediaSec = result.duration;
+            cap.hlsFile = file;
+            cap.hlsExt = result.hasVideo ? 'mp4' : 'm4a';
+            cap.reason = cap.stopRequested ? 'durduruldu' : 'video indirildi';
+            return true;
+        } catch (err) {
+            muxer.close();
+            throw err;
+        }
+    }
+
+    async function downloadProgressive(context, src, baseHeaders, cap) {
         const file = path.join(cap.work, 'direct.bin');
         const fd = fs.openSync(file, 'w');
         cap.directFile = file;
@@ -449,12 +618,14 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
             for (;;) {
                 if (cap.cancelled || cap.stopRequested) break;
                 const end = offset + RANGE_CHUNK - 1;
+                const headers = { ...baseHeaders, range: `bytes=${offset}-${end}` };
+                if (!headers.referer && refererFor(src)) headers.referer = refererFor(src);
                 const res = await context.request.get(src, {
-                    headers: { range: `bytes=${offset}-${end}`, referer: referer || refererFor(src) || '' },
+                    headers,
                     timeout: 60000
                 });
                 const status = res.status();
-                if (status !== 200 && status !== 206) throw new Error(`Video sunucusu erişimi reddetti (HTTP ${status})`);
+                if (status !== 200 && status !== 206) throw new Error(directReason(status, Boolean(cap.pageUrl), cap.sameDevice));
                 const body = await res.body();
                 fs.writeSync(fd, body, 0, body.length, offset);
                 offset += body.length;
@@ -475,7 +646,10 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
 
     async function finalize(cap, tracks, msBytes) {
         const out = path.join(dir, `${cap.id}.out`);
-        if (cap.directFile && fs.existsSync(cap.directFile) && fs.statSync(cap.directFile).size > 0) {
+        if (cap.hlsFile && fs.existsSync(cap.hlsFile)) {
+            fs.renameSync(cap.hlsFile, out);
+            cap.ext = cap.hlsExt || 'mp4';
+        } else if (cap.directFile && fs.existsSync(cap.directFile) && fs.statSync(cap.directFile).size > 0) {
             const type = cap.directType || '';
             cap.ext = /webm/.test(type) ? 'webm' : /audio/.test(type) ? 'm4a' : 'mp4';
             fs.renameSync(cap.directFile, out);
@@ -517,7 +691,7 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
          * pageUrl: videonun bulunduğu sayfa (biliniyorsa). mediaUrl: videonun/yayının kendi adresi.
          * Eski istemciler için `url` sayfa adresi sayılır.
          */
-        async start({ url, pageUrl, mediaUrl, kind, name, maxSec }) {
+        async start({ url, pageUrl, mediaUrl, kind, name, maxSec, sameDevice }) {
             pageUrl = pageUrl || (!mediaUrl ? url : '');
             if (!pageUrl && !mediaUrl) throw new Error('Adres gerekli');
             for (const u of [pageUrl, mediaUrl]) if (u) await assertPublicTarget(new URL(u));
@@ -532,7 +706,7 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
                 kind: kind || '', baseName, fileName: `${baseName}.mp4`, file: '', ext: 'mp4', work,
                 state: 'capturing', phase: 'Başlıyor', startedAt: Date.now(), endedAt: 0, mediaSec: 0, duration: 0,
                 bytes: 0, speed: 0, maxSec: Math.max(0, Number(maxSec) || 0), reason: '', error: '', warning: '',
-                stopRequested: false, cancelled: false
+                stopRequested: false, cancelled: false, sameDevice: Boolean(sameDevice)
             };
             const codecs = await codecSupport().catch(() => null);
             if (codecs && !codecs.h264) {
@@ -588,6 +762,7 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
             else if (action.type === 'back') await page.goBack({ timeout: 10000 }).catch(() => {});
             else if (action.type === 'reload') await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
             await page.waitForTimeout(300);
+            logins?.save(cap.context).catch(() => {}); // kayıt sırasında yapılan giriş de saklansın
             return publicState(cap);
         },
         file(id) {
@@ -611,4 +786,39 @@ function explain(video, mediaStatus) {
     if (video.error) return `Video oynatılamadı: ${ERROR_TEXT[video.error] || 'bilinmeyen hata'}.`;
     if (!video.time && (video.paused || !video.src)) return 'Video kendiliğinden başlamadı; oynat düğmesine basılması gerekiyor.';
     return 'Video başladı ama veri gelmedi.';
+}
+
+const DROP_HEADERS = new Set(['range', 'host', 'content-length', 'cookie', 'connection', 'accept-encoding', 'if-range']);
+/** Tarayıcının başarılı isteğindeki başlıklar (çerezleri bağlam ekler). */
+function replayHeaders(headers) {
+    const out = {};
+    for (const [key, value] of Object.entries(headers || {})) {
+        if (!key.startsWith(':') && !DROP_HEADERS.has(key.toLowerCase())) out[key] = value;
+    }
+    return out;
+}
+
+function sameResource(a, b) {
+    try {
+        const x = new URL(a);
+        const y = new URL(b);
+        return x.origin + x.pathname + x.search === y.origin + y.pathname + y.search;
+    } catch (_) {
+        return a === b;
+    }
+}
+
+/** Bağlantı reddedildiğinde kullanıcıya gösterilecek açıklama. */
+function directReason(status, hadPage, sameDevice) {
+    if (status === 404 || status === 410) {
+        return `Video bulunamadı (HTTP ${status}); bağlantının süresi dolmuş olabilir. Videonun sayfasından yeni bağlantı al.`;
+    }
+    if (status === 401 || status === 403 || status === 451) {
+        return `Video sunucusu bağlantıyı reddetti (HTTP ${status}). Bağlantı büyük ihtimalle süreli/imzalı ` +
+            (sameDevice ? 'ya da sitenin oturumuna (girişine) bağlı.' : 'ya da yalnızca açıldığı cihaza (IP) veya sitenin oturumuna bağlı.') +
+            (hadPage ? '' : ' Videonun bulunduğu sayfanın adresini de ver.') +
+            ' Site giriş istiyorsa sayfayı "Kendim dokunayım" ile açıp bir kez giriş yap; giriş sunucuda saklanır.' +
+            ' Olmazsa "Telefonda aç" ile kendi tarayıcında açıp indir.';
+    }
+    return `Video sunucusu hata verdi (HTTP ${status}).`;
 }

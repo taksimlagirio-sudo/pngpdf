@@ -1,5 +1,5 @@
 // "Ayarlar" ekranı: tema, varsayılan indirme ayarları, kendi sunucum, ana ekrana ekleme.
-import { $, isHttpUrl, getRenderServer, setRenderServer, checkRenderServer } from './util.js';
+import { $, isHttpUrl, getRenderServer, setRenderServer, checkRenderServer, renderApi, escapeHtml } from './util.js';
 import { getPrefs, setPref, onPrefs, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch } from './downloads.js';
 
@@ -50,6 +50,18 @@ export function initSettings({ onServerChange, install }) {
                         <li>Açık kaynak (MPL-2.0). Tamamen kapatmak için sunucuyu <code>ADBLOCK=0</code> ile başlat.</li>
                     </ul>
                 </details>
+            </div>
+        </div>
+
+        <div class="settings-sec">
+            <div class="settings-sec-head"><span class="sec-label">Sitelere girişler</span>
+                <span class="status-chip" id="loginsChip">Sunucu yok</span></div>
+            <div class="server-panel">
+                <span class="hint" id="loginsText">Bir siteye "Kendim dokunayım" ekranında bir kez giriş yaparsan giriş
+                    kendi sunucunda saklanır; o sitenin videoları sonra girişli açılır ve kaydedilir.</span>
+                <div class="rows filled hidden" id="loginsList"></div>
+                <span class="hint">Girişler (çerezler) yalnızca kendi sunucundaki <code>.logins.json</code> dosyasında durur,
+                    başka yere gönderilmez. Saklamayı kapatmak için sunucuyu <code>SAVE_LOGINS=0</code> ile başlat.</span>
             </div>
         </div>
 
@@ -135,6 +147,37 @@ export function initSettings({ onServerChange, install }) {
             : 'Sunucu ADBLOCK=0 ile başlatılmış; reklam engelleme kapalı (açılır pencereler yine kapatılır).';
     };
 
+    /* ---- Sitelere girişler ---- */
+    const loginsChip = $('loginsChip');
+    const loginsText = $('loginsText');
+    const loginsList = $('loginsList');
+    const showLogins = (data) => {
+        const sites = (data && data.sites) || [];
+        loginsChip.classList.toggle('on', Boolean(data && data.enabled));
+        loginsChip.textContent = !data ? 'Sunucu yok' : !data.enabled ? 'Kapalı' : sites.length ? `${sites.length} site` : 'Açık';
+        loginsList.classList.toggle('hidden', !sites.length);
+        loginsList.innerHTML = sites.map((site) => `
+            <div class="row"><span class="row-value" style="font-weight:400">${escapeHtml(site.domain)}</span>
+                <button class="link-btn" data-logout="${escapeHtml(site.domain)}">Çıkış yap</button></div>`).join('') +
+            (sites.length > 1 ? `<div class="row"><span></span><button class="link-btn" data-logout="">Hepsinden çıkış yap</button></div>` : '');
+    };
+    const loadLogins = (health) => {
+        if (!health) return showLogins(null);
+        if (!health.logins) {
+            loginsChip.textContent = 'Sunucu eski';
+            loginsChip.classList.remove('on');
+            loginsText.textContent = 'Sunucun girişleri saklamayan eski bir sürüm; güncelleyip (git pull) yeniden başlat.';
+            return;
+        }
+        renderApi('/logins').then(showLogins).catch(() => showLogins(null));
+    };
+    loginsList.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-logout]');
+        if (!btn) return;
+        const domain = btn.dataset.logout;
+        renderApi(`/logins?domain=${encodeURIComponent(domain)}`, { method: 'DELETE' }).then(showLogins).catch(() => {});
+    });
+
     const showState = (on, text, version) => {
         chip.textContent = on ? `Bağlı${version ? ' · v' + version : ''}` : 'Kapalı';
         chip.classList.toggle('on', on);
@@ -153,6 +196,7 @@ export function initSettings({ onServerChange, install }) {
             .then((health) => {
                 showState(true, undefined, health.version);
                 showAdblock(health);
+                loadLogins(health);
             })
             .catch(() => {
                 chip.textContent = 'Ulaşılamıyor';
@@ -174,6 +218,7 @@ export function initSettings({ onServerChange, install }) {
             setRenderServer(config);
             showState(true, `Bağlandı (sürüm ${health.version}). Sayfa adresleri artık bu sunucuda açılacak.`, health.version);
             showAdblock(health);
+            loadLogins(health);
         } catch (err) {
             showState(Boolean(getRenderServer()), `Bağlanılamadı: ${err.message}. Sunucu açık mı, adres https mi (veya 127.0.0.1), token doğru mu?`);
         }
@@ -184,6 +229,7 @@ export function initSettings({ onServerChange, install }) {
         if (getPrefs().conn === 'proxy') setPref('conn', 'auto');
         showState(false, "Kendi sunucun devre dışı; CORS'a kapalı siteler indirilemeyecek.");
         showAdblock(null);
+        loadLogins(null);
     });
 
     /* ---- Ana ekrana ekle ---- */

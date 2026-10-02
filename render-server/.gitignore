@@ -3,3 +3,4 @@ node_modules/
 .pw-browsers/
 .recordings/
 .captures/
+.logins.json

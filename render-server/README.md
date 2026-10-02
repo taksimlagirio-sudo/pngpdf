@@ -129,7 +129,11 @@ uzun kayıtlar için `termux-wake-lock` açık olmalı.
 Uygulamada bir videonun bağlantısı hata verince (403, oturum isteyen, süreli bağlantı...) indirme
 kendiliğinden buraya geçer (`POST /capture {pageUrl, mediaUrl}`):
 
-- Videonun kendi adresi temiz bir oynatıcıda açılır (MP4 doğrudan, HLS hls.js ile); sayfa biliniyorsa
+- Önce bağlantı tarayıcıya istetilir (sayfa, bilinen Referer ya da sitenin ana sayfası açıldıktan sonra).
+  İstek geçerse dosya ya da HLS yayını (ayrı ses dahil, VOD) tarayıcının o isteğindeki başlıklar ve
+  çerezlerle **oynatılmadan** indirilir — H.264 desteği gerekmez. Türü uzantıdan değil yanıttan
+  anlaşılır (uzantısız bağlantılar da çalışır). Tarayıcının isteği de reddedilirse nedeni döner.
+- Olmazsa videonun kendi adresi temiz bir oynatıcıda açılır (MP4 doğrudan, HLS hls.js ile); sayfa biliniyorsa
   önce sayfa açılır ki çerezler/Referer otursun. Başka kökenden gelen yayın istekleri tarayıcının
   kendi oturumuyla alınıp oynatıcıya verilir. Olmazsa sayfa açılıp oynat düğmeleri denenir.
 - Video **sessiz ve 16 kata kadar hızlı** oynatılır; oynatıcının MediaSource'a eklediği veri yakalanıp
@@ -180,3 +184,30 @@ siteye kaçarsa (tıklama ele geçirme) videonun sayfasına geri dönülür ve o
 | GET / POST / DELETE | `/capture`, `/capture/:id`, `/capture/:id/stop`, `/capture/:id/file` | `/record` ile aynı |
 
 Token `Authorization: Bearer <token>` başlığıyla ya da `?token=` parametresiyle gönderilir.
+
+## Eşzamanlı kayıt sınırları
+
+| Değişken | Varsayılan | Anlamı |
+|---|---|---|
+| `MAX_RECORDINGS` | 8 | Aynı anda çalışabilen canlı (m3u8) kayıt sayısı |
+| `MAX_CAPTURES` | 4 | Aynı anda açık tutulan "açıp kaydet" tarayıcı sekmesi sayısı |
+
+Kayıtlar sunucuda çalıştığından uygulama alta alınsa da sürer. Sunucu telefonda (Termux) çalışıyorsa
+`termux-wake-lock` açın ve Termux için pil optimizasyonunu kapatın; yoksa Android Termux'u da uyutabilir.
+
+## Sitelere girişler
+
+"Kendim dokunayım" ekranında (ya da kayıt sırasında dokunarak) bir siteye giriş yapılınca sunucu
+tarayıcısının çerezleri ve localStorage'ı `.logins.json` dosyasına (yalnızca sahibi okuyabilir, 0600)
+yazılır; sonraki koklama, oturum ve "açıp kaydet" işleri bu girişle açılır. Dosya başka yere gönderilmez.
+
+| Değişken | Varsayılan | Anlamı |
+|---|---|---|
+| `SAVE_LOGINS` | 1 | `0` ise girişler saklanmaz |
+| `LOGIN_FILE` | `.logins.json` | Girişlerin yazılacağı dosya |
+
+`GET /logins` kayıtlı siteleri listeler, `DELETE /logins?domain=ornek.com` o siteden (alan adı boşsa
+hepsinden) çıkış yapar.
+
+Video bağlantısı reddedildiğinde (403) istek sunucunun kendi makinesinden geliyorsa (sunucu telefonda)
+hata açıklamasında "cihaza (IP) bağlı" ihtimali söylenmez; giriş/oturum ve süreli bağlantı öne çıkar.

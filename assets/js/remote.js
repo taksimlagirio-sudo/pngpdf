@@ -39,6 +39,8 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
                 <input class="input" type="text" placeholder="Kutucuğa dokun, sonra buraya yaz">
                 <button class="btn btn-secondary" data-r="type">Yaz ⏎</button>
             </div>
+            <p class="hint">Siteye giriş yaparsan giriş kendi sunucunda saklanır; sonraki açılışlarda yeniden girmen gerekmez
+                (Ayarlar → Sitelere girişler'den çıkış yapabilirsin).</p>
             <div class="remote-found"></div>
         </div>`;
 

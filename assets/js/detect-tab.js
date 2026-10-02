@@ -111,7 +111,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
             autoHops = 0;
             // Video bağlantısı açılmıyor (403, oturum vb.): yine de kart gösterilir; İndir'e basınca
             // video açılıp kaydedilir.
-            if (page || /\.(m3u8|mp4|m4v|webm|mov|mkv|ts)(\?|$)/i.test(url)) {
+            if (page || err.mediaLike || /\.(m3u8|mp4|m4v|webm|mov|mkv|ts)(\?|$)/i.test(url)) {
                 setBusy('');
                 info = unreachableInfo(url, err);
                 ui = initialUi(info, pair);
@@ -130,7 +130,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
     }
 
     function unreachableInfo(url, err) {
-        const isHls = /\.m3u8(\?|$)/i.test(url);
+        const isHls = err.mediaKind ? err.mediaKind === 'hls' : /\.m3u8(\?|$)/i.test(url);
         return {
             url,
             kind: isHls ? 'hls' : 'video',
@@ -358,6 +358,10 @@ export function initDetectTab({ navigate, toast, openImages }) {
                 <div class="card-pad">
                     ${qualityHtml()}
                     ${rangeHtml()}
+                    ${info.unreachable ? `<label class="field"><span class="field-label">Videonun bulunduğu sayfa (isteğe bağlı) —
+                        verirsen o sayfanın çerez/oturumuyla denenir</span>
+                        <input class="input" type="url" data-input="sourcePage" value="${escapeHtml(ui.sourcePage || '')}"
+                            placeholder="https://site.com/video-sayfasi" autocomplete="off"></label>` : ''}
                     ${optionRows({ background: !isHls && !info.unreachable })}
                     <div class="dl-actions">
                         <button class="btn-big" data-act="download">İndir${size ? ' · ~' + formatSize(size) : ''}</button>
@@ -426,8 +430,11 @@ export function initDetectTab({ navigate, toast, openImages }) {
                     <button class="${where === 'device' ? 'on' : ''}" data-act="rec-where" data-v="device">Bu cihazda</button>
                 </div>
                 <span class="sec-hint">${where === 'server'
-                    ? 'Kayıt kendi sunucunda sürer: telefonu kilitlesen, uygulamayı kapatsan da durmaz. Bitince buradan indirirsin.'
-                    : 'Kayıt bu tarayıcıda yapılır; uygulama açık kalmalı.'}</span></div>` : ''}
+                    ? 'Kayıt kendi sunucunda sürer: uygulamayı alta alsan, telefonu kilitlesen ya da kapatsan da durmaz. Aynı anda birden çok kayıt yapılabilir; bitince buradan indirirsin.'
+                    : 'Kayıt bu tarayıcıda yapılır.'}</span></div>` : ''}
+            ${where === 'device' ? `<div class="notice">Uygulamayı alta alırsan telefon tarayıcıyı dondurabilir ya da kapatabilir; kayıt
+                o sırada durur ya da kaybolur. ${server ? 'Arka planda sürmesi için "Sunucumda" seç.'
+                    : 'Arka planda sürmesi için kendi sunucunu (telefonda Termux ile) kur: Ayarlar → Kendi sunucum.'}</div>` : ''}
             ${where === 'device' ? `
             <button class="toggle-row" data-act="toggle-awake">
                 <div style="flex:1"><div class="toggle-row-title">Ekran kapansa da sürdür</div>
@@ -618,25 +625,40 @@ export function initDetectTab({ navigate, toast, openImages }) {
      * içinde video açılıp kaydedilir — kullanıcıya ayrıca bir şey sorulmaz.
      */
     function withCaptureFallback(download, { mediaUrl, kind, name, saveMode, createSinkFor }) {
-        const pageUrl = ui.sourcePage || '';
+        const pageUrl = isHttpUrl(ui.sourcePage || '') ? ui.sourcePage : '';
+        const unreachable = Boolean(info.unreachable); // iş sonra başlarsa ekrandaki sonuç değişmiş olabilir
+        const capture = async (job, why) => {
+            try {
+                return await captureIntoJob(job, { pageUrl, mediaUrl, kind, name, createSinkFor: sinkForCapture, why });
+            } catch (err) {
+                // Sunucudan da olmadıysa: bağlantı telefonun kendi tarayıcısında açılabilsin.
+                job.openUrl = mediaUrl;
+                throw err;
+            }
+        };
         // Konum seçildiyse o dosya ilk denemede kapanmış olabilir; kayıt İndirilenler'e düşer.
         const sinkForCapture = saveMode === 'disk'
             ? (n, t) => createSink(n, { mode: 'downloads', mime: t })
             : createSinkFor;
         return async (job) => {
-            if (!info.unreachable) {
+            if (!unreachable) {
                 try {
                     return await download(job);
                 } catch (err) {
                     if (err.name === 'AbortError' || job.status !== 'active' || /DRM/.test(err.message)) throw err;
                     if (!canServerRecord()) {
+                        job.openUrl = mediaUrl;
                         throw new Error(`${shortError(err)} · Bağlantı inmedi; videoyu açıp kaydetmek için Ayarlar → Kendi sunucum ayarlı olmalı.`);
                     }
                     job.progress(0, 0);
-                    return captureIntoJob(job, { pageUrl, mediaUrl, kind, name, createSinkFor: sinkForCapture, why: `Bağlantı hata verdi (${shortError(err)})` });
+                    return capture(job, `Bağlantı hata verdi (${shortError(err)})`);
                 }
             }
-            return captureIntoJob(job, { pageUrl, mediaUrl, kind, name, createSinkFor: sinkForCapture, why: 'Bağlantı açılmıyor' });
+            if (!canServerRecord()) {
+                job.openUrl = mediaUrl;
+                throw new Error('Bağlantı açılmıyor; videoyu açıp kaydetmek için Ayarlar → Kendi sunucum ayarlı olmalı.');
+            }
+            return capture(job, 'Bağlantı açılmıyor');
         };
     }
 

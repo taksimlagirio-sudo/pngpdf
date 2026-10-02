@@ -27,15 +27,23 @@ Canlı bir `.m3u8` açıldığında indirme yerine kayıt ekranı çıkar:
   kilitlense de uygulama kapansa da kayıt sürer. **Bu cihazda** seçilirse kayıt tarayıcıda yapılır;
   "Ekran kapansa da sürdür" ekran kilidini tutar (telefon ekranı kapanırsa tarayıcı sekmeyi
   dondurabilir, bu yüzden uzun kayıtlarda sunucu önerilir).
-- Kayıt diğer indirmelerle aynı anda çalışır, sıra beklemez.
+- Kayıt diğer indirmelerle aynı anda çalışır, sıra beklemez; aynı anda birden çok kayıt yapılabilir
+  (sunucuda varsayılan en fazla 8 canlı kayıt ve 4 "açıp kaydet"; `MAX_RECORDINGS` / `MAX_CAPTURES`).
+- **Uygulamayı alta almak kaydı durdurmaz** (sunucuda kaydederken): telefon arka plandaki sayfayı
+  dondursa ya da kapatsa bile kayıt sunucuda sürer. Uygulama öne geldiğinde ya da yeniden açıldığında
+  sunucudaki kayıtlarla eşitlenir; bu arada biten "açıp kaydet" videoları kendiliğinden iner.
+  "Bu cihazda" kayıt tarayıcının içinde çalıştığı için uygulama alttayken durabilir; ekranda uyarı çıkar.
 
 ## Bağlantısı inmeyen videolar: otomatik "açıp kaydet"
 
 Video algılanıp bağlantısı hata verirse (403, oturum/çerez isteyen, süreli bağlantı...) indirme
 **kendiliğinden** "açıp kaydet"e geçer; ayrıca bir seçim yapılmaz:
 
-1. Video, kendi sunucundaki tarayıcıda temiz bir oynatıcıda açılır (bulunduğu sayfa biliniyorsa önce
-   o sayfa açılır ki çerezler otursun), olmazsa sayfanın kendisi açılıp oynat düğmeleri denenir.
+1. Bağlantı önce kendi sunucundaki tarayıcıya istetilir (bulunduğu sayfa biliniyorsa önce o sayfa,
+   yoksa sitenin ana sayfası açılır ki çerezler otursun). İstek geçerse dosya — HLS ise parçaları, ayrı
+   ses dahil — tarayıcının o isteğindeki başlık ve çerezlerle **oynatılmadan** indirilir; kodek desteği
+   gerekmez. Devtools'tan kopyalanan uzantısız bağlantılar (`…/videoplayback?…`, `…/get_file/…`) da
+   video sayılır. Olmazsa video temiz bir oynatıcıda, o da olmazsa sayfanın kendisinde oynatılır.
 2. Video sessiz ve hızlandırılmış (16 kata kadar) oynatılır; oynatıcının yüklediği veri yakalanır.
    İndirmeler'de kayıt süresi hızla dolar. Ekran filme alınmadığı için dosya **normal hızda, orijinal
    kalitede ve sesli** çıkar; düz video dosyalarında dosya tarayıcının oturumuyla indirilir.
@@ -45,6 +53,9 @@ Video algılanıp bağlantısı hata verirse (403, oturum/çerez isteyen, sürel
 
 Olmazsa video inmemiş görünür ve nedeni yazar: DRM koruması, erişim reddi (HTTP 403), bağlantının
 süresinin dolması (404), kodek desteği, sayfada video olmaması ya da videonun başlatılmaması.
+Bağlantı sunucudan reddediliyorsa (süreli/imzalı, IP'ye ya da sitenin oturumuna bağlı) kartta videonun
+**bulunduğu sayfa** adresi verilebilir; o sayfanın çerez ve Referer'ıyla yeniden denenir. Yine olmazsa
+**Telefonda aç** bağlantıyı telefonun kendi tarayıcısında (kendi IP'si ve oturumuyla) açar.
 Sayfada video bağlantısı hiç bulunamazsa **Videoyu kaydet** düğmesi aynı yolu elle başlatır.
 Bu özellik için Ayarlar → Kendi sunucum gerekir (ayrıntılar: `render-server/README.md`).
 
@@ -181,6 +192,10 @@ isteklerini toplar. **Ayarlar → Kendi sunucum** bölümüne adresini ve token'
 - Site dışarıdan çekilmeyi tamamen reddediyorsa da sayfa doğrudan sunucuda açılmayı dener.
 - Oynatıcı tıklama, onay ya da kod bekliyorsa **👆 Sayfayı aç, kendim dokunayım**: sunucudaki
   sayfanın canlı görüntüsüne dokunarak adımları kendin geçersin, gelen medya listelenir.
+- **Girişler saklanır:** bu ekranda bir siteye bir kez giriş yaparsan çerezler sunucuda
+  (`render-server/.logins.json`) saklanır; o sitenin sayfaları ve videoları sonra (sunucu yeniden
+  başlasa da) girişli açılır, kaydedilir. **Ayarlar → Sitelere girişler**'den site site çıkış yapılır;
+  hiç saklanmasın istersen sunucuyu `SAVE_LOGINS=0` ile başlat.
 - CORS'a kapalı sitelerden indirmeler bu sunucu üzerinden yapılır: süre sınırı yok, medyayı
   açan sayfanın `Referer`'ı iletilir.
 
