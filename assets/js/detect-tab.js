@@ -10,7 +10,7 @@ import {
 } from './downloads.js';
 import { getPrefs, setPref, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { canRemote, openRemoteView } from './remote.js';
-import { canServerRecord, startServerRecording, startServerCapture } from './serverrec.js';
+import { canServerRecord, startServerRecording, captureIntoJob } from './serverrec.js';
 import { attachPreview, grabFrame, probePreview } from './preview.js';
 
 const KIND_TAG = { hls: 'HLS', video: 'MP4', audio: 'SES', dash: 'DASH', image: 'IMG' };
@@ -65,8 +65,11 @@ export function initDetectTab({ navigate, toast, openImages }) {
         previewBox.innerHTML = '';
     }
 
-    /** `pair`: sayfada ayrı bulunan ses playlist'i (görüntüyle birleştirilecek). */
-    async function analyze(url, { pair = null } = {}) {
+    /**
+     * `pair`: sayfada ayrı bulunan ses playlist'i (görüntüyle birleştirilecek).
+     * `page`: bağlantının bulunduğu sayfa — bağlantı inmezse video o sayfayla açılıp kaydedilir.
+     */
+    async function analyze(url, { pair = null, page = null } = {}) {
         if (!isHttpUrl(url)) {
             setError('Geçerli bir http(s) adresi girin.');
             return;
@@ -89,13 +92,14 @@ export function initDetectTab({ navigate, toast, openImages }) {
             if (mySeq !== seq) return;
             info = result;
             ui = initialUi(result, pair);
+            ui.sourcePage = page;
             setBusy('');
 
             // Sayfada tek bir video bulunduysa doğrudan onu aç.
             const links = result.details.links || [];
             if (result.target === 'page' && links.length === 1 && autoHops < 2) {
                 autoHops++;
-                return analyze(links[0].url, { pair: links[0].audioUrl || null });
+                return analyze(links[0].url, { pair: links[0].audioUrl || null, page: result.url });
             }
             autoHops = 0;
             render();
@@ -104,6 +108,17 @@ export function initDetectTab({ navigate, toast, openImages }) {
         } catch (err) {
             if (mySeq !== seq) return;
             console.error(err);
+            autoHops = 0;
+            // Video bağlantısı açılmıyor (403, oturum vb.): yine de kart gösterilir; İndir'e basınca
+            // video açılıp kaydedilir.
+            if (page || /\.(m3u8|mp4|m4v|webm|mov|mkv|ts)(\?|$)/i.test(url)) {
+                setBusy('');
+                info = unreachableInfo(url, err);
+                ui = initialUi(info, pair);
+                ui.sourcePage = page;
+                render();
+                return;
+            }
             setError(`Algılanamadı: ${err.message}`);
             if (canServerRecord()) {
                 info = null;
@@ -112,6 +127,27 @@ export function initDetectTab({ navigate, toast, openImages }) {
         } finally {
             if (mySeq === seq) analyzeBtn.disabled = false;
         }
+    }
+
+    function unreachableInfo(url, err) {
+        const isHls = /\.m3u8(\?|$)/i.test(url);
+        return {
+            url,
+            kind: isHls ? 'hls' : 'video',
+            format: isHls ? 'm3u8' : 'mp4',
+            mime: 'video/mp4',
+            ext: 'mp4',
+            size: 0,
+            target: 'file',
+            suggestedName: baseNameFor(url).replace(/\.[a-z0-9]{2,5}$/i, '') + '.mp4',
+            downloadable: true,
+            unreachable: true,
+            access: 'direct',
+            warnings: [canServerRecord()
+                ? `Bağlantı açılmıyor (${shortError(err)}). İndir'e basınca video açılıp kaydedilir.`
+                : `Bağlantı açılmıyor (${shortError(err)}). Videoyu açıp kaydetmek için Ayarlar → Kendi sunucum ayarlı olmalı.`],
+            details: {}
+        };
     }
 
     function initialUi(result, pair) {
@@ -136,7 +172,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
     /** Video/yayın için oynatılabilir önizleme; tek seferlik kurulur, seçimler değişince bozulmaz. */
     async function showPreview() {
         closePreview();
-        if (!info || !['hls', 'file'].includes(info.target) || !['hls', 'video'].includes(info.kind)) return;
+        if (!info || info.unreachable || !['hls', 'file'].includes(info.target) || !['hls', 'video'].includes(info.kind)) return;
         if (info.kind === 'hls' && info.details.audioOnly) return;
         const live = info.target === 'hls' && ui.media && ui.media.live;
         previewBox.innerHTML = `
@@ -179,6 +215,10 @@ export function initDetectTab({ navigate, toast, openImages }) {
         for (const link of links) {
             if (mySeq !== seq) return;
             if (thumbs.has(link.url)) continue;
+            if (link.unreachable) {
+                thumbs.set(link.url, { ok: false }); // doğrudan oynatılamaz; kaydedilerek indirilir
+                continue;
+            }
             const result = await probePreview(link.url, { kind: link.kind, proxied: false });
             if (!result.ok && getRenderServer()) {
                 Object.assign(result, await probePreview(link.url, { kind: link.kind, proxied: true }));
@@ -237,6 +277,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
     }
 
     function currentExt() {
+        if (info.unreachable) return '.mp4';
         if (info.target === 'hls') return info.details.audioOnly ? '.m4a' : '.mp4';
         return '.' + (info.suggestedName.split('.').pop() || info.ext || 'bin');
     }
@@ -282,6 +323,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
     function metaLine() {
         const d = info.details;
         const bits = [];
+        if (info.unreachable) return `${info.kind === 'hls' ? 'Yayın' : 'Video'} · bağlantı doğrudan açılmıyor`;
         if (info.target === 'hls') {
             bits.push(d.live ? 'Canlı yayın' : 'Video');
             if (d.duration && !d.live) bits.push(hms(d.duration));
@@ -316,7 +358,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
                 <div class="card-pad">
                     ${qualityHtml()}
                     ${rangeHtml()}
-                    ${optionRows({ background: !isHls })}
+                    ${optionRows({ background: !isHls && !info.unreachable })}
                     <div class="dl-actions">
                         <button class="btn-big" data-act="download">İndir${size ? ' · ~' + formatSize(size) : ''}</button>
                         <button class="btn-ghost" data-act="queue" title="Sıraya ekle">Sıraya ekle</button>
@@ -406,7 +448,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
         const images = d.images || [];
         const embeds = d.embeds || [];
         // Önizlemesi alınamayanlar (oynatılamayan) ayrı tutulur; istenirse gösterilir.
-        const failed = links.filter((l) => thumbs.has(l.url) && !thumbs.get(l.url).ok);
+        const failed = links.filter((l) => !l.unreachable && thumbs.has(l.url) && !thumbs.get(l.url).ok);
         const shown = links.filter((l) => !failed.includes(l) || ui.showHidden);
         const counts = [];
         if (links.length) counts.push(`${links.length - (ui.showHidden ? 0 : failed.length)} video`);
@@ -423,7 +465,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
             <button class="media-row" data-act="analyze-link" data-url="${escapeHtml(l.url)}" data-pair="${escapeHtml(l.audioUrl || '')}">
                 <span class="thumb media-thumb">${thumb}${pending}${dur ? `<span class="thumb-badge">${dur}</span>` : ''}</span>
                 <span style="min-width:0"><span class="media-url">${escapeHtml(shortUrl(l.url))}</span>
-                    <span class="media-sub">${KIND_TAG[l.kind] || 'DOSYA'}${t && t.height ? ' · ' + t.height + 'p' : ''}${l.audioUrl ? ' · ses ayrı, birleştirilir' : ''}${t && !t.ok ? ' · önizleme yok' : ''}</span></span>
+                    <span class="media-sub">${KIND_TAG[l.kind] || 'DOSYA'}${t && t.height ? ' · ' + t.height + 'p' : ''}${l.audioUrl ? ' · ses ayrı, birleştirilir' : ''}${l.unreachable ? ' · bağlantı açılmıyor, kaydedilerek indirilir' : t && !t.ok ? ' · önizleme yok' : ''}</span></span>
                 <span class="media-col">${escapeHtml(quality)}</span>
                 <span class="media-act accent">Aç ›</span>
             </button>`;
@@ -464,14 +506,14 @@ export function initDetectTab({ navigate, toast, openImages }) {
             <div class="remote-slot"></div>`;
     }
 
-    /** İnmeyen videolar için: sunucuda hızlandırılmış oynatıp kaydet. */
+    /** Sayfada indirilebilir video bulunamadıysa: sayfadaki videoyu oynatıp kaydet. */
     function captureHtml(primary) {
         if (!canServerRecord()) return '';
         return `<div class="card card-pad" style="gap:10px">
-            <div><div class="toggle-row-title">İnmiyor mu? Sunucuda oynatıp kaydet</div>
-            <div class="toggle-row-sub">Sayfa sunucunda açılır, video sessizce ve hızlandırılmış oynatılıp kaydedilir.
-                Sen yalnızca sürenin dolduğunu görürsün; dosya normal hızda, orijinal kalitede çıkar.</div></div>
-            <button class="${primary ? 'btn-rec' : 'btn-ghost'}" data-act="capture" ${primary ? '' : 'style="height:46px"'}>Sunucuda kaydet</button>
+            <div><div class="toggle-row-title">Video bulunamadı mı? Oynatıp kaydet</div>
+            <div class="toggle-row-sub">Sayfadaki video açılıp hızlandırılmış oynatılır ve kaydedilir; dosya normal hızda,
+                orijinal kalitede bu cihaza iner. Video kendiliğinden başlamazsa sen dokunup başlatırsın.</div></div>
+            <button class="${primary ? 'btn-rec' : 'btn-ghost'}" data-act="capture" ${primary ? '' : 'style="height:46px"'}>Videoyu kaydet</button>
         </div>`;
     }
 
@@ -508,7 +550,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
         const act = btn.dataset.act;
         const prefs = getPrefs();
 
-        if (act === 'analyze-link') return analyze(btn.dataset.url, { pair: btn.dataset.pair || null });
+        if (act === 'analyze-link') return analyze(btn.dataset.url, { pair: btn.dataset.pair || null, page: info && info.target === 'page' ? info.url : null });
         if (act === 'capture') return startCapture(btn.dataset.url || info.url);
         if (!info) return;
         if (act === 'images') return openImages(info.url, info.details.images || [], info.details.title);
@@ -571,29 +613,56 @@ export function initDetectTab({ navigate, toast, openImages }) {
         return (ui.name || 'indirilen').replace(/[\\/:*?"<>|]+/g, '_').trim().slice(0, 120) || 'indirilen';
     }
 
+    /**
+     * İndirme işi: önce bağlantıdan indirilir; bağlantı hata verirse (403, oturum, CORS...) aynı iş
+     * içinde video açılıp kaydedilir — kullanıcıya ayrıca bir şey sorulmaz.
+     */
+    function withCaptureFallback(download, { mediaUrl, kind, name, saveMode, createSinkFor }) {
+        const pageUrl = ui.sourcePage || '';
+        // Konum seçildiyse o dosya ilk denemede kapanmış olabilir; kayıt İndirilenler'e düşer.
+        const sinkForCapture = saveMode === 'disk'
+            ? (n, t) => createSink(n, { mode: 'downloads', mime: t })
+            : createSinkFor;
+        return async (job) => {
+            if (!info.unreachable) {
+                try {
+                    return await download(job);
+                } catch (err) {
+                    if (err.name === 'AbortError' || job.status !== 'active' || /DRM/.test(err.message)) throw err;
+                    if (!canServerRecord()) {
+                        throw new Error(`${shortError(err)} · Bağlantı inmedi; videoyu açıp kaydetmek için Ayarlar → Kendi sunucum ayarlı olmalı.`);
+                    }
+                    job.progress(0, 0);
+                    return captureIntoJob(job, { pageUrl, mediaUrl, kind, name, createSinkFor: sinkForCapture, why: `Bağlantı hata verdi (${shortError(err)})` });
+                }
+            }
+            return captureIntoJob(job, { pageUrl, mediaUrl, kind, name, createSinkFor: sinkForCapture, why: 'Bağlantı açılmıyor' });
+        };
+    }
+
     async function startDownload(queueOnly) {
         const prefs = getPrefs();
-        const isHls = info.target === 'hls';
+        const isHls = info.target === 'hls' || (info.unreachable && info.kind === 'hls');
         const name = cleanName();
         try {
             if (isHls) {
-                if (!ui.media) throw new Error('Yayın bilgisi okunamadı');
+                if (!ui.media && !info.unreachable) throw new Error('Yayın bilgisi okunamadı');
                 const variant = currentVariant();
                 const videoUrl = variant ? variant.url : info.url;
                 const ext = currentExt();
                 const { saveMode, createSinkFor } = await prepareSink(name + ext, ext === '.m4a' ? 'audio/mp4' : 'video/mp4');
                 const thumb = await currentThumb();
                 const range = ui.rangeOpen ? rangeSeconds() : null;
-                const videoPlaylist = ui.media.playlist;
+                const videoPlaylist = ui.media ? ui.media.playlist : null;
                 const audioUrl = ui.audioUrl;
                 addJob({
                     name: name + ext,
                     kind: 'hls',
                     thumb,
                     saveMode,
-                    run: (job) => downloadHlsVod({
+                    run: withCaptureFallback((job) => downloadHlsVod({
                         job, videoUrl, videoPlaylist, audioUrl, name, range, mode: prefs.conn, createSinkFor
-                    })
+                    }), { mediaUrl: info.url, kind: 'hls', name, saveMode, createSinkFor })
                 });
             } else {
                 const fileName = name + currentExt();
@@ -605,10 +674,10 @@ export function initDetectTab({ navigate, toast, openImages }) {
                     kind: ['video', 'audio', 'image'].includes(info.kind) ? info.kind : 'file',
                     thumb,
                     saveMode,
-                    run: (job) => downloadFile({
+                    run: withCaptureFallback((job) => downloadFile({
                         job, url, name: fileName, mode: prefs.conn, background: prefs.background,
                         mime: info.mime, size: info.size, createSinkFor
-                    })
+                    }), { mediaUrl: url, kind: info.kind, name, saveMode, createSinkFor })
                 });
             }
             toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'İndirme başladı · İndirmeler');
@@ -653,18 +722,23 @@ export function initDetectTab({ navigate, toast, openImages }) {
         }
     }
 
+    /** Sayfadaki videoyu oynatıp kaydet (bağlantı bulunamadığında). */
     async function startCapture(url) {
         let name = 'video';
         if (info && info.url === url && info.details && info.details.title) name = info.details.title;
         else name = baseNameFor(url);
         name = name.replace(/[\\/:*?"<>|]+/g, '_').trim().slice(0, 80) || 'video';
+        const saveMode = effectiveSaveMode(getPrefs().save);
+        const createSinkFor = (n, t) => createSink(n, { mode: saveMode === 'disk' ? 'downloads' : saveMode, mime: t });
         askNotificationPermission();
-        try {
-            await startServerCapture({ url, name, thumb: null });
-            navigate('downloads');
-        } catch (err) {
-            setError(`Sunucuda kayıt başlatılamadı: ${err.message}`);
-        }
+        addJob({
+            name: `${name}.mp4`,
+            kind: 'rec',
+            now: true,
+            saveMode,
+            run: (job) => captureIntoJob(job, { pageUrl: url, name, createSinkFor })
+        });
+        navigate('downloads');
     }
 
     function nextSaveMode(current) {
@@ -689,6 +763,14 @@ export function initDetectTab({ navigate, toast, openImages }) {
         },
         refresh: render
     };
+}
+
+/** Hata mesajını kısa bir nedene indirger (ör. "HTTP 403"). */
+function shortError(err) {
+    const message = String((err && err.message) || 'hata');
+    const http = message.match(/HTTP (\d{3})|(\d{3}) döndü/);
+    if (http) return `HTTP ${http[1] || http[2]}`;
+    return message.length > 60 ? message.slice(0, 57) + '…' : message;
 }
 
 /** "1:02:03", "12:30", "90" → saniye. */

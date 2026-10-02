@@ -8,7 +8,7 @@ if [ -z "$CHROME" ]; then
     exit 1
 fi
 
-if [ ! -d node_modules/playwright-core ]; then
+if [ ! -d node_modules/playwright-core ] || [ ! -d node_modules/@ghostery/adblocker ]; then
     echo "Bağımlılıklar kuruluyor..."
     npm install --omit=dev || exit 1
 fi

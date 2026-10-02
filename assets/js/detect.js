@@ -189,7 +189,9 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
     } catch (err) {
         // Site dışarıdan çekilmeyi reddediyorsa (bot koruması vb.) sayfayı kendi sunucunda gerçek
         // bir tarayıcıyla açmayı dene; o da yoksa hatayı olduğu gibi göster.
-        if (!getRenderServer()) throw err;
+        // Video/yayın adresiyse sayfa gibi taranmaz: hata yukarı iletilir, Algıla ekranı "bağlantı
+        // açılmıyor" kartını gösterir ve indirirken video açılıp kaydedilir.
+        if (!getRenderServer() || /\.(m3u8|mpd|mp4|m4v|webm|mov|mkv|ts|mp3|m4a|aac)(\?|$)/i.test(url)) throw err;
         onStage('Sayfa doğrudan okunamadı, kendi sunucunda açılıyor...');
         const result = basePageResult(url);
         await sniffOnServer(result, url, signal, onStage);
@@ -484,7 +486,8 @@ export async function verifyLinks(links, { mode = 'auto', signal } = {}) {
             return { ...link, ok: hasVideo !== false, audioOnly: hasVideo === false, hidden: hasVideo === false,
                 live: playlist.isLive, duration: playlist.totalDuration };
         } catch (_) {
-            return { ...link, ok: false, hidden: true, reason: 'açılamadı' };
+            // Doğrudan açılmıyor (403, oturum...): listede kalır; indirilirken video açılıp kaydedilir.
+            return { ...link, ok: false, unreachable: true, hidden: false };
         }
     }));
 

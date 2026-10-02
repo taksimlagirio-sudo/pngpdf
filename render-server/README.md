@@ -124,26 +124,34 @@ Süre sınırı (30 dk / 1 sa / 2 sa / özel) dolunca ya da **Durdur ve kaydet**
 (`RECORD_DIR` ile değiştirilebilir), 48 saat sonra ya da listeden silinince temizlenir. Termux'ta
 uzun kayıtlar için `termux-wake-lock` açık olmalı.
 
-## İnmeyen videoyu sunucuda oynatıp kaydetme
+## Bağlantısı inmeyen videoyu açıp kaydetme
 
-Adresi bulunamayan ya da doğrudan inmeyen videolar (oynatıcı adresleri gizliyorsa, parçaları
-şifreleyip kendi çözüyorsa, oturuma bağlıysa) için Algıla'daki sayfa sonucunda **Sunucuda kaydet**
-düğmesi çıkar:
+Uygulamada bir videonun bağlantısı hata verince (403, oturum isteyen, süreli bağlantı...) indirme
+kendiliğinden buraya geçer (`POST /capture {pageUrl, mediaUrl}`):
 
-- Sayfa sunucudaki tarayıcıda açılır, oynat düğmesine basılır, video **sessiz ve 16 kata kadar
-  hızlı** oynatılır. Ekranın kendisi filme alınmaz; oynatıcının yüklediği video/ses verisi
-  (MediaSource) yakalanır, bitince tek bir MP4'te birleştirilir. Bu yüzden dosya **normal hızda**
-  ve **orijinal kalitede** oynar, ses bozulmaz.
-- Uygulamada kayıt, canlı kayıt gibi bir kart olarak görünür: kaydedilen video süresi hızla akar,
-  toplam süre, hız (ör. ×12) ve kalan süre yazar. **Durdur ve kaydet** o ana kadar alınanı kaydeder.
-- Oynatıcı MediaSource kullanmıyorsa (düz `<video src>`), dosya sayfanın kendi oturumuyla
-  (çerezleriyle) indirilir.
+- Videonun kendi adresi temiz bir oynatıcıda açılır (MP4 doğrudan, HLS hls.js ile); sayfa biliniyorsa
+  önce sayfa açılır ki çerezler/Referer otursun. Başka kökenden gelen yayın istekleri tarayıcının
+  kendi oturumuyla alınıp oynatıcıya verilir. Olmazsa sayfa açılıp oynat düğmeleri denenir.
+- Video **sessiz ve 16 kata kadar hızlı** oynatılır; oynatıcının MediaSource'a eklediği veri yakalanıp
+  tek, sarılabilir MP4'e dönüştürülür (normal hızda, orijinal kalite). Düz video dosyası oynatılıyorsa
+  dosya tarayıcının çerezleriyle parça parça indirilir.
+- Video başlamazsa kayıt **bekler** (5 dk): uygulama `GET /capture/:id/shot` ile sayfanın görüntüsünü
+  gösterir, kullanıcının dokunuşları `POST /capture/:id/action` ile sayfaya uygulanır; video başladığı
+  an kayıt kendiliğinden başlar.
+- Olmazsa nedeni döner: DRM, erişim reddi (HTTP 403), bulunamadı (404), kodek, video yok, başlatılmadı.
 - **DRM (Widevine vb.) korumalı videolar kaydedilmez.**
 - **Codec:** Playwright'ın kendi Chromium'u H.264/AAC oynatamaz; sitelerin çoğu H.264 kullandığı
   için bilgisayarda **Google Chrome kurulu olmalı**. Sunucu kurulu Chrome'u kendiliğinden kullanır
-  (`USE_CHROME=0` ile kapatılır). Termux'taki Chromium'un H.264 desteği cihaza göre değişebilir;
-  desteklenmiyorsa kayıt kartında uyarı çıkar.
-- Kayıtlar `render-server/.captures/` klasöründe tutulur (`CAPTURE_DIR`), 48 saat sonra silinir.
+  (`USE_CHROME=0` ile kapatılır). Termux'taki Chromium'un H.264 desteği cihaza göre değişebilir.
+- Kayıtlar `render-server/.captures/` klasöründe tutulur (`CAPTURE_DIR`); uygulama dosyayı alınca silinir.
+
+## Reklam engelleme
+
+Sunucunun açtığı tüm sayfalarda (tarama, "kendim dokunayım", açıp kaydet) reklam ve izleme
+istekleri engellenir. `npm install` ile gelen `@ghostery/adblocker` kuruluysa EasyList tabanlı hazır
+listeler (video reklam SDK'ları dahil) açılışta indirilir; kurulu değilse ya da liste indirilemezse
+yerleşik reklam alan adı listesi kullanılır. Kapatmak için `ADBLOCK=0`. Tarama sonuçlarından reklam
+medyası da ayıklanır. Kayıtta reklam ayrı bir oynatıcıda geliyorsa onun verisi asıl videoya karışmaz.
 
 ## Uç noktalar
 
@@ -164,7 +172,8 @@ düğmesi çıkar:
 | POST | `/record/:id/stop` | Durdurur ve dosyayı kapatır |
 | GET | `/record/:id/file` | Biten kaydın dosyası (indirme olarak) |
 | DELETE | `/record/:id` | Süren kaydı iptal eder / biten kaydı siler |
-| POST | `/capture` `{url, name}` | Sayfayı sunucuda hızlandırılmış oynatıp videoyu kaydeder |
+| POST | `/capture` `{pageUrl, mediaUrl, kind, name}` | Videoyu açıp hızlandırılmış oynatarak kaydeder |
+| GET / POST | `/capture/:id/shot`, `/capture/:id/action` | Video başlamazsa sayfanın görüntüsü / kullanıcının dokunuşu |
 | GET / POST / DELETE | `/capture`, `/capture/:id`, `/capture/:id/stop`, `/capture/:id/file` | `/record` ile aynı |
 
 Token `Authorization: Bearer <token>` başlığıyla ya da `?token=` parametresiyle gönderilir.

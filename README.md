@@ -29,14 +29,31 @@ Canlı bir `.m3u8` açıldığında indirme yerine kayıt ekranı çıkar:
   dondurabilir, bu yüzden uzun kayıtlarda sunucu önerilir).
 - Kayıt diğer indirmelerle aynı anda çalışır, sıra beklemez.
 
-## İnmeyen videolar: sunucuda oynatıp kaydet
+## Bağlantısı inmeyen videolar: otomatik "açıp kaydet"
 
-Kendi sunucun ayarlıysa, bir sayfada video adresi bulunamadığında ya da video doğrudan inmediğinde
-**Sunucuda kaydet** düğmesi çıkar. Sayfa sunucuda açılır, video sessiz ve hızlandırılmış (16 kata
-kadar) oynatılır, oynatıcının yüklediği video yakalanır. Sen ekranı izlemezsin; İndirmeler'de
-kaydedilen sürenin hızla dolduğunu görürsün. Çıkan dosya normal hızda ve orijinal kalitededir.
-DRM korumalı videolar kaydedilmez. Ayrıntılar ve gereksinimler (Google Chrome) için
-`render-server/README.md`.
+Video algılanıp bağlantısı hata verirse (403, oturum/çerez isteyen, süreli bağlantı...) indirme
+**kendiliğinden** "açıp kaydet"e geçer; ayrıca bir seçim yapılmaz:
+
+1. Video, kendi sunucundaki tarayıcıda temiz bir oynatıcıda açılır (bulunduğu sayfa biliniyorsa önce
+   o sayfa açılır ki çerezler otursun), olmazsa sayfanın kendisi açılıp oynat düğmeleri denenir.
+2. Video sessiz ve hızlandırılmış (16 kata kadar) oynatılır; oynatıcının yüklediği veri yakalanır.
+   İndirmeler'de kayıt süresi hızla dolar. Ekran filme alınmadığı için dosya **normal hızda, orijinal
+   kalitede ve sesli** çıkar; düz video dosyalarında dosya tarayıcının oturumuyla indirilir.
+3. Video kendiliğinden başlamazsa kartta **Videoyu başlat** çıkar: sayfanın görüntüsüne dokunup
+   oynata basarsın, video başladığı an kayıt kendiliğinden başlar.
+4. Bitince dosya bu cihaza normal bir indirme gibi iner (İndirilenler / Galeri).
+
+Olmazsa video inmemiş görünür ve nedeni yazar: DRM koruması, erişim reddi (HTTP 403), bağlantının
+süresinin dolması (404), kodek desteği, sayfada video olmaması ya da videonun başlatılmaması.
+Sayfada video bağlantısı hiç bulunamazsa **Videoyu kaydet** düğmesi aynı yolu elle başlatır.
+Bu özellik için Ayarlar → Kendi sunucum gerekir (ayrıntılar: `render-server/README.md`).
+
+## Reklam engelleme
+
+Sunucudaki tarayıcı reklamları engeller (`@ghostery/adblocker`, EasyList tabanlı listeler; video
+reklam SDK'ları dahil — kurulu değilse yerleşik reklam alan adı listesi). Böylece sayfa taramasında
+reklam videoları listeye düşmez, oynatıcı reklamla oyalanmaz, kayıtta yalnızca asıl videonun verisi
+alınır (reklamın ayrı oynatıcısındaki veri ayıklanır). Engellenen reklam sayısı kayıt kartında yazar.
 
 ## HLS: önizleme, kalite, ses ve aralık
 

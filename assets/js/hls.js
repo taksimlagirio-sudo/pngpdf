@@ -343,7 +343,11 @@ function sliceRange(segments, range, total) {
 export async function downloadHlsVod({
     job, videoUrl, videoPlaylist = null, audioUrl = null, name, range = null, mode = 'auto', createSinkFor
 }) {
-    const signal = job.signal;
+    // Kendi denetleyicisi: hata olunca paralel parçalar durur ama iş iptal sayılmaz
+    // (bağlantı hata verirse aynı iş "video açılıp kaydedilerek" sürebilir).
+    const local = new AbortController();
+    job.signal.addEventListener('abort', () => local.abort(), { once: true });
+    const signal = local.signal;
     const video = videoPlaylist || await loadPlaylist(videoUrl, { mode, signal });
     if (video.type === 'master') throw new Error('Önce bir kalite seçin');
     const audio = audioUrl ? await loadPlaylist(audioUrl, { mode, signal }) : null;
@@ -412,7 +416,7 @@ export async function downloadHlsVod({
         if (streams.length > 1) parts.push('ses birleştirildi');
         job.done(parts.join(' · '));
     } catch (err) {
-        if (!job.signal.aborted) job.controller.abort(); // diğer paralel parçalar da dursun
+        local.abort(); // diğer paralel parçalar da dursun
         await sink.abort();
         throw err;
     }

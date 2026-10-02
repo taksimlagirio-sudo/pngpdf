@@ -1944,3 +1944,27 @@ body.can-float .float-only {
         border-radius: 9px;
     }
 }
+
+.sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: var(--ov);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+}
+
+.sheet {
+    width: 100%;
+    max-width: 720px;
+    max-height: 92dvh;
+    overflow: auto;
+    padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 960px) {
+    .sheet-backdrop {
+        align-items: center;
+    }
+}

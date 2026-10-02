@@ -1,6 +1,6 @@
 {
   "name": "indirici-render-server",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "private": true,
   "description": "İndirici için kendi cihazında çalışan sayfa render + medya koklama sunucusu",
   "type": "module",
@@ -14,5 +14,8 @@
   },
   "dependencies": {
     "playwright-core": "^1.48.0"
+  },
+  "optionalDependencies": {
+    "@ghostery/adblocker": "^2.18.2"
   }
 }

@@ -15,7 +15,9 @@ export function canRemote() {
  * @param {(url: string) => void} onPick  bulunan bir medyaya dokunulunca (oturum kapatılır)
  * @returns {{ close: () => void }}
  */
-export function openRemoteView(container, pageUrl, { onPick, shortUrl = (u) => u }) {
+export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl = (u) => u, captureId = null, onClose = () => {} } = {}) {
+    // captureId verilirse yeni oturum açılmaz: video kaydının (başlamayı bekleyen) sayfası kullanılır.
+    const base = () => (captureId ? `/capture/${captureId}` : `/session/${id}`);
     container.innerHTML = `
         <div class="remote-view">
             <div class="remote-head">
@@ -82,12 +84,12 @@ export function openRemoteView(container, pageUrl, { onPick, shortUrl = (u) => u
     async function runAction(body) {
         if (!id || !alive) return;
         try {
-            const state = await renderApi(`/session/${id}/action`, {
+            const state = await renderApi(`${base()}/action`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify(body)
             });
-            renderFound(state.items);
+            if (state.items) renderFound(state.items);
         } catch (err) {
             setStatus(`❌ ${err.message}`, true);
             if (err.status === 404) stop();
@@ -100,13 +102,13 @@ export function openRemoteView(container, pageUrl, { onPick, shortUrl = (u) => u
         let tick = 0;
         while (alive) {
             try {
-                const blob = await renderBlob(`/session/${id}/shot`);
+                const blob = await renderBlob(`${base()}/shot`);
                 if (!alive) break;
                 const next = URL.createObjectURL(blob);
                 img.src = next;
                 if (frameUrl) URL.revokeObjectURL(frameUrl);
                 frameUrl = next;
-                if (tick++ % 3 === 0) renderFound((await renderApi(`/session/${id}`, {}, 10000)).items);
+                if (!captureId && tick++ % 3 === 0) renderFound((await renderApi(base(), {}, 10000)).items);
             } catch (err) {
                 if (!alive) break;
                 setStatus(`❌ ${err.message}`, true);
@@ -127,7 +129,7 @@ export function openRemoteView(container, pageUrl, { onPick, shortUrl = (u) => u
 
     function close() {
         stop();
-        if (id) {
+        if (id && !captureId) {
             renderApi(`/session/${id}`, { method: 'DELETE', keepalive: true }, 5000).catch(() => {});
             id = null;
         }
@@ -135,6 +137,7 @@ export function openRemoteView(container, pageUrl, { onPick, shortUrl = (u) => u
         frameUrl = null;
         container.innerHTML = '';
         window.removeEventListener('pagehide', close);
+        onClose();
     }
 
     img.addEventListener('click', (e) => {
@@ -177,6 +180,14 @@ export function openRemoteView(container, pageUrl, { onPick, shortUrl = (u) => u
 
     // Uygulama kapanırsa sunucudaki sayfa açık kalmasın (sunucu da 90 sn sonra kendisi kapatır).
     window.addEventListener('pagehide', close);
+
+    if (captureId) {
+        id = captureId;
+        img.style.aspectRatio = '16 / 9';
+        setStatus('Videonun oynat düğmesine dokun (reklam/onay varsa önce onları geç). Video başladığı an kayıt kendiliğinden başlar.');
+        loop();
+        return { close };
+    }
 
     (async () => {
         try {

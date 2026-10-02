@@ -22,6 +22,7 @@
 //   GET  /record/:id/file    → biten kaydın dosyası; DELETE /record/:id → iptal et / sil
 //   POST /capture {url,name} → inmeyen videoyu sunucuda hızlandırılmış oynatıp kaydet
 //   GET  /capture[/:id[/file]], POST /capture/:id/stop, DELETE /capture/:id → /record ile aynı
+//   GET  /capture/:id/shot, POST /capture/:id/action → video başlamazsa kullanıcı sayfaya dokunur
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -34,9 +35,10 @@ import { fileURLToPath } from 'node:url';
 import { classify, dedupKey, isSegment } from './media.mjs';
 import { createRecorder } from './recorder.mjs';
 import { createCapturer } from './capture.mjs';
+import { installRouting, isAdRequest, warmAdblock } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 const PORT = Number(process.env.PORT) || 8787;
 // Varsayılan yalnızca bu cihazdan erişim; Tailscale/tünel localhost'a yönlendirir.
 const HOST = process.env.HOST || '127.0.0.1';
@@ -233,10 +235,13 @@ async function openRecordedPage(pageUrl, contextOptions) {
     const browser = await getBrowser();
     const context = await browser.newContext(contextOptions);
     await context.addInitScript(CODEC_SPOOF);
+    // Reklamlar engellenir: reklam videoları listeye düşmesin, oynatıcı reklamla oyalanmasın.
+    const state0 = { blockedAds: 0 };
+    await installRouting(context, { onBlocked: () => { state0.blockedAds++; } });
     const page = await context.newPage();
     // Tıklamanın açtığı reklam pencereleri hemen kapatılsın.
     context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
-    const state = { found: new Map(), firstMediaAt: 0 };
+    const state = Object.assign(state0, { found: new Map(), firstMediaAt: 0 });
 
     const record = (url, contentType, size, referer) => {
         if (isSegment(url, contentType)) return;
@@ -392,7 +397,12 @@ async function sniff(pageUrl, waitMs) {
         await context.close().catch(() => {});
     }
 
-    return { title, finalUrl, items: foundItems(state), elapsedMs: Date.now() - started };
+    // Engelleyiciden kaçan reklam medyası da listeden çıkarılır.
+    const items = [];
+    for (const item of foundItems(state)) {
+        if (!(await isAdRequest(item.url, pageUrl, 'media'))) items.push(item);
+    }
+    return { title, finalUrl, items, blockedAds: state.blockedAds, elapsedMs: Date.now() - started };
 }
 
 /* ---------------- Etkileşimli oturum: kullanıcı sayfaya kendisi dokunur ---------------- */
@@ -646,7 +656,15 @@ const capturer = createCapturer({
     nudgePlayback,
     assertPublicTarget,
     userAgent: DESKTOP_UA,
-    codecSupport
+    codecSupport,
+    hlsScript: path.join(APP_ROOT, 'assets', 'vendor', 'hls.min.js'),
+    refererFor(url) {
+        try {
+            return refererByUrl.get(url) || refererByHost.get(new URL(url).host) || '';
+        } catch (_) {
+            return '';
+        }
+    }
 });
 
 /** /record (canlı HLS kaydı) ve /capture (sunucuda oynatıp kaydetme) aynı biçimde yönetilir. */
@@ -657,7 +675,7 @@ async function handleJobs(req, res, url) {
         if (req.method === 'GET') return sendJson(res, 200, { items: manager.list() });
         if (req.method === 'POST') return sendJson(res, 200, await manager.start(await readJson(req)));
     }
-    const match = url.pathname.match(/^\/(?:record|capture)\/([0-9a-f]{24})(\/stop|\/file)?$/);
+    const match = url.pathname.match(/^\/(?:record|capture)\/([0-9a-f]{24})(\/stop|\/file|\/shot|\/action)?$/);
     if (!match) return false;
     const [, id, sub = ''] = match;
     if (sub === '' && req.method === 'GET') {
@@ -670,6 +688,15 @@ async function handleJobs(req, res, url) {
     if (sub === '/stop' && req.method === 'POST') {
         const state = manager.stop(id);
         return state ? sendJson(res, 200, state) : sendJson(res, 404, { error: 'Kayıt bulunamadı' });
+    }
+    if (kind === 'capture' && sub === '/shot' && req.method === 'GET') {
+        const image = await manager.shot(id);
+        if (!image) return sendJson(res, 404, { error: 'Kayıt sayfası kapalı' });
+        res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/jpeg', 'content-length': image.length, 'cache-control': 'no-store' });
+        return res.end(image);
+    }
+    if (kind === 'capture' && sub === '/action' && req.method === 'POST') {
+        return sendJson(res, 200, await manager.action(id, await readJson(req)));
     }
     if (sub === '/file' && (req.method === 'GET' || req.method === 'HEAD')) {
         const file = manager.file(id);
@@ -828,6 +855,8 @@ server.on('error', (err) => {
     }
     throw err;
 });
+
+warmAdblock();
 
 server.listen(PORT, HOST, () => {
     console.log(`İndirici render sunucusu çalışıyor: http://${HOST}:${PORT}`);
