@@ -835,3 +835,88 @@ h1 {
     padding: 1px 5px;
     border-radius: 4px;
 }
+
+/* ---- "Kendim dokunayım": sunucudaki sayfanın canlı görüntüsü ---- */
+.remote-view {
+    margin-top: 16px;
+    border: 2px solid #e4e7f5;
+    border-radius: 14px;
+    padding: 12px;
+    background: #fafbff;
+}
+
+.remote-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 14px;
+    color: #333;
+}
+
+.remote-head .btn {
+    width: auto;
+    padding: 8px 12px;
+    font-size: 13px;
+}
+
+.remote-status.error {
+    color: #e03131;
+}
+
+.remote-screen {
+    position: relative;
+    width: fit-content;
+    max-width: 100%;
+    margin: 10px auto 0;
+}
+
+/* Tüm ekran + altındaki düğmeler telefonda kaydırmadan görünsün. */
+.remote-screen img {
+    display: block;
+    max-width: 100%;
+    max-height: 68vh;
+    min-width: 120px;
+    min-height: 120px;
+    background: #e9ecf5;
+    border-radius: 10px;
+    border: 1px solid #d6daea;
+    cursor: pointer;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
+.remote-dot {
+    position: absolute;
+    width: 26px;
+    height: 26px;
+    margin: -13px 0 0 -13px;
+    border-radius: 50%;
+    background: rgba(102, 126, 234, 0.45);
+    border: 2px solid #667eea;
+    pointer-events: none;
+}
+
+.remote-controls,
+.remote-type {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.remote-controls .btn {
+    flex: 1;
+    padding: 10px 0;
+}
+
+.remote-type .input {
+    flex: 1;
+    min-width: 0;
+}
+
+.remote-type .btn {
+    width: auto;
+    white-space: nowrap;
+    padding: 10px 14px;
+}

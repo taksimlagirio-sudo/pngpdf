@@ -102,10 +102,14 @@ Notlar:
 
 - Sayfa temiz bir tarayıcı profiliyle açılır: senin oturumun/çerezlerin yok, giriş gerektiren
   içerik görünmez. Bunun için tarayıcı eklentisi (`../extension`) daha uygun.
-- Sunucu videoları sessiz başlatır; medya gelmezse oynat düğmesine, oynatıcının ortasına ve
-  sayfanın ortasına sırayla tıklar (açılan reklam pencerelerini kapatır). Bu Chromium'da H.264
+- Sunucu videoları sessiz başlatır; medya gelmezse çerez onayına, oynat düğmesine, oynatıcının
+  ortasına ve sayfanın ortasına sırayla tıklar (açılan reklam pencerelerini kapatır). Bu Chromium'da H.264
   olmadığından oynatıcılara H.264/AAC "destekleniyor" gösterilir; video oynatılmaz, yalnızca
-  adresi bulunur. Yine de birkaç adım tıklama, giriş ya da captcha isteyen sayfalarda bulamayabilir.
+  adresi bulunur. Bunlar yetmezse (yaş sorusu, birkaç adım tıklama, kod yazma vb.) Algıla'daki
+  **👆 Sayfayı aç, kendim dokunayım** düğmesi sayfayı sunucuda açık tutar: ekran görüntüsü
+  uygulamada canlı görünür, dokunduğun yer sunucudaki sayfada tıklanır, kaydırma ve yazı yazma
+  da yapılabilir; bu sırada gelen medya listede çıkar. Kullanılmayan oturum 90 sn sonra kapanır.
+  Captcha ve giriş gerektiren sayfalar yine sorun olabilir (temiz profil, çerez yok).
 - WebRTC ile gelen yayınlar (HTTP isteği olmadan) bulunamaz.
 - DRM (Widevine/FairPlay/SAMPLE-AES) korumalı yayınlar sunucu bulsa da İndirici tarafından
   yine indirilmez.
@@ -119,5 +123,9 @@ Notlar:
 | GET | `/health` | Bağlantı ve token kontrolü |
 | POST | `/sniff` `{url, waitMs}` | Sayfayı çalıştırır, `{title, finalUrl, items[]}` döner |
 | GET/HEAD | `/fetch?url=…[&referer=…]` | Akışlı indirme proxy'si, `Range` iletilir |
+| POST | `/session` `{url}` | Etkileşimli oturum açar (sayfa açık kalır) |
+| GET | `/session/:id` , `/session/:id/shot` | Bulunan medya / ekran görüntüsü (JPEG) |
+| POST | `/session/:id/action` | `{type:"tap",x,y}` (0–1 arası), `scroll`, `type`, `key`, `back`, `reload` |
+| DELETE | `/session/:id` | Oturumu kapatır |
 
 Token `Authorization: Bearer <token>` başlığıyla ya da `?token=` parametresiyle gönderilir.

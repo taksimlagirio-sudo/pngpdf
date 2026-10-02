@@ -122,6 +122,8 @@ isteklerini toplar. Algıla → **🖥️ Kendi sunucum** bölümüne adresini v
 - Sayfa linkleri (paylaşılanlar dahil) bu sunucuda çalıştırılır; bulunan medya, statik taramanın
   buldukları ile birleştirilir. Tek medya bulunursa doğrudan o açılır.
 - Site dışarıdan çekilmeyi tamamen reddediyorsa da sayfa doğrudan sunucuda açılmayı dener.
+- Oynatıcı tıklama, onay ya da kod bekliyorsa **👆 Sayfayı aç, kendim dokunayım**: sunucudaki
+  sayfanın canlı görüntüsüne dokunarak adımları kendin geçersin, gelen medya listelenir.
 - CORS'a kapalı sitelerden indirmeler bu sunucu üzerinden yapılır: süre sınırı yok, medyayı
   açan sayfanın `Referer`'ı iletilir.
 

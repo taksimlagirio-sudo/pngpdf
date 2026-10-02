@@ -12,6 +12,10 @@
 //   GET  /health             → bağlantı ve token kontrolü
 //   POST /sniff {url,waitMs} → sayfayı çalıştırıp bulunan medya listesini döner
 //   GET  /fetch?url=…        → akışlı indirme proxy'si (Range ve Referer iletilir)
+//   POST /session {url}      → etkileşimli oturum: sayfa açık kalır, kullanıcı dokunur
+//   GET  /session/:id[/shot] → oturum durumu (bulunan medya) / ekran görüntüsü (JPEG)
+//   POST /session/:id/action → {type:'tap',x,y} | scroll | type | key | back | reload
+//   DELETE /session/:id      → oturumu kapat
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -29,7 +33,7 @@ const PORT = Number(process.env.PORT) || 8787;
 // Varsayılan yalnızca bu cihazdan erişim; Tailscale/tünel localhost'a yönlendirir.
 const HOST = process.env.HOST || '127.0.0.1';
 const ALLOW_PRIVATE = process.env.ALLOW_PRIVATE === '1';
-const DEFAULT_WAIT_MS = 7000;
+const DEFAULT_WAIT_MS = 10000;
 const MAX_WAIT_MS = 30000;
 const MAX_REDIRECTS = 5;
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
@@ -63,7 +67,7 @@ function authorized(req, url) {
 
 const CORS_HEADERS = {
     'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET, HEAD, POST, OPTIONS',
+    'access-control-allow-methods': 'GET, HEAD, POST, DELETE, OPTIONS',
     'access-control-allow-headers': 'authorization, content-type, range',
     'access-control-expose-headers': 'content-length, content-type, content-range, accept-ranges',
     // https bir sayfadan yerel ağdaki/localhost'taki sunucuya istek için (Chrome Private Network Access).
@@ -207,31 +211,34 @@ const PLAY_SELECTORS = [
     '[id*="play" i]:not(video):not(audio)', '[class*="play" i]:not(video):not(audio):not(body):not(html)'
 ].join(', ');
 
-async function sniff(pageUrl, waitMs) {
+/**
+ * Kayıt tutan bir sayfa açar: sayfanın (ve çerçevelerinin) yaptığı medya istekleri `state.found`a
+ * toplanır. Hem otomatik koklama hem de kullanıcının dokunduğu etkileşimli oturum bunu kullanır.
+ */
+async function openRecordedPage(pageUrl, contextOptions) {
     const browser = await getBrowser();
-    const context = await browser.newContext({ userAgent: DESKTOP_UA, viewport: { width: 1280, height: 800 } });
+    const context = await browser.newContext(contextOptions);
     await context.addInitScript(CODEC_SPOOF);
     const page = await context.newPage();
     // Tıklamanın açtığı reklam pencereleri hemen kapatılsın.
     context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
-    const found = new Map();
-    let firstMediaAt = 0;
+    const state = { found: new Map(), firstMediaAt: 0 };
 
     const record = (url, contentType, size, referer) => {
         if (isSegment(url, contentType)) return;
         const kind = classify(url, contentType);
         if (!kind) return;
         const key = dedupKey(url, kind);
-        const existing = found.get(key);
+        const existing = state.found.get(key);
         if (existing) {
             existing.url = url;
             existing.size = size || existing.size;
             existing.seenCount += 1;
         } else {
-            found.set(key, { url, kind, mime: contentType || '', size: size || 0, referer: referer || pageUrl, seenCount: 1 });
+            state.found.set(key, { url, kind, mime: contentType || '', size: size || 0, referer: referer || pageUrl, seenCount: 1 });
         }
         rememberReferer(url, referer || pageUrl);
-        if (!firstMediaAt && (kind === 'hls' || kind === 'video' || kind === 'dash')) firstMediaAt = Date.now();
+        if (!state.firstMediaAt && (kind === 'hls' || kind === 'video' || kind === 'dash')) state.firstMediaAt = Date.now();
     };
 
     page.on('response', (response) => {
@@ -243,6 +250,28 @@ async function sniff(pageUrl, waitMs) {
     page.on('requestfailed', (request) => {
         record(request.url(), '', 0, request.headers().referer);
     });
+    return { context, page, state };
+}
+
+const foundItems = (state) => dropHlsSiblings([...state.found.values()]);
+
+// Çerez/izin pencerelerinin onay düğmeleri (tam ad eşleşmesi; rastgele bağlantılara basılmasın).
+const CONSENT_NAMES = /^\s*(accept( all)?( cookies)?|allow all|i agree|agree( and close)?|got it|ok(ay)?|continue|tümünü kabul et|kabul et|kabul ediyorum|kabul|onayla|tamam|anladım|devam et)\s*$/i;
+
+async function clickConsent(page) {
+    for (const frame of page.frames()) {
+        const button = frame.getByRole('button', { name: CONSENT_NAMES }).first();
+        if (await button.isVisible().catch(() => false)) {
+            await button.click({ timeout: 2000 }).catch(() => {});
+            return true;
+        }
+    }
+    return false;
+}
+
+async function sniff(pageUrl, waitMs) {
+    const { context, page, state } = await openRecordedPage(pageUrl,
+        { userAgent: DESKTOP_UA, viewport: { width: 1280, height: 800 } });
 
     const started = Date.now();
     let title = '';
@@ -265,17 +294,20 @@ async function sniff(pageUrl, waitMs) {
         };
         await tryPlay();
 
-        // Oynatıcı özel bir "oynat" düğmesi bekliyorsa: önce bilinen düğmelere, olmazsa en büyük
-        // video/oynatıcı alanının ortasına, o da olmazsa sayfanın ortasına bir kez tıkla.
+        // Oynatıcı özel bir "oynat" düğmesi bekliyorsa: önce çerez onayı, sonra bilinen düğmeler,
+        // olmazsa en büyük video/oynatıcı alanının ortası, o da olmazsa sayfanın ortası tıklanır.
+        // Her adım bir şeye tıkladıysa true döner; tıklayacak bir şey yoksa beklemeden sonrakine geçilir.
         const clickSteps = [
+            () => clickConsent(page),
             async () => {
                 for (const frame of page.frames()) {
                     const button = await frame.$(PLAY_SELECTORS).catch(() => null);
                     if (button && await button.isVisible().catch(() => false)) {
                         await button.click({ timeout: 2000, force: true }).catch(() => {});
-                        return;
+                        return true;
                     }
                 }
+                return false;
             },
             async () => {
                 const box = await page.evaluate(() => {
@@ -287,21 +319,25 @@ async function sniff(pageUrl, waitMs) {
                         });
                     return best && { x: best.x + best.width / 2, y: best.y + best.height / 2 };
                 }).catch(() => null);
-                if (box) await page.mouse.click(box.x, box.y).catch(() => {});
+                if (!box) return false;
+                await page.mouse.click(box.x, box.y).catch(() => {});
+                return true;
             },
-            async () => page.mouse.click(640, 400).catch(() => {})
+            async () => {
+                await page.mouse.click(640, 400).catch(() => {});
+                return true;
+            }
         ];
         let nextClickAt = started + 2500;
 
         // Medya bulununca biraz daha bekleyip (master → varyant gibi takip istekleri için) bitir;
         // bulunamazsa süre dolana kadar bekle.
         while (Date.now() - started < waitMs) {
-            if (firstMediaAt && Date.now() - firstMediaAt > 2000) break;
+            if (state.firstMediaAt && Date.now() - state.firstMediaAt > 2000) break;
             await page.waitForTimeout(400);
-            if (!firstMediaAt && Date.now() >= nextClickAt) {
+            if (!state.firstMediaAt && Date.now() >= nextClickAt) {
                 await tryPlay();
-                const step = clickSteps.shift();
-                if (step) await step();
+                while (clickSteps.length && !(await clickSteps.shift()())) { /* sıradaki adım */ }
                 nextClickAt = Date.now() + 1500;
             }
         }
@@ -310,8 +346,101 @@ async function sniff(pageUrl, waitMs) {
         await context.close().catch(() => {});
     }
 
-    const items = [...found.values()];
-    return { title, finalUrl, items: dropHlsSiblings(items), elapsedMs: Date.now() - started };
+    return { title, finalUrl, items: foundItems(state), elapsedMs: Date.now() - started };
+}
+
+/* ---------------- Etkileşimli oturum: kullanıcı sayfaya kendisi dokunur ---------------- */
+
+// Uygulama sayfanın ekran görüntüsünü gösterir, dokunuşları buraya iletir. Telefon boyutunda
+// açılır ki ekranda okunabilsin. Kullanılmayan oturumlar kendiliğinden kapanır.
+const MOBILE_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36';
+const SESSION_VIEWPORT = { width: 412, height: 800 };
+const MAX_SESSIONS = 2;
+const SESSION_IDLE_MS = 90 * 1000;
+const SESSION_MAX_MS = 15 * 60 * 1000;
+const sessions = new Map();
+
+async function closeSession(id) {
+    const session = sessions.get(id);
+    if (!session) return;
+    sessions.delete(id);
+    await session.context.close().catch(() => {});
+}
+
+setInterval(() => {
+    const now = Date.now();
+    for (const [id, session] of sessions) {
+        if (now - session.lastUsed > SESSION_IDLE_MS || now - session.created > SESSION_MAX_MS) closeSession(id);
+    }
+}, 15000).unref();
+
+async function openSession(pageUrl) {
+    // Sınır dolduysa en uzun süredir kullanılmayanı kapat (telefonda bellek kısıtlı).
+    while (sessions.size >= MAX_SESSIONS) {
+        const oldest = [...sessions.values()].sort((a, b) => a.lastUsed - b.lastUsed)[0];
+        await closeSession(oldest.id);
+    }
+    const { context, page, state } = await openRecordedPage(pageUrl, {
+        userAgent: MOBILE_UA, viewport: SESSION_VIEWPORT, deviceScaleFactor: 1.5, isMobile: true, hasTouch: true
+    });
+    const session = { id: randomBytes(12).toString('hex'), context, page, state, created: Date.now(), lastUsed: Date.now() };
+    sessions.set(session.id, session);
+    try {
+        await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
+    } catch (err) {
+        // Ağır sayfa zaman aşımına uğrasa da yüklenen kısmı kullanılabilir; hiç açılmadıysa hata.
+        if (page.url() === 'about:blank') {
+            await closeSession(session.id);
+            throw new Error(`Sayfa açılamadı: ${err.message.split('\n')[0]}`);
+        }
+    }
+    return session;
+}
+
+async function sessionState(session) {
+    return {
+        id: session.id,
+        title: await session.page.title().catch(() => ''),
+        url: session.page.url(),
+        width: SESSION_VIEWPORT.width,
+        height: SESSION_VIEWPORT.height,
+        items: foundItems(session.state)
+    };
+}
+
+const SESSION_KEYS = new Set(['Enter', 'Backspace', 'Escape', 'Tab']);
+
+async function sessionAction(session, action) {
+    const { page } = session;
+    const { width, height } = SESSION_VIEWPORT;
+    const fraction = (value) => Math.min(1, Math.max(0, Number(value) || 0));
+    switch (action.type) {
+        case 'tap':
+            await page.touchscreen.tap(fraction(action.x) * width, fraction(action.y) * height);
+            break;
+        case 'scroll': {
+            const dy = Math.max(-3, Math.min(3, Number(action.dy) || 0)) * height;
+            await page.mouse.move(width / 2, height / 2);
+            await page.mouse.wheel(0, dy);
+            break;
+        }
+        case 'type':
+            await page.keyboard.type(String(action.text || '').slice(0, 500), { delay: 20 });
+            break;
+        case 'key':
+            if (!SESSION_KEYS.has(action.key)) throw new Error('Desteklenmeyen tuş');
+            await page.keyboard.press(action.key);
+            break;
+        case 'back':
+            await page.goBack({ timeout: 10000 }).catch(() => {});
+            break;
+        case 'reload':
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+            break;
+        default:
+            throw new Error('Bilinmeyen işlem');
+    }
+    await page.waitForTimeout(300);
 }
 
 // HLS playlist'iyle aynı klasördeki .mp4 adlı fMP4 parçaları ayrı video gibi listelenmesin.
@@ -514,6 +643,42 @@ const server = http.createServer(async (req, res) => {
             const target = url.searchParams.get('url');
             if (!target) return sendJson(res, 400, { error: 'url parametresi gerekli' });
             return await proxyFetch(req, res, target, url.searchParams.get('referer'));
+        }
+
+        if (url.pathname === '/session' && req.method === 'POST') {
+            const body = await readJson(req);
+            let target;
+            try {
+                target = new URL(body.url);
+            } catch (_) {
+                return sendJson(res, 400, { error: 'Geçerli bir url gönderin' });
+            }
+            await assertPublicTarget(target);
+            const session = await openSession(target.href);
+            return sendJson(res, 200, await sessionState(session));
+        }
+
+        const sessionMatch = url.pathname.match(/^\/session\/([0-9a-f]{24})(\/shot|\/action)?$/);
+        if (sessionMatch) {
+            const [, id, sub = ''] = sessionMatch;
+            const session = sessions.get(id);
+            if (!session) return sendJson(res, 404, { error: 'Oturum kapanmış; sayfayı yeniden aç' });
+            session.lastUsed = Date.now();
+
+            if (sub === '' && req.method === 'GET') return sendJson(res, 200, await sessionState(session));
+            if (sub === '' && req.method === 'DELETE') {
+                await closeSession(id);
+                return sendJson(res, 200, { ok: true });
+            }
+            if (sub === '/shot' && req.method === 'GET') {
+                const image = await session.page.screenshot({ type: 'jpeg', quality: 55, timeout: 8000 });
+                res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/jpeg', 'content-length': image.length, 'cache-control': 'no-store' });
+                return res.end(image);
+            }
+            if (sub === '/action' && req.method === 'POST') {
+                await sessionAction(session, await readJson(req));
+                return sendJson(res, 200, await sessionState(session));
+            }
         }
 
         return sendJson(res, 404, { error: 'Bulunamadı' });

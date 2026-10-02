@@ -106,7 +106,11 @@ async function renderRequest(config, path, init = {}, timeoutMs = 0) {
         if (timer) clearTimeout(timer);
     }
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.error || `Sunucu ${res.status} döndü`);
+    if (!res.ok) {
+        const err = new Error(body.error || `Sunucu ${res.status} döndü`);
+        err.status = res.status;
+        throw err;
+    }
     return body;
 }
 
@@ -143,6 +147,37 @@ export function renderSniff(url, { signal, waitMs } = {}) {
         body: JSON.stringify({ url, waitMs }),
         signal
     });
+}
+
+/** Kayıtlı sunucuya JSON isteği (etkileşimli oturum vb. için). */
+export function renderApi(path, init = {}, timeoutMs = 30000) {
+    const config = getRenderServer();
+    if (!config) return Promise.reject(new Error('Kendi sunucun ayarlı değil'));
+    return renderRequest(config, path, init, timeoutMs);
+}
+
+/** Sunucudan ikili yanıt (ör. ekran görüntüsü) alır; hata mesajı JSON'dan okunur. */
+export async function renderBlob(path, timeoutMs = 15000) {
+    const config = getRenderServer();
+    if (!config) throw new Error('Kendi sunucun ayarlı değil');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(`${config.url}${path}`, {
+            headers: { authorization: `Bearer ${config.token}` },
+            signal: controller.signal,
+            cache: 'no-store'
+        });
+        if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            const err = new Error(body.error || `Sunucu ${res.status} döndü`);
+            err.status = res.status;
+            throw err;
+        }
+        return await res.blob();
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 // CORS engelini aşmak için tek proxy kullanıcının kendi sunucusu; ayarlı değilse null.

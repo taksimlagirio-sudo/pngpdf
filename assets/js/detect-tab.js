@@ -7,6 +7,7 @@ import { analyzeUrl, formatDuration } from './detect.js';
 import { downloadFile } from './video.js';
 import { downloadHls } from './hls.js';
 import { canSaveToDisk, canBackgroundFetch, isThumbInUse } from './downloads.js';
+import { canRemote, openRemoteView } from './remote.js';
 
 const KIND_LABELS = {
     video: { icon: '🎬', label: 'Video' },
@@ -33,6 +34,7 @@ export function initDetectTab() {
     let current = null;
     let previewUrl = null;
     let autoHops = 0; // sayfadan medyaya otomatik geçişte sonsuz döngüyü engeller
+    let remote = null; // açık "kendim dokunayım" oturumu
 
     if (!canSaveToDisk) {
         const row = $('detectDiskRow');
@@ -73,6 +75,13 @@ export function initDetectTab() {
         const { act } = btn.dataset;
 
         if (act === 'analyze-link') return analyze(btn.dataset.url);
+        if (act === 'remote') {
+            btn.classList.add('hidden');
+            const slot = resultBox.querySelector('.remote-slot');
+            remote = openRemoteView(slot, current.url, { onPick: (url) => analyze(url), shortUrl });
+            slot.scrollIntoView({ block: 'start', behavior: 'smooth' });
+            return;
+        }
         if (act === 'to-image') {
             $('imgUrlInput').value = current.url;
             location.hash = '#image';
@@ -91,6 +100,10 @@ export function initDetectTab() {
         }
 
         analyzeBtn.disabled = true;
+        if (remote) {
+            remote.close();
+            remote = null;
+        }
         resultBox.innerHTML = '';
         progress.show('Algılanıyor...');
         progress.set(null);
@@ -160,6 +173,12 @@ export function initDetectTab() {
             }
         }
 
+        // Sayfa sunucuda çalıştırılabiliyorsa: otomatik bulunamayan (tıklama, onay vb. isteyen)
+        // durumlar için kullanıcı sayfaya kendisi dokunabilsin.
+        if (info.target === 'page' && canRemote()) {
+            actions += `<button class="btn ${info.details.links && info.details.links.length ? 'btn-secondary' : 'btn-primary'}" data-act="remote">👆 Sayfayı aç, kendim dokunayım</button>`;
+        }
+
         let variants = '';
         if (info.details.variants && info.details.variants.length) {
             variants = `<div class="variant-list">${info.details.variants.map((v) => `
@@ -210,7 +229,8 @@ export function initDetectTab() {
             ${warnings}
             ${variants}
             ${links}
-            <div class="actions">${actions}</div>`;
+            <div class="actions">${actions}</div>
+            <div class="remote-slot"></div>`;
     }
 
     /** Algılanan türe göre doğru indiriciye yönlendirir. */
