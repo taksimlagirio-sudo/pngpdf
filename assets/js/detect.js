@@ -1,6 +1,6 @@
 // Bir adresin arkasında ne olduğunu anlar: tür, format, boyut, çözünürlük/süre.
 import { smartFetch, formatSize, fileNameFromUrl, proxyUrl, getRenderServer, renderSniff } from './util.js';
-import { parsePlaylist } from './hls.js';
+import { parsePlaylist, loadPlaylist, findDrm } from './hls.js';
 
 const SNIFF_BYTES = 65536;
 
@@ -117,6 +117,59 @@ export function findEmbeds(html, baseUrl) {
     return embeds;
 }
 
+const IMAGE_EXT = 'jpe?g|png|webp|gif|avif|bmp|svg';
+
+/**
+ * Sayfadaki resim adreslerini toplar: <img src/srcset/data-*>, <source srcset>, og:image,
+ * CSS background-image ve JSON içindeki resim adresleri. srcset'te en büyük aday alınır.
+ */
+export function findImages(html, baseUrl, { limit = 300 } = {}) {
+    const flat = html.replace(/\\u002[fF]/g, '/').replace(/\\\//g, '/').replace(/&amp;/g, '&');
+    const found = [];
+    const seen = new Set();
+    const add = (raw) => {
+        if (!raw || found.length >= limit) return;
+        const cleaned = raw.trim().replace(/^['"]|['"]$/g, '');
+        if (!cleaned || cleaned.startsWith('data:') || cleaned.startsWith('blob:') || cleaned.includes('\\')) return;
+        try {
+            const url = new URL(cleaned, baseUrl).href;
+            if (!/^https?:/.test(url) || seen.has(url)) return;
+            seen.add(url);
+            found.push(url);
+        } catch (_) { /* bozuk adres */ }
+    };
+    const largestFromSrcset = (value) => {
+        let best = null;
+        let bestW = -1;
+        for (const part of value.split(/,\s+/)) {
+            const [u, d] = part.trim().split(/\s+/);
+            const w = d ? parseFloat(d) * (d.endsWith('x') ? 1000 : 1) : 0;
+            if (u && w >= bestW) {
+                best = u;
+                bestW = w;
+            }
+        }
+        return best;
+    };
+
+    let m;
+    const srcsetRe = /(?:data-srcset|srcset)=["']([^"']+)["']/gi;
+    while ((m = srcsetRe.exec(flat)) !== null) add(largestFromSrcset(m[1]));
+    const imgRe = /<img\b[^>]*?\s(?:data-src|data-original|data-lazy-src|data-full|src)=["']([^"']+)["']/gi;
+    while ((m = imgRe.exec(flat)) !== null) add(m[1]);
+    const metaRe = /<meta[^>]+(?:property|name)=["'](?:og:image(?::url)?|twitter:image(?::src)?)["'][^>]*content=["']([^"']+)["']/gi;
+    while ((m = metaRe.exec(flat)) !== null) add(m[1]);
+    const bgRe = /background(?:-image)?\s*:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)/gi;
+    while ((m = bgRe.exec(flat)) !== null) add(m[1]);
+    const plainRe = new RegExp(`https?://[^"'\\s<>()]+?\\.(?:${IMAGE_EXT})(?:\\?[^"'\\s<>()]*)?`, 'gi');
+    while ((m = plainRe.exec(flat)) !== null) add(m[0]);
+    return found;
+}
+
+export function mergeImages(a, b) {
+    return [...new Set([...a, ...b])];
+}
+
 /**
  * Adresi analiz eder. Küçük bir parça indirip başlıklar + magic number ile karar verir.
  * HLS ise playlist ayrıştırılır, resim/video ise boyut ve süre okunmaya çalışılır.
@@ -209,6 +262,7 @@ async function scanPage(result, url, mode, signal, onStage) {
 
     let links = findMediaLinks(html, url);
     const embeds = findEmbeds(html, url);
+    result.details.images = findImages(html, url);
     result.details.embeds = embeds;
 
     // Kendi sunucun varsa sayfayı orada gerçekten çalıştır: JS ile oynatma anında üretilen
@@ -277,7 +331,7 @@ async function sniffOnServer(result, url, signal, onStage) {
         merged.delete(url); // sayfanın kendisi medya değil; listede olursa aynı ekrana döner
         result.details.links = [...merged.values()];
         result.details.fromRender = sniffed.items.length > 0;
-        result.details.renderImages = sniffed.items.filter((i) => i.kind === 'image').length;
+        result.details.images = mergeImages(result.details.images || [], sniffed.items.filter((i) => i.kind === 'image').map((i) => i.url));
 
         if (result.details.links.length === 0) {
             result.warnings.push('Sayfa kendi sunucunda çalıştırıldı, oynat düğmesine de basıldı ama medya isteği ' +
@@ -359,35 +413,42 @@ function fromExtension(url) {
 
 async function describeHls(result, url, mode, signal) {
     const res = await smartFetch(url, { mode, init: { signal } });
-    const playlist = parsePlaylist(await res.text(), url);
+    let playlist = parsePlaylist(await res.text(), url);
     result.target = 'hls';
+    result.suggestedName = fileNameFromUrl(url).replace(/\.m3u8$/i, '');
 
     if (playlist.type === 'master') {
         result.details.variants = playlist.variants;
-        result.details.summary = `${playlist.variants.length} kalite seçeneği`;
-        result.suggestedName = fileNameFromUrl(url, 'mp4').replace(/\.mp4$/, '');
-        return;
+        // Yayının canlı mı, kaç saniye mi olduğunu görmek için en iyi kaliteyi de okuyoruz.
+        try {
+            playlist = await loadPlaylist(playlist.variants[0].url, { mode, signal });
+        } catch (_) {
+            result.details.summary = `${result.details.variants.length} kalite seçeneği`;
+            return;
+        }
     }
-
-    const encrypted = playlist.segments.find((s) => s.key);
-    const drm = playlist.segments.find((s) => s.key && s.key.method !== 'AES-128');
-
-    result.details.segments = playlist.segments.length;
-    result.details.duration = playlist.totalDuration;
-    result.details.live = playlist.isLive;
-    result.details.container = playlist.map ? 'fMP4 (.mp4)' : 'MPEG-TS (.ts)';
-    result.details.encryption = drm ? drm.key.method : encrypted ? 'AES-128 (çözülebilir)' : 'yok';
-    result.ext = playlist.map ? 'mp4' : 'ts';
-    result.suggestedName = fileNameFromUrl(url, result.ext);
-    result.details.summary = `${playlist.segments.length} parça • ${formatDuration(playlist.totalDuration)}`;
-
-    if (drm) {
+    Object.assign(result.details, describeMediaPlaylist(playlist));
+    if (result.details.drm) {
         result.downloadable = false;
-        result.warnings.push(`Yayın DRM korumalı (${drm.key.method}); indirilemez.`);
+        result.warnings.push(`Yayın DRM korumalı (${result.details.drm}); indirilemez.`);
     }
-    if (playlist.isLive) {
-        result.warnings.push('Canlı yayın: yalnızca playlist anındaki parçalar indirilir.');
-    }
+}
+
+/** Media playlist'ten kartta gösterilecek bilgiler. */
+export function describeMediaPlaylist(playlist) {
+    const encrypted = playlist.segments.find((s) => s.key);
+    const drm = findDrm(playlist.segments);
+    return {
+        segments: playlist.segments.length,
+        duration: playlist.totalDuration,
+        live: playlist.isLive,
+        fmp4: Boolean(playlist.map),
+        container: playlist.map ? 'fMP4' : 'TS',
+        targetDuration: playlist.targetDuration,
+        drm: drm ? drm.key.method : '',
+        encryption: drm ? drm.key.method : encrypted ? 'AES-128' : '',
+        playlist
+    };
 }
 
 async function describeImage(result, url, mode, signal) {

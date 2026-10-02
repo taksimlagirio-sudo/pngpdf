@@ -114,6 +114,16 @@ Notlar:
 - DRM (Widevine/FairPlay/SAMPLE-AES) korumalı yayınlar sunucu bulsa da İndirici tarafından
   yine indirilmez.
 
+## Canlı yayını sunucuda kaydetme
+
+Telefonda ekran kapanınca tarayıcı sekmeyi dondurur; tarayıcıdaki canlı kayıt bu sırada parça
+kaçırır. Sunucu ayarlıysa Algıla'da canlı yayın açıldığında **Nerede kaydedilsin: Sunucumda**
+seçilir: kayıt bu sunucuda sürer, telefonu kilitlesen ya da uygulamayı kapatsan da durmaz.
+Süre sınırı (30 dk / 1 sa / 2 sa / özel) dolunca ya da **Durdur ve kaydet**'e basınca dosya kapanır,
+İndirmeler'de **Kaydet** ile indirilir. Kayıtlar `render-server/.recordings/` klasörüne yazılır
+(`RECORD_DIR` ile değiştirilebilir), 48 saat sonra ya da listeden silinince temizlenir. Termux'ta
+uzun kayıtlar için `termux-wake-lock` açık olmalı.
+
 ## Uç noktalar
 
 | Yöntem | Yol | Açıklama |
@@ -127,5 +137,11 @@ Notlar:
 | GET | `/session/:id` , `/session/:id/shot` | Bulunan medya / ekran görüntüsü (JPEG) |
 | POST | `/session/:id/action` | `{type:"tap",x,y}` (0–1 arası), `scroll`, `type`, `key`, `back`, `reload` |
 | DELETE | `/session/:id` | Oturumu kapatır |
+| GET | `/record` | Sunucudaki canlı kayıtlar (süren + biten) |
+| POST | `/record` `{url, name, format, limitSec}` | Canlı HLS kaydını başlatır; `format`: `mp4` / `ts` / `audio` |
+| GET | `/record/:id` | Kayıt durumu (süre, boyut, kaçan parça) |
+| POST | `/record/:id/stop` | Durdurur ve dosyayı kapatır |
+| GET | `/record/:id/file` | Biten kaydın dosyası (indirme olarak) |
+| DELETE | `/record/:id` | Süren kaydı iptal eder / biten kaydı siler |
 
 Token `Authorization: Bearer <token>` başlığıyla ya da `?token=` parametresiyle gönderilir.

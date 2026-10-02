@@ -16,6 +16,10 @@
 //   GET  /session/:id[/shot] → oturum durumu (bulunan medya) / ekran görüntüsü (JPEG)
 //   POST /session/:id/action → {type:'tap',x,y} | scroll | type | key | back | reload
 //   DELETE /session/:id      → oturumu kapat
+//   GET  /record             → sunucudaki canlı kayıtlar (süren + biten)
+//   POST /record {url,name,format,limitSec,...} → canlı HLS kaydını başlat (sunucuda sürer)
+//   GET  /record/:id         → kayıt durumu; POST /record/:id/stop → durdur ve kaydet
+//   GET  /record/:id/file    → biten kaydın dosyası; DELETE /record/:id → iptal et / sil
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -26,9 +30,10 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { classify, dedupKey, isSegment } from './media.mjs';
+import { createRecorder } from './recorder.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const PORT = Number(process.env.PORT) || 8787;
 // Varsayılan yalnızca bu cihazdan erişim; Tailscale/tünel localhost'a yönlendirir.
 const HOST = process.env.HOST || '127.0.0.1';
@@ -560,6 +565,65 @@ function localConfigAllowed(req) {
     return loopback && (!site || site === 'same-origin');
 }
 
+/* ---------------- Canlı kayıt ---------------- */
+
+const recorder = createRecorder({
+    dir: process.env.RECORD_DIR || path.join(HERE, '.recordings'),
+    appRoot: APP_ROOT,
+    assertPublicTarget,
+    userAgent: DESKTOP_UA,
+    refererFor(url) {
+        try {
+            return refererByUrl.get(url) || refererByHost.get(new URL(url).host) || '';
+        } catch (_) {
+            return '';
+        }
+    }
+});
+
+function sendRecordFile(req, res, file) {
+    // Türkçe karakterli adlar için RFC 5987; eski tarayıcılar için ASCII yedek.
+    const ascii = file.name.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
+    res.writeHead(200, {
+        ...CORS_HEADERS,
+        'content-type': file.mime,
+        'content-length': file.size,
+        'content-disposition': `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+        'cache-control': 'no-store'
+    });
+    if (req.method === 'HEAD') return res.end();
+    const stream = fs.createReadStream(file.path);
+    res.on('close', () => stream.destroy());
+    stream.on('error', () => res.destroy());
+    stream.pipe(res);
+}
+
+async function handleRecord(req, res, url) {
+    if (url.pathname === '/record') {
+        if (req.method === 'GET') return sendJson(res, 200, { items: recorder.list() });
+        if (req.method === 'POST') return sendJson(res, 200, await recorder.start(await readJson(req)));
+    }
+    const match = url.pathname.match(/^\/record\/([0-9a-f]{24})(\/stop|\/file)?$/);
+    if (!match) return false;
+    const [, id, sub = ''] = match;
+    if (sub === '' && req.method === 'GET') {
+        const state = recorder.get(id);
+        return state ? sendJson(res, 200, state) : sendJson(res, 404, { error: 'Kayıt bulunamadı' });
+    }
+    if (sub === '' && req.method === 'DELETE') {
+        return sendJson(res, recorder.delete(id) ? 200 : 404, { ok: true });
+    }
+    if (sub === '/stop' && req.method === 'POST') {
+        const state = recorder.stop(id);
+        return state ? sendJson(res, 200, state) : sendJson(res, 404, { error: 'Kayıt bulunamadı' });
+    }
+    if (sub === '/file' && (req.method === 'GET' || req.method === 'HEAD')) {
+        const file = recorder.file(id);
+        return file ? sendRecordFile(req, res, file) : sendJson(res, 404, { error: 'Dosya hazır değil' });
+    }
+    return false;
+}
+
 /* ---------------- HTTP ---------------- */
 
 function readJson(req, limit = 64 * 1024) {
@@ -656,6 +720,10 @@ const server = http.createServer(async (req, res) => {
             await assertPublicTarget(target);
             const session = await openSession(target.href);
             return sendJson(res, 200, await sessionState(session));
+        }
+
+        if (url.pathname === '/record' || url.pathname.startsWith('/record/')) {
+            if ((await handleRecord(req, res, url)) !== false) return;
         }
 
         const sessionMatch = url.pathname.match(/^\/session\/([0-9a-f]{24})(\/shot|\/action)?$/);

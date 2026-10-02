@@ -1,65 +1,144 @@
-// Sekme yönetimi, PWA kurulumu ve paylaşım hedefi
+// Uygulama kabuğu: bölümler (alt sekme / kenar çubuğu), tema, PWA kurulumu, paylaşım hedefi.
 import { $, autoConfigureLocalServer } from './util.js';
-import { initDownloadBar } from './downloads.js';
-import { initPdfTab } from './pdf.js';
-import { initImageTab } from './image.js';
-import { initVideoTab } from './video.js';
-import { initHlsTab } from './hls.js';
+import { getPrefs, setPref, onPrefs } from './prefs.js';
+import { initDownloads, setCurrentView, setFloatOpen, getJobs } from './downloads.js';
 import { initDetectTab } from './detect-tab.js';
+import { initImagesTab } from './images.js';
+import { initSettings } from './settings.js';
+import { restoreServerRecordings } from './serverrec.js';
 import { canFloat, toggleFloatingBar, onFloatStateChange } from './floatbar.js';
 
-const tabs = Array.from(document.querySelectorAll('.tab'));
-const panels = Array.from(document.querySelectorAll('.panel'));
+const VIEWS = ['detect', 'images', 'downloads', 'settings'];
+// Eski sürümlerin sekme adresleri (kısayollar, yer imleri) yeni bölümlere düşsün.
+const LEGACY = { mp4: 'detect', hls: 'detect', image: 'images', pdf: 'detect' };
 
-function activate(name) {
-    tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
-    panels.forEach((p) => p.classList.toggle('active', p.id === `panel-${name}`));
-    if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
+/* ---- Tema ---- */
+function applyTheme(theme) {
+    const light = theme === 'light';
+    if (light) document.documentElement.dataset.theme = 'light';
+    else delete document.documentElement.dataset.theme;
+    document.querySelector('meta[name="theme-color"]').content = light ? '#F3F1EC' : '#121110';
+    document.querySelectorAll('[data-theme-toggle]').forEach((btn) => {
+        btn.textContent = btn.classList.contains('theme-btn-side')
+            ? `${light ? '☾' : '☀'}  Tema: ${light ? 'Açık' : 'Koyu'}`
+            : light ? '☾' : '☀';
+    });
 }
-
-tabs.forEach((tab) => tab.addEventListener('click', () => activate(tab.dataset.tab)));
-window.addEventListener('hashchange', () => {
-    const name = location.hash.slice(1);
-    if (tabs.some((t) => t.dataset.tab === name)) activate(name);
+applyTheme(getPrefs().theme);
+onPrefs((prefs, key) => {
+    if (key === 'theme') applyTheme(prefs.theme);
 });
 
-initDownloadBar();
-initPdfTab();
-initImageTab();
-initVideoTab();
-initHlsTab();
-// Kendi sunucundan açıldıysa token'ı kendiliğinden al (Algıla sekmesi ayarı buna göre gösterir).
+/* ---- Kısa bildirim ---- */
+let toastTimer = null;
+function toast(text) {
+    let el = document.querySelector('.toast');
+    if (!el) {
+        el = document.createElement('div');
+        el.className = 'toast';
+        el.setAttribute('role', 'status');
+        document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.classList.remove('hidden');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.add('hidden'), 2600);
+}
+
+/* ---- Bölümler ---- */
+function navigate(name) {
+    if (!VIEWS.includes(name)) name = LEGACY[name] || 'detect';
+    document.body.dataset.view = name;
+    VIEWS.forEach((v) => $(`view-${v}`).classList.toggle('active', v === name));
+    document.querySelectorAll('.tab, .nav-item').forEach((el) => el.classList.toggle('active', el.dataset.view === name));
+    if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
+    setCurrentView(name);
+    window.scrollTo(0, 0);
+}
+
+document.addEventListener('click', (e) => {
+    const themeBtn = e.target.closest('[data-theme-toggle]');
+    if (themeBtn) {
+        setPref('theme', getPrefs().theme === 'light' ? 'dark' : 'light');
+        return;
+    }
+    const floatBtn = e.target.closest('[data-float-toggle]');
+    if (floatBtn) {
+        toggleFloatingBar().catch((err) => toast(err.message));
+        return;
+    }
+    const target = e.target.closest('[data-view]');
+    if (target && target !== document.body) navigate(target.dataset.view);
+});
+window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
+
+initDownloads({ onNavigate: navigate });
+
+// Kendi sunucundan açıldıysa token'ı kendiliğinden al.
 await autoConfigureLocalServer();
-const detectTab = initDetectTab();
+
+const imagesTab = initImagesTab({ toast });
+const detectTab = initDetectTab({
+    navigate,
+    toast,
+    openImages(pageUrl, urls, title) {
+        navigate('images');
+        imagesTab.open(pageUrl, urls, title);
+    }
+});
+
+/* ---- Ana ekrana ekleme ---- */
+let installPrompt = null;
+const installListeners = new Set();
+const setInstallable = (value) => installListeners.forEach((fn) => fn(value));
+window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    installPrompt = event;
+    setInstallable(true);
+});
+window.addEventListener('appinstalled', () => {
+    installPrompt = null;
+    setInstallable(false);
+});
+const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+/* ---- Ayarlar + kenar çubuğundaki sunucu kartı ---- */
+initSettings({
+    install: {
+        onAvailable(fn) {
+            installListeners.add(fn);
+            fn(Boolean(installPrompt));
+        },
+        async prompt() {
+            if (!installPrompt) return;
+            installPrompt.prompt();
+            await installPrompt.userChoice;
+            installPrompt = null;
+            setInstallable(false);
+        },
+        iosHint: !standalone && /iPhone|iPad|iPod/.test(navigator.userAgent)
+    },
+    onServerChange(server, version) {
+        const card = $('sideServer');
+        card.querySelector('.dot').classList.toggle('on', Boolean(server));
+        let host = 'ayarlı değil';
+        if (server) {
+            try {
+                host = new URL(server.url).host;
+            } catch (_) { /* geçersiz adres */ }
+            if (version) host += ` · v${version}`;
+        }
+        card.querySelector('.server-card-sub').textContent = host;
+        detectTab.refresh();
+    }
+});
+
+restoreServerRecordings();
 
 /* ---- Diğer uygulamaların üstünde yüzen mini pencere ---- */
-// İki giriş noktası var: başlıktaki düğme (her zaman görünür) ve indirme sürerken alt çubuktaki 🪟.
-const floatButtons = [$('floatBtn'), $('taskbarFloatBtn')];
 if (canFloat) {
-    floatButtons.forEach((btn) => {
-        btn.classList.remove('hidden');
-        btn.addEventListener('click', async (event) => {
-            event.stopPropagation(); // alt çubuğun aç/kapa davranışını tetiklemesin
-            try {
-                await toggleFloatingBar();
-            } catch (err) {
-                console.warn('Yüzen pencere açılamadı:', err);
-                btn.title = err.message;
-            }
-        });
-    });
-
-    onFloatStateChange((open) => {
-        $('floatBtn').textContent = open
-            ? '✕ Üstteki pencereyi kapat'
-            : '🪟 Üstte göster (diğer uygulamaların üstünde)';
-        $('taskbarFloatBtn').textContent = open ? '✕' : '🪟';
-        floatButtons.forEach((btn) => {
-            btn.title = open ? 'Yüzen pencereyi kapat' : 'Diğer uygulamaların üstünde mini pencere';
-        });
-    });
-} else {
-    $('floatHint').textContent = '🪟 Yüzen mini pencere bu tarayıcıda desteklenmiyor (Android Chrome ve masaüstü Chrome destekler).';
+    document.body.classList.add('can-float');
+    onFloatStateChange(setFloatOpen);
 }
 
 /* ---- Paylaşım hedefi: başka uygulamadan paylaşılan bağlantı ---- */
@@ -69,61 +148,30 @@ const shared = [params.get('url'), params.get('text'), params.get('title')]
     .map((value) => (value.match(/https?:\/\/\S+/) || [])[0])
     .find(Boolean);
 
-let initialTab = location.hash.slice(1);
 if (shared) {
-    detectTab.prefill(shared, true);
-    initialTab = 'detect';
     history.replaceState(null, '', location.pathname + '#detect');
+    navigate('detect');
+    detectTab.prefill(shared, true);
+} else {
+    navigate(location.hash.slice(1) || 'detect');
 }
-activate(tabs.some((t) => t.dataset.tab === initialTab) ? initialTab : 'detect');
 
 /* ---- Service worker ---- */
 if ('serviceWorker' in navigator) {
-    // Yeni sürüm yüklenip kontrolü devralınca sayfayı bir kez yenile; yoksa bellekteki eski kod
-    // yeni sunucu davranışıyla karışır. İlk kurulumda (önceden kontrolcü yokken) yenileme yapılmaz.
+    // Yeni sürüm kontrolü devralınca sayfayı bir kez yenile; yoksa bellekteki eski kod yeni dosyalarla
+    // karışır. İlk kurulumda yenileme yapılmaz. Süren bir indirme/kayıt varsa yenileme ertelenir.
     let hasController = Boolean(navigator.serviceWorker.controller);
     let reloading = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!hasController) {
-            hasController = true; // ilk kurulumda devralma: sayfa zaten güncel, yenileme gerekmez
+            hasController = true;
             return;
         }
-        if (reloading) return;
+        if (reloading || getJobs().some((j) => j.status === 'active' || j.status === 'queued')) return;
         reloading = true;
         location.reload();
     });
-
     window.addEventListener('load', () => {
         navigator.serviceWorker.register('sw.js').catch((err) => console.warn('SW kaydı başarısız:', err));
     });
-}
-
-/* ---- Ana ekrana ekleme ---- */
-const installBtn = $('installBtn');
-const iosHint = $('iosInstallHint');
-let installPrompt = null;
-
-window.addEventListener('beforeinstallprompt', (event) => {
-    event.preventDefault();
-    installPrompt = event;
-    installBtn.classList.remove('hidden');
-});
-
-installBtn.addEventListener('click', async () => {
-    if (!installPrompt) return;
-    installPrompt.prompt();
-    const { outcome } = await installPrompt.userChoice;
-    if (outcome === 'accepted') installBtn.classList.add('hidden');
-    installPrompt = null;
-});
-
-window.addEventListener('appinstalled', () => {
-    installBtn.classList.add('hidden');
-    installPrompt = null;
-});
-
-// iOS'ta beforeinstallprompt yok; kullanıcıya yolu tarif ediyoruz.
-const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-if (!standalone && /iPhone|iPad|iPod/.test(navigator.userAgent)) {
-    iosHint.classList.remove('hidden');
 }
