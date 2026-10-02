@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Medya Algılayıcı</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <header class="head">
+        <h1>🔎 Bu sekmedeki medya</h1>
+        <div class="head-actions">
+            <button id="openWindowBtn" title="Uzun indirmelerde kapanmaması için ayrı pencerede açın">🗗 Pencerede aç</button>
+            <button id="refreshBtn" title="Listeyi yenile">⟳</button>
+            <button id="clearBtn" title="Listeyi temizle">🗑️</button>
+        </div>
+    </header>
+
+    <p class="warn" id="focusWarn">
+        ⚠️ Bu küçük pencere odağı kaybedince kapanır ve indirmeyi yarıda keser.
+        HLS/canlı yayın indirmeden önce <strong>🗗 Pencerede aç</strong>'a basın.
+    </p>
+
+    <div id="list" class="list"></div>
+
+    <div id="detail" class="detail hidden"></div>
+
+    <footer class="foot">
+        Yalnızca bu tarayıcı sekmesinin ağ isteklerini izler; başka uygulamalara erişmez.
+        Gerçek DRM korumalı (Widevine/FairPlay/SAMPLE-AES) içerikler indirilemez.
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+</body>
+</html>

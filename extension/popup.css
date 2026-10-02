@@ -1,0 +1,195 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root { color-scheme: light; }
+
+body {
+    width: 380px;
+    max-height: 560px;
+    overflow-y: auto;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 13px;
+    color: #222;
+    background: #f7f8fc;
+}
+
+/* Ayrı pencerede açıldığında (standalone) daha ferah görünsün. */
+body.standalone {
+    width: 100vw;
+    max-height: none;
+    min-height: 100vh;
+}
+
+.head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+.head h1 { font-size: 14px; font-weight: 700; }
+
+.head-actions { display: flex; gap: 6px; }
+
+.head-actions button {
+    background: rgba(255,255,255,0.18);
+    border: none;
+    color: white;
+    border-radius: 8px;
+    padding: 6px 9px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.head-actions button:hover { background: rgba(255,255,255,0.3); }
+
+.warn {
+    background: #fff8e6;
+    border-bottom: 1px solid #ffe2a8;
+    color: #8a6d1f;
+    padding: 8px 14px;
+    font-size: 11.5px;
+    line-height: 1.5;
+}
+
+.list { padding: 8px; }
+
+.item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: white;
+    border: 1px solid #e7e9f5;
+    border-radius: 10px;
+    padding: 10px;
+    margin-bottom: 8px;
+    cursor: pointer;
+}
+
+.item:hover { border-color: #a5b4fc; }
+
+.item-icon { font-size: 20px; flex-shrink: 0; width: 24px; text-align: center; }
+
+.item-main { flex: 1; min-width: 0; }
+
+.item-url {
+    font-size: 12px;
+    font-weight: 600;
+    color: #333;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.item-meta { font-size: 11px; color: #8a8fa3; margin-top: 2px; }
+
+.empty { text-align: center; color: #8a8fa3; padding: 30px 16px; font-size: 12.5px; line-height: 1.6; }
+
+.detail {
+    padding: 14px;
+    border-top: 1px solid #e7e9f5;
+    background: white;
+}
+
+.detail.hidden { display: none; }
+
+.detail-back {
+    background: none;
+    border: none;
+    color: #667eea;
+    font-weight: 600;
+    font-size: 12.5px;
+    cursor: pointer;
+    margin-bottom: 10px;
+}
+
+.detail-preview {
+    width: 100%;
+    max-height: 180px;
+    object-fit: contain;
+    border-radius: 8px;
+    background: #f1f1f8;
+    margin-bottom: 10px;
+}
+
+.detail-url {
+    font-size: 11px;
+    color: #8a8fa3;
+    word-break: break-all;
+    margin-bottom: 10px;
+}
+
+.field { margin-bottom: 10px; }
+
+.field label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 5px;
+    color: #333;
+}
+
+.field select, .field input[type=range] { width: 100%; }
+
+.variant {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    background: #f7f8fc;
+    border: 1px solid #e7e9f5;
+    border-radius: 8px;
+    padding: 9px 11px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    text-align: left;
+}
+
+.variant:hover { border-color: #a5b4fc; }
+
+.btn {
+    display: block;
+    width: 100%;
+    border: none;
+    border-radius: 9px;
+    padding: 11px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    margin-top: 6px;
+}
+
+.btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+.btn-danger { background: #ef4444; color: white; }
+.btn-secondary { background: #eef0fa; color: #444; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.notice {
+    background: #fff1f1;
+    border: 1px solid #ffd6d6;
+    color: #b42318;
+    border-radius: 8px;
+    padding: 9px 11px;
+    font-size: 11.5px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+}
+
+.progress {
+    font-size: 11.5px;
+    color: #555;
+    margin-top: 8px;
+    min-height: 16px;
+}
+
+.foot {
+    padding: 10px 14px 16px;
+    font-size: 10.5px;
+    color: #9aa0b4;
+    line-height: 1.5;
+}
