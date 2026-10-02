@@ -1,39 +1,70 @@
 // HLS (m3u8): ayrıştırma, tamamlanmış yayını (VOD) indirme ve canlı yayını süre sınırıyla kaydetme.
 //
-// Canlı yayında playlist yalnızca son birkaç parçayı gösterir; tek seferde indirmek birkaç saniyelik
-// dosya üretir. Bu yüzden canlı yayın "kayıt" olarak ele alınır: playlist düzenli aralıklarla yeniden
-// okunur, yeni parçalar sırayla dosyaya eklenir; kullanıcı durdurunca ya da süre sınırı dolunca
-// dosya kapanıp kaydedilir.
-import { formatSize, smartFetch, fileNameFromUrl, proxyUrl, probeAccess, hms, sleep } from './util.js';
-import { startBackgroundDownload, canBackgroundFetch } from './downloads.js';
+// Çıktı her zaman tek, normal (sarılabilir) bir MP4'tür: görüntü ve ses (ayrı m3u8'de gelse bile)
+// birleştirilir, zaman çizelgesi indirmenin/kaydın başladığı andan (0:00) başlar. TS parçaları
+// mux.js ile yeniden kodlanmadan MP4 örneklerine çevrilir; MP4'ü mp4mux.mjs kurar.
+//
+// Canlı yayında playlist yalnızca son birkaç parçayı gösterir; bu yüzden canlı yayın "kayıt" olarak
+// ele alınır: playlist düzenli aralıklarla okunur, yeni parçalar eklenir; kullanıcı durdurunca ya da
+// süre sınırı dolunca dosya kapanır.
+import { formatSize, smartFetch, fileNameFromUrl, hms, sleep } from './util.js';
+import { Mp4Builder, initHasVideo, tsHasVideo } from './mp4mux.mjs';
 
 const MAX_PARALLEL = 4;
 const SEGMENT_RETRY = 3;
-const MAX_BG_SEGMENTS = 400;
 const PLAYLIST_FAILURES_LIMIT = 8;
+const VIDEO_CODEC = /avc1|avc3|hvc1|hev1|dvh1|dvhe|vp08|vp09|vp8|vp9|av01|mp4v/i;
 
-/** m3u8 metnini ayrıştırır: master ise varyantlar, media ise parçalar döner. */
+/** m3u8 metnini ayrıştırır: master ise video kaliteleri + ses grupları, media ise parçalar döner. */
 export function parsePlaylist(text, baseUrl) {
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     const isMaster = lines.some((l) => l.startsWith('#EXT-X-STREAM-INF'));
     const resolve = (uri) => new URL(uri, baseUrl).href;
 
     if (isMaster) {
-        const variants = [];
+        const audio = {}; // GROUP-ID → [{url, name, language, isDefault}]
+        for (const line of lines) {
+            if (!line.startsWith('#EXT-X-MEDIA:')) continue;
+            const attrs = parseAttributes(line.slice(line.indexOf(':') + 1));
+            if ((attrs.TYPE || '').toUpperCase() !== 'AUDIO') continue;
+            const group = attrs['GROUP-ID'] || '';
+            (audio[group] = audio[group] || []).push({
+                url: attrs.URI ? resolve(attrs.URI) : null, // URI yoksa ses video parçalarının içinde
+                name: attrs.NAME || '',
+                language: attrs.LANGUAGE || '',
+                isDefault: (attrs.DEFAULT || '').toUpperCase() === 'YES'
+            });
+        }
+
+        const all = [];
         for (let i = 0; i < lines.length; i++) {
             if (!lines[i].startsWith('#EXT-X-STREAM-INF')) continue;
             const attrs = parseAttributes(lines[i].slice(lines[i].indexOf(':') + 1));
             const uriLine = lines.slice(i + 1).find((l) => !l.startsWith('#'));
             if (!uriLine) continue;
-            variants.push({
+            const codecs = attrs.CODECS || '';
+            const resolution = attrs.RESOLUTION || '';
+            all.push({
                 url: resolve(uriLine),
                 bandwidth: parseInt(attrs.BANDWIDTH || attrs['AVERAGE-BANDWIDTH'] || '0', 10),
-                resolution: attrs.RESOLUTION || '',
-                codecs: attrs.CODECS || ''
+                resolution,
+                height: parseInt(resolution.split('x')[1] || '0', 10),
+                codecs,
+                audioGroup: attrs.AUDIO || '',
+                // Kodek ya da çözünürlük bilgisi videosuz diyorsa yalnızca ses kalitesidir.
+                audioOnly: codecs ? !VIDEO_CODEC.test(codecs) : !resolution && all.some((v) => v.resolution)
             });
         }
-        variants.sort((a, b) => b.bandwidth - a.bandwidth);
-        return { type: 'master', variants };
+        // Yalnızca ses olan "kaliteler" listelenmez; aynı çözünürlükten en yüksek bit hızı kalır.
+        const video = all.filter((v) => !v.audioOnly);
+        const byKey = new Map();
+        for (const v of video.length ? video : all) {
+            const key = v.height ? `h${v.height}` : `b${v.bandwidth}`;
+            const prev = byKey.get(key);
+            if (!prev || v.bandwidth > prev.bandwidth) byKey.set(key, v);
+        }
+        const variants = [...byKey.values()].sort((a, b) => (b.height - a.height) || (b.bandwidth - a.bandwidth));
+        return { type: 'master', variants, audio, audioOnly: video.length === 0 };
     }
 
     const segments = [];
@@ -78,6 +109,7 @@ export function parsePlaylist(text, baseUrl) {
                 start: totalDuration,
                 range: pendingRange,
                 key,
+                map,
                 seq: seq + segments.length
             });
             totalDuration += duration;
@@ -134,32 +166,41 @@ export async function loadPlaylist(url, { mode = 'auto', signal } = {}) {
     return parsePlaylist(await res.text(), url);
 }
 
-/* ---------------- Çıktı biçimi ---------------- */
+/** Bir kalitenin ses izi: grubun varsayılanı (yoksa ilki). Ses video parçalarındaysa null. */
+export function audioFor(master, variant) {
+    const group = master.audio && variant ? master.audio[variant.audioGroup] : null;
+    if (!group || !group.length) return null;
+    const pick = group.find((a) => a.isDefault && a.url) || group.find((a) => a.url);
+    return pick ? pick.url : null;
+}
 
 /**
- * Kaynağa göre sunulan biçimler. TS yayınlar tarayıcıda MP4'e çevrilebilir (mux.js ile, yeniden
- * kodlama yok) ya da yalnızca sesi M4A olarak alınabilir; fMP4 yayınlar zaten MP4'tür.
+ * Media playlist'te görüntü var mı? fMP4'te init segmenti, TS'de ilk parçanın PMT'si okunur.
+ * true/false; anlaşılamazsa null.
  */
-export function formatsFor(isFmp4) {
-    return isFmp4
-        ? [{ id: 'mp4', label: 'MP4', ext: 'mp4', hint: 'fMP4 parçaları birleştirilir · her cihazda oynar' }]
-        : [
-            { id: 'mp4', label: 'MP4', ext: 'mp4', hint: 'Her cihazda ve galeride oynar · kayıpsız dönüştürülür' },
-            { id: 'ts', label: 'TS', ext: 'ts', hint: 'Olduğu gibi birleştirilir · VLC ile açılır' },
-            { id: 'audio', label: 'Ses', ext: 'm4a', hint: 'Yalnızca ses (M4A) · görüntü atılır' }
-        ];
+export async function playlistHasVideo(playlist, { mode = 'auto', signal } = {}) {
+    const first = playlist.segments[0];
+    if (!first) return null;
+    if (/\.(aac|mp3|m4a|ac3|ec3)(\?|$)/i.test(first.url)) return false;
+    try {
+        if (playlist.map) {
+            const res = await smartFetch(playlist.map.url, { mode, init: { signal } });
+            return initHasVideo(new Uint8Array(await res.arrayBuffer()));
+        }
+        const res = await smartFetch(first.url, { mode, init: { signal, headers: { Range: 'bytes=0-200000' } } });
+        let bytes = new Uint8Array(await res.arrayBuffer());
+        if (first.key) return null; // şifreli: içerik okunamaz, oynatmaya bırak
+        bytes = bytes.subarray(0, Math.floor(bytes.length / 188) * 188);
+        return tsHasVideo(bytes);
+    } catch (_) {
+        return null;
+    }
 }
 
-export function extFor(format, isFmp4) {
-    if (isFmp4) return 'mp4';
-    return { mp4: 'mp4', ts: 'ts', audio: 'm4a' }[format] || 'ts';
-}
-
-const MIME = { mp4: 'video/mp4', ts: 'video/mp2t', m4a: 'audio/mp4' };
-export const mimeFor = (ext) => MIME[ext] || 'application/octet-stream';
+/* ---------------- Dönüştürme ---------------- */
 
 let muxPromise = null;
-/** TS→MP4 dönüştürücüsünü (mux.js) ilk ihtiyaçta yükler. */
+/** TS → MP4 örnekleri dönüştürücüsünü (mux.js) ilk ihtiyaçta yükler. */
 function loadMux() {
     if (window.muxjs) return Promise.resolve(window.muxjs);
     if (!muxPromise) {
@@ -177,55 +218,54 @@ function loadMux() {
     return muxPromise;
 }
 
-/**
- * Parçaları sırayla alıp hedefe yazan yazıcı. MP4/Ses seçiliyse TS parçaları dönüştürülerek yazılır.
- * Dönüştürücü yüklenemezse TS olarak devam edilir (veri kaybolmaz) ve `fellBack` işaretlenir.
- */
-async function createWriter(sink, { format, isFmp4 }) {
-    const transmux = !isFmp4 && (format === 'mp4' || format === 'audio');
-    let tm = null;
-    let fellBack = false;
-    if (transmux) {
-        try {
-            const muxjs = await loadMux();
-            tm = new (muxjs.mp4 || muxjs).Transmuxer({ remux: format !== 'audio' });
-        } catch (err) {
-            console.warn(err);
-            fellBack = true;
-        }
-    }
-    if (!tm) {
-        return {
-            fellBack,
-            async push(data) { await sink.write(data); },
-            async finish() {}
-        };
-    }
+const sameBytes = (a, b) => a && b && a.length === b.length && a.every((x, i) => x === b[i]);
 
-    let initWritten = false;
-    let out = [];
-    tm.on('data', (segment) => {
-        if (format === 'audio' && segment.type !== 'audio') return;
-        if (!initWritten) {
-            out.push(new Uint8Array(segment.initSegment));
-            initWritten = true;
-        }
-        out.push(new Uint8Array(segment.data));
-    });
-    const drain = async () => {
-        const chunks = out;
-        out = [];
-        for (const chunk of chunks) await sink.write(chunk);
+/**
+ * Akışları (görüntü, ses) tek MP4'e yazan birleştirici. Her akış ya TS (mux.js ile çevrilir) ya da
+ * fMP4'tür. Zaman damgaları özgün haliyle bırakılır ki ayrı gelen ses ve görüntü hizalansın;
+ * mp4mux en sonda her şeyi 0'dan başlatır.
+ */
+async function createMuxer(sink) {
+    const builder = new Mp4Builder({ write: (bytes) => sink.write(bytes) });
+    await builder.start();
+    const transmuxers = new Map();
+    const lastInit = new Map();
+    let muxjs = null;
+
+    const addInit = (id, bytes) => {
+        if (sameBytes(lastInit.get(id), bytes)) return;
+        lastInit.set(id, bytes);
+        builder.addInit(id, bytes);
     };
+
     return {
-        fellBack: false,
-        async push(data) {
-            tm.push(data);
-            tm.flush();
-            await drain();
+        builder,
+        async push(streamId, data, { map = null } = {}) {
+            if (map) {
+                addInit(streamId, map);
+                await builder.addFragment(streamId, data);
+                return;
+            }
+            muxjs = muxjs || await loadMux();
+            let entry = transmuxers.get(streamId);
+            if (!entry) {
+                const tm = new (muxjs.mp4 || muxjs).Transmuxer({ remux: false, keepOriginalTimestamps: true });
+                entry = { tm, out: [] };
+                tm.on('data', (segment) => entry.out.push(segment));
+                transmuxers.set(streamId, entry);
+            }
+            entry.tm.push(data);
+            entry.tm.flush();
+            for (const segment of entry.out.splice(0)) {
+                const id = `${streamId}-${segment.type}`;
+                addInit(id, new Uint8Array(segment.initSegment));
+                await builder.addFragment(id, new Uint8Array(segment.data));
+            }
         },
         async finish() {
-            await drain();
+            const result = await builder.finish();
+            await sink.patch(result.patch.position, result.patch.bytes);
+            return result;
         }
     };
 }
@@ -234,13 +274,20 @@ async function createWriter(sink, { format, isFmp4 }) {
 
 function createSegmentFetcher({ mode, signal }) {
     const keyCache = new Map();
+    const mapCache = new Map();
+
+    async function fetchBytes(url, range) {
+        const init = { signal };
+        if (range) init.headers = { Range: `bytes=${range.offset}-${range.offset + range.length - 1}` };
+        const res = await smartFetch(url, { mode, init });
+        return new Uint8Array(await res.arrayBuffer());
+    }
 
     async function decrypt(buffer, segment) {
         const { key } = segment;
         if (!key.uri) throw new Error('Şifreleme anahtarı adresi bulunamadı');
         if (!keyCache.has(key.uri)) {
-            const res = await smartFetch(key.uri, { mode, init: { signal } });
-            const raw = new Uint8Array(await res.arrayBuffer());
+            const raw = await fetchBytes(key.uri);
             if (raw.length !== 16) throw new Error('Geçersiz AES-128 anahtarı');
             keyCache.set(key.uri, await crypto.subtle.importKey('raw', raw, 'AES-CBC', false, ['decrypt']));
         }
@@ -249,20 +296,12 @@ function createSegmentFetcher({ mode, signal }) {
         return new Uint8Array(plain);
     }
 
-    return async function fetchSegment(segment) {
+    async function retry(fn) {
         let lastError;
         for (let attempt = 1; attempt <= SEGMENT_RETRY; attempt++) {
             if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
             try {
-                const init = { signal };
-                if (segment.range) {
-                    init.headers = {
-                        Range: `bytes=${segment.range.offset}-${segment.range.offset + segment.range.length - 1}`
-                    };
-                }
-                const res = await smartFetch(segment.url, { mode, init });
-                const buffer = new Uint8Array(await res.arrayBuffer());
-                return segment.key ? await decrypt(buffer, segment) : buffer;
+                return await fn();
             } catch (err) {
                 if (err.name === 'AbortError') throw err;
                 lastError = err;
@@ -270,103 +309,89 @@ function createSegmentFetcher({ mode, signal }) {
             }
         }
         throw new Error(`Parça indirilemedi: ${lastError ? lastError.message : 'bilinmeyen hata'}`);
+    }
+
+    /** Parçayı (gerekirse çözüp) ve fMP4 ise init segmentini döner. */
+    return async function fetchSegment(segment) {
+        let map = null;
+        if (segment.map) {
+            const mapKey = `${segment.map.url}#${segment.map.range ? segment.map.range.offset : ''}`;
+            if (!mapCache.has(mapKey)) mapCache.set(mapKey, await retry(() => fetchBytes(segment.map.url, segment.map.range)));
+            map = mapCache.get(mapKey);
+        }
+        const data = await retry(async () => {
+            const bytes = await fetchBytes(segment.url, segment.range);
+            return segment.key ? decrypt(bytes, segment) : bytes;
+        });
+        return { data, map };
     };
 }
 
-/** Yazıcının dönüştürme yapamadığı durumda dosya adının uzantısını düzeltir. */
-function finalName(name, writer) {
-    return writer.fellBack ? name.replace(/\.(mp4|m4a)$/i, '.ts') : name;
+function sliceRange(segments, range, total) {
+    if (!range || (!(range.start > 0) && !(range.end && range.end < total))) return segments;
+    const end = range.end || Infinity;
+    return segments.filter((s) => s.start + s.duration > range.start && s.start < end);
 }
 
 /* ---------------- Tamamlanmış yayın (VOD) ---------------- */
 
 /**
- * Media playlist'i indirir. `range` ({start, end} saniye) verilirse yalnızca o aralıktaki parçalar
- * alınır. İş "Durdur ve kaydet" ile durdurulursa o ana kadar inen kısım kaydedilir.
- * `createSinkFor(fileName, mime)` hedefi açar (disk seçiliyse konum zaten tıklamada sorulmuştur).
+ * Görüntü (ve varsa ayrı ses) playlist'ini indirip tek MP4 yazar. `range` ({start, end} sn)
+ * verilirse yalnızca o aralık alınır. "Durdur ve kaydet" ile o ana kadar inen kısım kaydedilir.
+ * `createSinkFor(fileName, mime)` hedefi açar (konum seçildiyse tıklamada sorulmuştur).
  */
 export async function downloadHlsVod({
-    job, url, playlist = null, name, format = 'mp4', range = null, mode = 'auto',
-    background = false, createSinkFor
+    job, videoUrl, videoPlaylist = null, audioUrl = null, name, range = null, mode = 'auto', createSinkFor
 }) {
-    playlist = playlist || await loadPlaylist(url, { mode, signal: job.signal });
-    if (playlist.type === 'master') throw new Error('Önce bir kalite seçin');
+    const signal = job.signal;
+    const video = videoPlaylist || await loadPlaylist(videoUrl, { mode, signal });
+    if (video.type === 'master') throw new Error('Önce bir kalite seçin');
+    const audio = audioUrl ? await loadPlaylist(audioUrl, { mode, signal }) : null;
 
-    let { segments } = playlist;
-    const { map } = playlist;
-    if (segments.length === 0) throw new Error('Playlist içinde parça bulunamadı');
-    const drm = findDrm(segments);
-    if (drm) throw new Error(`Bu yayın DRM korumalı (${drm.key.method}); indirilemez.`);
-
-    if (range && (range.start > 0 || (range.end && range.end < playlist.totalDuration))) {
-        const end = range.end || Infinity;
-        segments = segments.filter((s) => s.start + s.duration > range.start && s.start < end);
-        if (!segments.length) throw new Error('Seçilen aralıkta parça yok');
+    const streams = [{ id: 'v', playlist: video }];
+    if (audio && audio.type === 'media' && audio.segments.length) streams.push({ id: 'a', playlist: audio });
+    for (const s of streams) {
+        const drm = findDrm(s.playlist.segments);
+        if (drm) throw new Error(`Bu yayın DRM korumalı (${drm.key.method}); indirilemez.`);
     }
 
-    const isFmp4 = Boolean(map);
-    const ext = extFor(format, isFmp4);
-    const fileName = `${name}.${ext}`;
-    const encrypted = segments.some((s) => s.key);
-    const raw = isFmp4 || format === 'ts';
+    // Tüm parçalar zamana göre tek sırada: indirme paralel, dosyaya yazma bu sırayla.
+    const items = streams
+        .flatMap((s) => sliceRange(s.playlist.segments, range, s.playlist.totalDuration).map((seg) => ({ stream: s.id, seg })))
+        .sort((a, b) => (a.seg.start - b.seg.start) || (a.stream === 'v' ? -1 : 1));
+    if (!items.length) throw new Error(range ? 'Seçilen aralıkta parça yok' : 'Playlist içinde parça bulunamadı');
 
-    // Şifresiz, dönüştürme gerektirmeyen ve makul uzunluktaki yayınlar service worker'a devredilebilir.
-    if (background && canBackgroundFetch && raw && !encrypted && segments.length <= MAX_BG_SEGMENTS
-        && job.saveMode !== 'disk') {
-        const access = await probeAccess(segments[0].url, mode);
-        const rawUrls = (map ? [map.url] : []).concat(segments.map((s) => s.url));
-        const urls = access === 'proxy' ? rawUrls.map((u) => proxyUrl(u)) : rawUrls;
-        job.name = fileName;
-        const started = await startBackgroundDownload({
-            urls,
-            name: fileName,
-            job,
-            fallback: () => downloadHlsVod({
-                job, url, playlist, name, format, range, mode, background: false, createSinkFor
-            })
-        });
-        if (started) return;
-    }
-
-    const sink = await createSinkFor(fileName, mimeFor(ext));
-    const writer = await createWriter(sink, { format, isFmp4 });
-    job.name = finalName(sink.name || fileName, writer);
+    const sink = await createSinkFor(`${name}.mp4`, 'video/mp4');
+    job.name = sink.name || `${name}.mp4`;
     job.canStop = true;
-    const fetchSegment = createSegmentFetcher({ mode, signal: job.signal });
+    const muxer = await createMuxer(sink);
+    const fetchSegment = createSegmentFetcher({ mode, signal });
 
     let downloaded = 0;
     let nextToWrite = 0;
     const buffered = new Map();
     let writing = Promise.resolve();
-
     const report = () => {
-        job.progress(downloaded, segments.length);
-        job.detail = `${downloaded}/${segments.length} parça · ${formatSize(job.bytes)}`;
+        job.progress(downloaded, items.length);
+        job.detail = `${hms(muxer.builder.duration)} · ${formatSize(job.bytes)}`;
     };
 
     try {
-        if (map) {
-            const init = await fetchSegment({ url: map.url, range: map.range, key: null });
-            await writer.push(init);
-            job.addBytes(init.length);
-        }
-
         let cursor = 0;
         const worker = async () => {
             for (;;) {
                 if (job.stopRequested) return;
                 const index = cursor++;
-                if (index >= segments.length) return;
-                const data = await fetchSegment(segments[index]);
-                buffered.set(index, data);
-                job.addBytes(data.length);
+                if (index >= items.length) return;
+                const result = await fetchSegment(items[index].seg);
+                buffered.set(index, result);
+                job.addBytes(result.data.length);
                 downloaded++;
-                // Paralel indiriyoruz ama dosyaya sırayla yazıyoruz.
                 writing = writing.then(async () => {
                     while (buffered.has(nextToWrite)) {
-                        const chunk = buffered.get(nextToWrite);
+                        const { data, map } = buffered.get(nextToWrite);
                         buffered.delete(nextToWrite);
-                        await writer.push(chunk);
+                        await muxer.push(items[nextToWrite].stream, data, { map });
                         nextToWrite++;
                     }
                 });
@@ -374,19 +399,17 @@ export async function downloadHlsVod({
                 report();
             }
         };
-
         report();
-        await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL, segments.length) }, worker));
+        await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL, items.length) }, worker));
         await writing;
-        await writer.finish();
+
+        const result = await muxer.finish();
         const blob = await sink.close();
         if (blob) job.attachResult(blob);
-
-        const duration = segments.slice(0, nextToWrite).reduce((sum, s) => sum + s.duration, 0);
-        const parts = [hms(duration), formatSize(blob ? blob.size : job.bytes)];
-        if (job.stopRequested && nextToWrite < segments.length) parts.push(`durduruldu (${nextToWrite}/${segments.length} parça)`);
-        if (writer.fellBack) parts.push('TS olarak kaydedildi');
-        if (ext === 'ts' && !writer.fellBack) parts.push('VLC ile açılır');
+        if (!result.hasVideo) job.name = job.name.replace(/\.mp4$/i, '.m4a');
+        const parts = [hms(result.duration), formatSize(blob ? blob.size : job.bytes)];
+        if (job.stopRequested && nextToWrite < items.length) parts.push('durduruldu');
+        if (streams.length > 1) parts.push('ses birleştirildi');
         job.done(parts.join(' · '));
     } catch (err) {
         if (!job.signal.aborted) job.controller.abort(); // diğer paralel parçalar da dursun
@@ -398,26 +421,28 @@ export async function downloadHlsVod({
 /* ---------------- Canlı yayın kaydı ---------------- */
 
 /**
- * Canlı yayını "şu andan itibaren" kaydeder. `limitSec` > 0 ise o kadar süre sonra kendiliğinden
- * durur ve kaydeder; kullanıcı "Durdur ve kaydet" ile istediği an bitirebilir.
+ * Canlı yayını "şu andan itibaren" kaydeder (ayrı ses varsa o da). `limitSec` > 0 ise o kadar süre
+ * sonra kendiliğinden durur ve kaydeder; "Durdur ve kaydet" ile istediğin an bitirilir.
  * Sekme dondurulursa (telefonda ekran kapanınca) kaçan parçalar sayılır ve kartta gösterilir.
  */
 export async function recordHlsLive({
-    job, url, name, format = 'mp4', limitSec = 0, limitLabel = '', quality = '', mode = 'auto', createSinkFor
+    job, videoUrl, audioUrl = null, name, limitSec = 0, limitLabel = '', quality = '', mode = 'auto', createSinkFor
 }) {
     const signal = job.signal;
-    let playlist = await loadPlaylist(url, { mode, signal });
-    if (playlist.type === 'master') throw new Error('Önce bir kalite seçin');
-    const drm = findDrm(playlist.segments);
-    if (drm) throw new Error(`Bu yayın DRM korumalı (${drm.key.method}); kaydedilemez.`);
+    const streams = [{ id: 'v', url: videoUrl, lastSeq: null, playlist: null }];
+    if (audioUrl) streams.push({ id: 'a', url: audioUrl, lastSeq: null, playlist: null });
+    for (const s of streams) {
+        s.playlist = await loadPlaylist(s.url, { mode, signal });
+        if (s.playlist.type === 'master') throw new Error('Önce bir kalite seçin');
+        const drm = findDrm(s.playlist.segments);
+        if (drm) throw new Error(`Bu yayın DRM korumalı (${drm.key.method}); kaydedilemez.`);
+    }
 
-    const isFmp4 = Boolean(playlist.map);
-    const ext = extFor(format, isFmp4);
-    const sink = await createSinkFor(`${name}.${ext}`, mimeFor(ext));
-    const writer = await createWriter(sink, { format, isFmp4 });
+    const sink = await createSinkFor(`${name}.mp4`, 'video/mp4');
+    const muxer = await createMuxer(sink);
     const fetchSegment = createSegmentFetcher({ mode, signal });
 
-    job.name = finalName(sink.name || `${name}.${ext}`, writer);
+    job.name = sink.name || `${name}.mp4`;
     job.kind = 'rec';
     job.canStop = true;
     job.rec = { startedAt: Date.now(), endedAt: 0, limitSec, limitLabel, mediaSec: 0, missed: 0, quality, server: false };
@@ -437,10 +462,9 @@ export async function recordHlsLive({
     const elapsed = () => (Date.now() - job.rec.startedAt) / 1000;
     const limitReached = () => limitSec > 0 && elapsed() >= limitSec;
 
-    let lastSeq = null;
-    let mapWritten = false;
     let failures = 0;
     let reason = '';
+    let first = true;
 
     try {
         for (;;) {
@@ -448,9 +472,9 @@ export async function recordHlsLive({
             if (job.stopRequested) { reason = 'durduruldu'; break; }
             if (limitReached()) { reason = 'süre doldu'; break; }
 
-            if (lastSeq !== null) {
+            if (!first) {
                 try {
-                    playlist = await loadPlaylist(url, { mode, signal });
+                    for (const s of streams) s.playlist = await loadPlaylist(s.url, { mode, signal });
                     failures = 0;
                     if (job.rec.warning) {
                         job.rec.warning = false;
@@ -461,69 +485,65 @@ export async function recordHlsLive({
                     failures++;
                     job.rec.warning = true;
                     job.detail = `Playlist okunamadı (${failures}/${PLAYLIST_FAILURES_LIMIT}), tekrar deneniyor...`;
-                    if (failures >= PLAYLIST_FAILURES_LIMIT) {
-                        reason = 'yayına ulaşılamadı';
-                        break;
-                    }
+                    if (failures >= PLAYLIST_FAILURES_LIMIT) { reason = 'yayına ulaşılamadı'; break; }
                     await wait(2000);
                     continue;
                 }
             }
+            first = false;
 
-            if (playlist.map && !mapWritten) {
-                const init = await fetchSegment({ url: playlist.map.url, range: playlist.map.range, key: null });
-                await writer.push(init);
-                job.addBytes(init.length);
-                mapWritten = true;
-            }
-
-            const all = playlist.segments;
-            let fresh;
-            if (lastSeq === null) {
-                fresh = all.slice(-1); // şu andan itibaren: en yeni parçadan başla
-            } else {
-                fresh = all.filter((s) => s.seq > lastSeq);
-                const newest = all.length ? all[all.length - 1].seq : lastSeq;
-                if (!fresh.length && newest < lastSeq - 10) {
-                    fresh = all.slice(-1); // yayın sıra numarasını sıfırladı (yeniden başladı)
-                } else if (fresh.length && fresh[0].seq > lastSeq + 1) {
-                    job.rec.missed += fresh[0].seq - lastSeq - 1; // sekme donduysa parçalar kaydı
+            let ended = false;
+            for (const s of streams) {
+                const all = s.playlist.segments;
+                let fresh;
+                if (s.lastSeq === null) {
+                    fresh = all.slice(-1); // şu andan itibaren: en yeni parçadan başla
+                } else {
+                    fresh = all.filter((seg) => seg.seq > s.lastSeq);
+                    const newest = all.length ? all[all.length - 1].seq : s.lastSeq;
+                    if (!fresh.length && newest < s.lastSeq - 10) {
+                        fresh = all.slice(-1); // yayın sıra numarasını sıfırladı
+                    } else if (fresh.length && fresh[0].seq > s.lastSeq + 1 && s.id === 'v') {
+                        job.rec.missed += fresh[0].seq - s.lastSeq - 1; // sekme donduysa parçalar kaçtı
+                    }
                 }
-            }
-
-            for (const segment of fresh) {
-                if (job.stopRequested || limitReached() || signal.aborted) break;
-                let data;
-                try {
-                    data = await fetchSegment(segment);
-                } catch (err) {
-                    if (err.name === 'AbortError') throw err;
-                    job.rec.missed++;
-                    lastSeq = segment.seq;
-                    continue;
+                for (const segment of fresh) {
+                    if (job.stopRequested || limitReached() || signal.aborted) break;
+                    let result;
+                    try {
+                        result = await fetchSegment(segment);
+                    } catch (err) {
+                        if (err.name === 'AbortError') throw err;
+                        if (s.id === 'v') job.rec.missed++;
+                        s.lastSeq = segment.seq;
+                        continue;
+                    }
+                    await muxer.push(s.id, result.data, { map: result.map });
+                    s.lastSeq = segment.seq;
+                    job.addBytes(result.data.length);
                 }
-                await writer.push(data);
-                lastSeq = segment.seq;
-                job.rec.mediaSec += segment.duration;
-                job.addBytes(data.length);
+                if (!s.playlist.isLive) ended = true;
             }
+            job.rec.mediaSec = muxer.builder.duration;
 
-            if (!playlist.isLive) { reason = 'yayın bitti'; break; }
+            if (ended) { reason = 'yayın bitti'; break; }
 
             // Yeni parça çıkana kadar bekle (hedef sürenin yarısı); süre sınırını aşma.
-            const target = playlist.targetDuration || 6;
+            const target = streams[0].playlist.targetDuration || 6;
             let ms = Math.min(6000, Math.max(1000, (target * 1000) / 2));
             if (limitSec > 0) ms = Math.min(ms, Math.max(250, (limitSec - elapsed()) * 1000));
             await wait(ms);
         }
 
-        await writer.finish();
+        if (!muxer.builder.hasSamples) throw new Error('Yayından veri alınamadı');
+        const result = await muxer.finish();
         const blob = await sink.close();
         if (blob) job.attachResult(blob);
         job.rec.endedAt = Date.now();
-        const parts = [hms(job.rec.mediaSec), formatSize(blob ? blob.size : job.bytes), reason];
+        job.rec.mediaSec = result.duration;
+        if (!result.hasVideo) job.name = job.name.replace(/\.mp4$/i, '.m4a');
+        const parts = [hms(result.duration), formatSize(blob ? blob.size : job.bytes), reason];
         if (job.rec.missed) parts.push(`${job.rec.missed} parça kaçtı`);
-        if (writer.fellBack) parts.push('TS olarak kaydedildi');
         job.done(parts.filter(Boolean).join(' · '));
     } catch (err) {
         job.rec.endedAt = Date.now();
@@ -545,3 +565,5 @@ export function baseNameFor(url) {
         return 'yayin';
     }
 }
+
+export { fileNameFromUrl };

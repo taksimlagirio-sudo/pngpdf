@@ -38,14 +38,23 @@ kaydedilen sürenin hızla dolduğunu görürsün. Çıkan dosya normal hızda v
 DRM korumalı videolar kaydedilmez. Ayrıntılar ve gereksinimler (Google Chrome) için
 `render-server/README.md`.
 
-## HLS: format ve aralık
+## HLS: önizleme, kalite, ses ve aralık
 
-- **MP4** (varsayılan): TS yayınlar tarayıcıda, yeniden kodlamadan MP4'e çevrilir
-  (`assets/vendor/mux-mp4.min.js`, mux.js) — telefon galerisinde ve her oynatıcıda açılır.
-  fMP4 yayınlar zaten MP4 olarak birleştirilir.
-- **TS:** parçalar olduğu gibi birleştirilir (VLC ile açılır). **Ses:** yalnızca ses, M4A olarak.
+- **Önizleme:** algılanan yayın uygulamanın içinde oynatılır (hls.js, `assets/vendor/hls.min.js`);
+  doğrudan erişilemeyen yayınlar kendi sunucun üzerinden oynatılır. İndirme kartındaki küçük resim
+  önizlemeden alınır.
+- **Kalite:** yalnızca görüntü içeren kaliteler listelenir (1080p, 720p...). Yalnızca ses olan
+  "kaliteler" ve kalite parçaları gösterilmez.
+- **Ses ayrı gelirse** (`EXT-X-MEDIA TYPE=AUDIO`): ses izi de indirilip görüntüyle **tek dosyada
+  birleştirilir**.
+- **Çıktı her zaman tek MP4'tür** ve normal (parçalı olmayan) MP4 olarak yazılır: süre doğru görünür,
+  ileri-geri sarılabilir, zaman çizelgesi indirmenin/kaydın başladığı andan (0:00) başlar. TS
+  parçaları yeniden kodlanmadan çevrilir (`assets/vendor/mux-mp4.min.js`), MP4'ü
+  `assets/js/mp4mux.mjs` kurar (render-server da aynı dosyayı kullanır).
 - **Aralık:** tamamlanmış yayının yalnızca bir bölümünü (ör. `0:12:00 – 0:20:30`) indirir.
-- Süren bir HLS indirmesi de **Durdur ve kaydet** ile o ana kadar inen kısmı kaydedebilir.
+- Süren bir indirme de **Durdur ve kaydet** ile o ana kadar inen kısmı kaydedebilir.
+- Sayfada bulunan bağlantılar yoklanır: yalnızca görüntüsü olan ve açılabilen yayınlar listelenir,
+  her birinin küçük resmi ve süresi gösterilir; önizlemesi oynamayanlar ayrıca gösterilebilir.
 
 ## Telefonda uygulama gibi kullanma (PWA)
 
@@ -96,8 +105,8 @@ DRM korumalı videolar kaydedilmez. Ayrıntılar ve gereksinimler (Google Chrome
   saniye ilerleme olmazsa indirme kendiliğinden normal (uygulama açıkken) yola geçer, İndirmeler'de de
   **Normal indir** düğmesi çıkar. Yani arka plan denemesi indirmeyi asla yarıda bırakmaz. Bittiğinde uygulamaya döndüğünüzde
   İndirmeler'de **Kaydet** olarak belirir (dosya, siz kaydedene kadar önbellekte durur).
-- HLS'te arka plan yalnızca şifresiz, canlı olmayan ve 400 parçadan kısa yayınlarda kullanılır; diğerlerinde
-  indirme uygulama açıkken sürer ve destekleyen cihazlarda ekran kilidi (wake lock) alınır.
+- HLS indirmeleri arka plana (Background Fetch) devredilmez: ses/görüntü birleştirme ve MP4'e
+  çevirme uygulama içinde yapılır; indirme sürerken ekran kilidi (wake lock) alınır.
 - Background Fetch'i desteklemeyen tarayıcılarda (Safari, Firefox) seçenek pasifleşir, indirme normal şekilde
   uygulama açıkken yapılır.
 
@@ -120,7 +129,6 @@ PiP penceresinde gösteriliyor. Android Chrome'da bu pencere uygulamadan çıkı
 
 ## HLS hakkında
 
-- **Master playlist** verilirse çözünürlük/bit hızı listesi çıkar, birini seçersiniz.
 - Parçalar 4'lü paralellikle indirilir, başarısız parça 3 kez denenir.
 - `#EXT-X-KEY:METHOD=AES-128` ile şifreli yayınlar WebCrypto ile çözülür (anahtar playlist'te açıkça verildiği için).
 - `SAMPLE-AES`, Widevine, FairPlay gibi **DRM korumalı yayınlar desteklenmez** ve hata mesajıyla reddedilir.
@@ -184,10 +192,13 @@ sw.js                         # service worker: çevrimdışı kabuk + Backgroun
 assets/css/style.css          # tasarım: tema değişkenleri, telefon + masaüstü yerleşimi
 assets/icons/                 # uygulama ikonu (svg + PWA png'leri)
 assets/vendor/mux-mp4.min.js  # mux.js (TS → MP4 dönüştürme, Apache-2.0)
+assets/vendor/hls.min.js      # hls.js (önizleme, Apache-2.0)
 assets/js/app.js              # kabuk: bölümler, tema, PWA kurulumu, paylaşım hedefi
 assets/js/prefs.js            # tercihler (tema, kaydetme, bağlantı, eşzamanlılık)
 assets/js/downloads.js        # iş kuyruğu, kayıt kartları, İndirmeler ekranı, hedefe yazma, arka plan
-assets/js/hls.js              # m3u8 ayrıştırma, VOD indirme (aralık/format), canlı kayıt
+assets/js/hls.js              # m3u8 ayrıştırma (kalite, ayrı ses), VOD indirme (aralık), canlı kayıt
+assets/js/mp4mux.mjs          # parçalardan sarılabilir MP4 kurucu (uygulama + render-server)
+assets/js/preview.js          # yayın önizlemesi (hls.js), küçük resim/süre yoklama
 assets/js/serverrec.js        # canlı kaydı kendi sunucunda başlatma/izleme
 assets/js/detect.js           # tür/format algılama, sayfadaki medya ve resimleri bulma
 assets/js/detect-tab.js       # Algıla ekranı

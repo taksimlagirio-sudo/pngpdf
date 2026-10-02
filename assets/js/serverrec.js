@@ -11,11 +11,11 @@ export function canServerRecord() {
 }
 
 /** Sunucuda kaydı başlatır ve İndirmeler'e bir iş olarak ekler. */
-export async function startServerRecording({ url, name, format, limitSec, limitLabel, quality, thumb }) {
+export async function startServerRecording({ url, audioUrl, name, limitSec, limitLabel, quality, thumb }) {
     const state = await renderApi('/record', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ url, name, format, limitSec, limitLabel, quality })
+        body: JSON.stringify({ url, audioUrl, name, limitSec, limitLabel, quality })
     }, 20000);
     return track(state, thumb, 'record');
 }

@@ -159,7 +159,7 @@ düğmesi çıkar:
 | POST | `/session/:id/action` | `{type:"tap",x,y}` (0–1 arası), `scroll`, `type`, `key`, `back`, `reload` |
 | DELETE | `/session/:id` | Oturumu kapatır |
 | GET | `/record` | Sunucudaki canlı kayıtlar (süren + biten) |
-| POST | `/record` `{url, name, format, limitSec}` | Canlı HLS kaydını başlatır; `format`: `mp4` / `ts` / `audio` |
+| POST | `/record` `{url, audioUrl, name, limitSec}` | Canlı HLS kaydını başlatır; çıktı sarılabilir MP4 (ayrı ses birleştirilir) |
 | GET | `/record/:id` | Kayıt durumu (süre, boyut, kaçan parça) |
 | POST | `/record/:id/stop` | Durdurur ve dosyayı kapatır |
 | GET | `/record/:id/file` | Biten kaydın dosyası (indirme olarak) |

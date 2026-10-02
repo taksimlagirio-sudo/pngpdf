@@ -74,10 +74,16 @@ export async function createSink(name, { mode = effectiveSaveMode(), mime = 'app
                 types: [{ description: 'Dosya', accept: { [mime]: ['.' + ext] } }]
             });
             const writable = await handle.createWritable();
+            let size = 0;
             return {
                 mode: 'disk',
                 name: handle.name || name,
-                async write(chunk) { await writable.write(chunk); },
+                async write(chunk) {
+                    await writable.write({ type: 'write', position: size, data: chunk });
+                    size += chunk.byteLength || chunk.size || 0;
+                },
+                /** Daha önce yazılmış bir konumu düzeltir (MP4 başlığındaki boyut gibi). */
+                async patch(position, bytes) { await writable.write({ type: 'write', position, data: bytes }); },
                 async close() { await writable.close(); return null; },
                 async abort() { try { await writable.abort(); } catch (_) { /* zaten kapalı */ } }
             };
@@ -89,6 +95,7 @@ export async function createSink(name, { mode = effectiveSaveMode(), mime = 'app
     }
 
     const FOLD_BYTES = 32 * 1024 * 1024;
+    let head = null; // ilk parça ayrı tutulur: sonradan yamanabilsin (MP4 başlığı)
     let parts = [];
     let pending = [];
     let pendingBytes = 0;
@@ -102,20 +109,30 @@ export async function createSink(name, { mode = effectiveSaveMode(), mime = 'app
         mode: mode === 'gallery' ? 'gallery' : 'downloads',
         name,
         async write(chunk) {
+            if (!head) {
+                head = chunk instanceof Uint8Array ? chunk : new Uint8Array(await new Blob([chunk]).arrayBuffer());
+                return;
+            }
             pending.push(chunk);
             pendingBytes += chunk.byteLength || chunk.size || 0;
             if (pendingBytes >= FOLD_BYTES) fold();
         },
+        async patch(position, bytes) {
+            if (!head || position + bytes.length > head.length) throw new Error('Dosya başlığı düzeltilemedi');
+            head.set(bytes, position);
+        },
         async close() {
             fold();
-            const blob = new Blob(parts, { type: mime });
+            const blob = new Blob(head ? [head, ...parts] : parts, { type: mime });
             parts = [];
+            head = null;
             if (mode !== 'gallery') saveBlob(blob, name);
             return blob;
         },
         async abort() {
             parts = [];
             pending = [];
+            head = null;
         }
     };
 }

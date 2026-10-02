@@ -1,6 +1,6 @@
 // Bir adresin arkasında ne olduğunu anlar: tür, format, boyut, çözünürlük/süre.
 import { smartFetch, formatSize, fileNameFromUrl, proxyUrl, getRenderServer, renderSniff } from './util.js';
-import { parsePlaylist, loadPlaylist, findDrm } from './hls.js';
+import { parsePlaylist, loadPlaylist, findDrm, audioFor, playlistHasVideo } from './hls.js';
 
 const SNIFF_BYTES = 65536;
 
@@ -281,6 +281,7 @@ async function scanPage(result, url, mode, signal, onStage) {
     }
 
     result.details.links = links.filter((l) => l.url !== url);
+    await verifyPageLinks(result, mode, signal, onStage);
     links = result.details.links;
 
     if (links.length === 0) {
@@ -291,6 +292,14 @@ async function scanPage(result, url, mode, signal, onStage) {
               'JavaScript ile yükleniyor: videoyu başlatıp tarayıcının geliştirici araçlarındaki Ağ ' +
               'sekmesinden .m3u8 veya .mp4 adresini kopyalayıp buraya yapıştırın.');
     }
+}
+
+async function verifyPageLinks(result, mode, signal, onStage) {
+    if (!result.details.links || !result.details.links.length) return;
+    onStage('Bulunan bağlantılar yoklanıyor (yalnızca video olanlar)...');
+    const { links, hidden } = await verifyLinks(result.details.links, { mode, signal });
+    result.details.links = links;
+    result.details.hiddenLinks = hidden;
 }
 
 function basePageResult(url) {
@@ -330,6 +339,7 @@ async function sniffOnServer(result, url, signal, onStage) {
         }
         merged.delete(url); // sayfanın kendisi medya değil; listede olursa aynı ekrana döner
         result.details.links = [...merged.values()];
+        await verifyPageLinks(result, 'auto', signal, onStage);
         result.details.fromRender = sniffed.items.length > 0;
         result.details.images = mergeImages(result.details.images || [], sniffed.items.filter((i) => i.kind === 'image').map((i) => i.url));
 
@@ -418,20 +428,80 @@ async function describeHls(result, url, mode, signal) {
     result.suggestedName = fileNameFromUrl(url).replace(/\.m3u8$/i, '');
 
     if (playlist.type === 'master') {
-        result.details.variants = playlist.variants;
+        const master = playlist;
+        result.details.master = master;
+        result.details.variants = master.variants;
+        result.details.audioUrl = audioFor(master, master.variants[0]);
+        result.details.audioOnly = master.audioOnly;
         // Yayının canlı mı, kaç saniye mi olduğunu görmek için en iyi kaliteyi de okuyoruz.
         try {
-            playlist = await loadPlaylist(playlist.variants[0].url, { mode, signal });
+            playlist = await loadPlaylist(master.variants[0].url, { mode, signal });
         } catch (_) {
-            result.details.summary = `${result.details.variants.length} kalite seçeneği`;
+            result.details.summary = `${master.variants.length} kalite seçeneği`;
             return;
         }
+    } else {
+        // Tek kalite: içinde görüntü var mı? (Ayrı ses playlist'i gibi yalnızca ses olabilir.)
+        const hasVideo = await playlistHasVideo(playlist, { mode, signal });
+        result.details.audioOnly = hasVideo === false;
     }
     Object.assign(result.details, describeMediaPlaylist(playlist));
     if (result.details.drm) {
         result.downloadable = false;
         result.warnings.push(`Yayın DRM korumalı (${result.details.drm}); indirilemez.`);
     }
+}
+
+/**
+ * Sayfada bulunan bağlantıları ayıklar: master playlist'in alt playlist'leri (kaliteler, ayrı ses)
+ * ayrıca listelenmez, yalnızca ses olan playlist'ler ve ses dosyaları, DASH gizlenir. Master'sız
+ * ayrı görüntü + ses playlist'leri bulunduysa ses, görüntü bağlantısına eşlenir (birleştirilir).
+ */
+export async function verifyLinks(links, { mode = 'auto', signal } = {}) {
+    const pathKey = (u) => {
+        try {
+            const x = new URL(u);
+            return x.origin + x.pathname;
+        } catch (_) {
+            return u;
+        }
+    };
+    const checked = await Promise.all(links.map(async (link) => {
+        if (link.kind !== 'hls') return { ...link, ok: link.kind === 'video', hidden: link.kind !== 'video' };
+        try {
+            const playlist = await Promise.race([
+                loadPlaylist(link.url, { mode, signal }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('zaman aşımı')), 10000))
+            ]);
+            if (playlist.type === 'master') {
+                const children = [...playlist.variants.map((v) => v.url),
+                    ...Object.values(playlist.audio).flat().map((a) => a.url).filter(Boolean)];
+                return { ...link, ok: !playlist.audioOnly, master: true, children: children.map(pathKey),
+                    variants: playlist.variants.length, hidden: playlist.audioOnly };
+            }
+            if (findDrm(playlist.segments)) return { ...link, ok: false, hidden: true, reason: 'DRM' };
+            const hasVideo = await playlistHasVideo(playlist, { mode, signal });
+            return { ...link, ok: hasVideo !== false, audioOnly: hasVideo === false, hidden: hasVideo === false,
+                live: playlist.isLive, duration: playlist.totalDuration };
+        } catch (_) {
+            return { ...link, ok: false, hidden: true, reason: 'açılamadı' };
+        }
+    }));
+
+    const childKeys = new Set(checked.filter((l) => l.master).flatMap((l) => l.children));
+    const audios = checked.filter((l) => l.audioOnly);
+    const visible = [];
+    for (const link of checked) {
+        if (link.hidden || childKeys.has(pathKey(link.url))) continue;
+        if (link.kind === 'hls' && !link.master && audios.length) {
+            // Aynı sunucudaki ayrı ses playlist'i bu görüntüyle birleştirilsin.
+            const host = (() => { try { return new URL(link.url).host; } catch (_) { return ''; } })();
+            const pair = audios.find((a) => a.url.includes(host)) || audios[0];
+            link.audioUrl = pair.url;
+        }
+        visible.push(link);
+    }
+    return { links: visible, hidden: checked.length - visible.length };
 }
 
 /** Media playlist'ten kartta gösterilecek bilgiler. */
