@@ -130,7 +130,8 @@ function draw() {
         ctx.textAlign = 'right';
         ctx.fillStyle = '#A29D93';
         ctx.font = `500 16px ${mono}`;
-        ctx.fillText(rec.rec.limitSec ? `${hms(rec.rec.limitSec - rec.rec.elapsed)} kaldı` : formatSize(rec.bytes || 0), W - 20, 84);
+        ctx.fillText(rec.rec.mode === 'capture' && rec.rec.duration ? `/ ${hms(rec.rec.duration)}`
+            : rec.rec.limitSec ? `${hms(rec.rec.limitSec - rec.rec.elapsed)} kaldı` : formatSize(rec.bytes || 0), W - 20, 84);
         ctx.textAlign = 'left';
 
         ctx.fillStyle = 'rgba(255,255,255,.08)';

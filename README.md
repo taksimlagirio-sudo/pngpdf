@@ -29,6 +29,15 @@ Canlı bir `.m3u8` açıldığında indirme yerine kayıt ekranı çıkar:
   dondurabilir, bu yüzden uzun kayıtlarda sunucu önerilir).
 - Kayıt diğer indirmelerle aynı anda çalışır, sıra beklemez.
 
+## İnmeyen videolar: sunucuda oynatıp kaydet
+
+Kendi sunucun ayarlıysa, bir sayfada video adresi bulunamadığında ya da video doğrudan inmediğinde
+**Sunucuda kaydet** düğmesi çıkar. Sayfa sunucuda açılır, video sessiz ve hızlandırılmış (16 kata
+kadar) oynatılır, oynatıcının yüklediği video yakalanır. Sen ekranı izlemezsin; İndirmeler'de
+kaydedilen sürenin hızla dolduğunu görürsün. Çıkan dosya normal hızda ve orijinal kalitededir.
+DRM korumalı videolar kaydedilmez. Ayrıntılar ve gereksinimler (Google Chrome) için
+`render-server/README.md`.
+
 ## HLS: format ve aralık
 
 - **MP4** (varsayılan): TS yayınlar tarayıcıda, yeniden kodlamadan MP4'e çevrilir
@@ -189,7 +198,7 @@ assets/js/floatbar.js         # PiP ile yüzen mini indirme/kayıt penceresi
 assets/js/remote.js           # "Sayfayı aç, kendim dokunayım"
 assets/js/video.js            # doğrudan dosya indirici
 assets/js/util.js             # ortak yardımcılar (fetch, akış, biçimleme)
-render-server/                # kendi cihazında çalışan render + indirme proxy + canlı kayıt sunucusu
+render-server/                # render + indirme proxy + canlı kayıt + sunucuda oynatıp kaydetme
 extension/                    # Chrome/Edge geliştirici uzantısı (ağ isteklerinden medya yakalama)
 ```
 

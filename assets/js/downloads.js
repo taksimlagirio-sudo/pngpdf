@@ -293,6 +293,8 @@ function jobSpeed(job) {
 
 function recElapsed(job) {
     if (!job.rec) return 0;
+    // Sunucuda hızlandırılmış kayıtta sayaç, kaydedilen video süresidir (gerçek zamandan hızlı akar).
+    if (job.rec.mode === 'capture') return job.rec.mediaSec || 0;
     const end = job.rec.endedAt || Date.now();
     return Math.max(0, (end - job.rec.startedAt) / 1000);
 }
@@ -697,7 +699,29 @@ function concRow(conc) {
         `<button class="${conc === n ? 'on' : ''}" data-job-act="conc" data-value="${n}">${n}</button>`).join('')}</div></div>`;
 }
 
+function renderCapture(job) {
+    const rec = job.rec;
+    const done = rec.duration > 0 ? Math.min(1, rec.mediaSec / rec.duration) : null;
+    const speed = rec.speed > 0.5 ? `×${rec.speed.toLocaleString('tr-TR', { maximumFractionDigits: 0 })} hız` : '';
+    const left = done !== null && rec.speed > 0.5 ? formatLeft((rec.duration - rec.mediaSec) / rec.speed) + ' kaldı' : '';
+    const stopping = job.stopRequested;
+    return `
+        <div class="rec-card">
+            <div class="rec-head"><span class="rec-tag"><span class="rec-dot"></span>HIZLI KAYIT</span>
+                <span class="dl-name">${escapeHtml(job.name)}</span></div>
+            <div class="rec-time-row"><span class="rec-time">${hms(rec.mediaSec)}</span><span class="rec-size">${formatSize(job.bytes)}</span></div>
+            <div class="sec">
+                <div class="progress rec${done === null ? ' indeterminate' : ''}"><div style="width:${done === null ? 35 : done * 100}%"></div></div>
+                <div class="dl-sub"><span>${rec.duration ? 'Video ' + hms(rec.duration) : escapeHtml(rec.phase || 'Hazırlanıyor')}</span><span>${[speed, left].filter(Boolean).join(' · ')}</span></div>
+            </div>
+            ${job.detail && (stopping || rec.warning) ? `<div class="hint">${escapeHtml(job.detail)}</div>` : ''}
+            <div class="rec-foot"><span>${escapeHtml(rec.phase || '')} · sunucuda oynatılıyor</span>
+                <div class="dl-btns">${stopping ? '' : btn(job, 'cancel', 'İptal', 'text') + btn(job, 'stop', 'Durdur ve kaydet', 'danger')}</div></div>
+        </div>`;
+}
+
 function renderRec(job) {
+    if (job.rec.mode === 'capture') return renderCapture(job);
     const rec = job.rec;
     const elapsed = recElapsed(job);
     const limit = rec.limitSec || 0;

@@ -11,7 +11,7 @@ import {
 } from './downloads.js';
 import { getPrefs, setPref, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { canRemote, openRemoteView } from './remote.js';
-import { canServerRecord, startServerRecording } from './serverrec.js';
+import { canServerRecord, startServerRecording, startServerCapture } from './serverrec.js';
 
 const KIND_TAG = { hls: 'HLS', video: 'MP4', audio: 'SES', dash: 'DASH', image: 'IMG' };
 const KIND_LABEL = {
@@ -95,6 +95,10 @@ export function initDetectTab({ navigate, toast, openImages }) {
             if (mySeq !== seq) return;
             console.error(err);
             setError(`Algılanamadı: ${err.message}`);
+            if (canServerRecord()) {
+                info = null;
+                resultBox.innerHTML = captureHtml(true).replace('data-act="capture"', `data-act="capture" data-url="${escapeHtml(url)}"`);
+            }
         } finally {
             if (mySeq === seq) analyzeBtn.disabled = false;
         }
@@ -397,8 +401,20 @@ export function initDetectTab({ navigate, toast, openImages }) {
             </div>
             ${table}
             ${warningsHtml()}
+            ${captureHtml(!links.length)}
             ${canRemote() ? `<button class="btn-ghost" data-act="remote" style="height:46px">Sayfayı aç, kendim dokunayım</button>` : ''}
             <div class="remote-slot"></div>`;
+    }
+
+    /** İnmeyen videolar için: sunucuda hızlandırılmış oynatıp kaydet. */
+    function captureHtml(primary) {
+        if (!canServerRecord()) return '';
+        return `<div class="card card-pad" style="gap:10px">
+            <div><div class="toggle-row-title">İnmiyor mu? Sunucuda oynatıp kaydet</div>
+            <div class="toggle-row-sub">Sayfa sunucunda açılır, video sessizce ve hızlandırılmış oynatılıp kaydedilir.
+                Sen yalnızca sürenin dolduğunu görürsün; dosya normal hızda, orijinal kalitede çıkar.</div></div>
+            <button class="${primary ? 'btn-rec' : 'btn-ghost'}" data-act="capture" ${primary ? '' : 'style="height:46px"'}>Sunucuda kaydet</button>
+        </div>`;
     }
 
     /* ---------------- Etkileşim ---------------- */
@@ -459,6 +475,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
         if (act === 'download') return startDownload(false);
         if (act === 'queue') return startDownload(true);
         if (act === 'record') return startRecording();
+        if (act === 'capture') return startCapture(btn.dataset.url || info.url);
         render();
     });
 
@@ -578,6 +595,20 @@ export function initDetectTab({ navigate, toast, openImages }) {
             navigate('downloads');
         } catch (err) {
             if (err.name !== 'AbortError') setError(`Kayıt başlatılamadı: ${err.message}`);
+        }
+    }
+
+    async function startCapture(url) {
+        let name = 'video';
+        if (info && info.url === url && info.details && info.details.title) name = info.details.title;
+        else name = baseNameFor(url);
+        name = name.replace(/[\\/:*?"<>|]+/g, '_').trim().slice(0, 80) || 'video';
+        askNotificationPermission();
+        try {
+            await startServerCapture({ url, name, thumb: null });
+            navigate('downloads');
+        } catch (err) {
+            setError(`Sunucuda kayıt başlatılamadı: ${err.message}`);
         }
     }
 

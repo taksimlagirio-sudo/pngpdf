@@ -17,28 +17,44 @@ export async function startServerRecording({ url, name, format, limitSec, limitL
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ url, name, format, limitSec, limitLabel, quality })
     }, 20000);
-    return track(state, thumb);
+    return track(state, thumb, 'record');
+}
+
+/**
+ * İnmeyen videoyu sunucuda hızlandırılmış oynatıp kaydeder: sayfa sunucudaki tarayıcıda açılır,
+ * oynatıcının yüklediği video yakalanır, sonuç normal hızda oynayan tek dosyadır.
+ */
+export async function startServerCapture({ url, name, thumb }) {
+    const state = await renderApi('/capture', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url, name })
+    }, 30000);
+    return track(state, thumb, 'capture');
 }
 
 /** Uygulama yeniden açıldığında sunucuda süren veya biten kayıtları geri getirir. */
 export async function restoreServerRecordings() {
     if (!canServerRecord()) return;
     try {
-        const { items } = await renderApi('/record', {}, 8000);
-        for (const state of items || []) {
-            if (!getJobs().some((j) => j.serverRec === state.id)) track(state);
+        for (const kind of ['record', 'capture']) {
+            const { items } = await renderApi(`/${kind}`, {}, 8000).catch(() => ({ items: [] }));
+            for (const state of items || []) {
+                if (!getJobs().some((j) => j.serverRec === state.id)) track(state, null, kind);
+            }
         }
     } catch (_) { /* sunucu kapalı veya eski sürüm: kayıt özelliği yok */ }
 }
 
-function fileUrl(id) {
+function fileUrl(kind, id) {
     const server = getRenderServer();
-    return `${server.url}/record/${id}/file?token=${encodeURIComponent(server.token)}`;
+    return `${server.url}/${kind}/${id}/file?token=${encodeURIComponent(server.token)}`;
 }
 
-function track(state, thumb = null) {
+function track(state, thumb = null, kind = 'record') {
     const job = addJob({ name: state.fileName, kind: 'rec', thumb });
     job.serverRec = state.id;
+    job.serverKind = kind;
     job.canStop = true;
     job.rec = {
         startedAt: state.startedAt,
@@ -48,19 +64,23 @@ function track(state, thumb = null) {
         mediaSec: state.mediaSec || 0,
         missed: state.missed || 0,
         quality: state.quality || '',
-        server: true
+        server: true,
+        mode: kind === 'capture' ? 'capture' : 'live',
+        duration: state.duration || 0,
+        speed: state.speed || 0,
+        phase: state.phase || ''
     };
 
     job.hooks.stop = () => {
-        renderApi(`/record/${state.id}/stop`, { method: 'POST' }, 10000).catch((err) => job.setDetail(err.message));
+        renderApi(`/${kind}/${state.id}/stop`, { method: 'POST' }, 10000).catch((err) => job.setDetail(err.message));
     };
     job.hooks.cancel = () => {
-        renderApi(`/record/${state.id}`, { method: 'DELETE' }, 10000).catch(() => {});
+        renderApi(`/${kind}/${state.id}`, { method: 'DELETE' }, 10000).catch(() => {});
     };
     // Kayıt sunucuda diske yazıldı; tarayıcı belleğine almadan doğrudan indirme olarak açılır.
     job.hooks.save = () => {
         const a = document.createElement('a');
-        a.href = fileUrl(state.id);
+        a.href = fileUrl(kind, state.id);
         a.download = job.name;
         a.rel = 'noopener';
         document.body.appendChild(a);
@@ -70,7 +90,7 @@ function track(state, thumb = null) {
         job.setDetail(`${baseDetail(job, job.lastState)} · indiriliyor`);
     };
     job.hooks.remove = () => {
-        renderApi(`/record/${state.id}`, { method: 'DELETE' }, 10000).catch(() => {});
+        renderApi(`/${kind}/${state.id}`, { method: 'DELETE' }, 10000).catch(() => {});
     };
 
     apply(job, state);
@@ -91,6 +111,9 @@ function apply(job, state) {
     if (state.bytes > job.bytes) job.addBytes(state.bytes - job.bytes);
     job.rec.mediaSec = state.mediaSec || 0;
     job.rec.missed = state.missed || 0;
+    job.rec.duration = state.duration || 0;
+    job.rec.speed = state.speed || 0;
+    job.rec.phase = state.phase || '';
     if (state.state === 'stopping') job.stopRequested = true;
     if (state.warning) {
         job.rec.warning = true;
@@ -114,7 +137,7 @@ async function poll(job) {
         await new Promise((r) => setTimeout(r, POLL_MS));
         if (job.status !== 'active') return;
         try {
-            const state = await renderApi(`/record/${job.serverRec}`, {}, 10000);
+            const state = await renderApi(`/${job.serverKind}/${job.serverRec}`, {}, 10000);
             failures = 0;
             apply(job, state);
         } catch (err) {
