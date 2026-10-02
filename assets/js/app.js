@@ -134,6 +134,11 @@ initSettings({
 });
 
 restoreServerRecordings();
+// Telefon uygulamayı alta alınca sayfayı dondurabilir ya da kapatabilir; kayıtlar sunucuda sürer.
+// Öne gelince sunucudaki kayıtlarla yeniden eşitlenir (eksik olanlar eklenir, bitenler iner).
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') restoreServerRecordings();
+});
 
 /* ---- Diğer uygulamaların üstünde yüzen mini pencere ---- */
 if (canFloat) {

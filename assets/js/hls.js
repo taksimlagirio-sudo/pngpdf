@@ -486,7 +486,9 @@ export async function recordHlsLive({
                     }
                 } catch (err) {
                     if (err.name === 'AbortError') throw err;
-                    failures++;
+                    // Uygulama alttayken telefon sayfayı dondurur; o sırada oluşan bağlantı hataları
+                    // "yayına ulaşılamadı" sayılmaz, öne gelince kayıt sürer.
+                    if (document.visibilityState === 'visible') failures++;
                     job.rec.warning = true;
                     job.detail = `Playlist okunamadı (${failures}/${PLAYLIST_FAILURES_LIMIT}), tekrar deneniyor...`;
                     if (failures >= PLAYLIST_FAILURES_LIMIT) { reason = 'yayına ulaşılamadı'; break; }

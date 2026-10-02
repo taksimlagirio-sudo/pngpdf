@@ -430,8 +430,11 @@ export function initDetectTab({ navigate, toast, openImages }) {
                     <button class="${where === 'device' ? 'on' : ''}" data-act="rec-where" data-v="device">Bu cihazda</button>
                 </div>
                 <span class="sec-hint">${where === 'server'
-                    ? 'Kayıt kendi sunucunda sürer: telefonu kilitlesen, uygulamayı kapatsan da durmaz. Bitince buradan indirirsin.'
-                    : 'Kayıt bu tarayıcıda yapılır; uygulama açık kalmalı.'}</span></div>` : ''}
+                    ? 'Kayıt kendi sunucunda sürer: uygulamayı alta alsan, telefonu kilitlesen ya da kapatsan da durmaz. Aynı anda birden çok kayıt yapılabilir; bitince buradan indirirsin.'
+                    : 'Kayıt bu tarayıcıda yapılır.'}</span></div>` : ''}
+            ${where === 'device' ? `<div class="notice">Uygulamayı alta alırsan telefon tarayıcıyı dondurabilir ya da kapatabilir; kayıt
+                o sırada durur ya da kaybolur. ${server ? 'Arka planda sürmesi için "Sunucumda" seç.'
+                    : 'Arka planda sürmesi için kendi sunucunu (telefonda Termux ile) kur: Ayarlar → Kendi sunucum.'}</div>` : ''}
             ${where === 'device' ? `
             <button class="toggle-row" data-act="toggle-awake">
                 <div style="flex:1"><div class="toggle-row-title">Ekran kapansa da sürdür</div>

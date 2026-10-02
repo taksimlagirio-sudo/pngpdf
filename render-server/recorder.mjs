@@ -10,7 +10,7 @@ import vm from 'node:vm';
 import { randomBytes, createDecipheriv } from 'node:crypto';
 import { Mp4Builder } from '../assets/js/mp4mux.mjs';
 
-const MAX_ACTIVE = 4;
+const MAX_ACTIVE = Number(process.env.MAX_RECORDINGS) || 8;
 const SEGMENT_RETRY = 3;
 const PLAYLIST_FAILURES_LIMIT = 8;
 const KEEP_FINISHED_MS = 48 * 60 * 60 * 1000;

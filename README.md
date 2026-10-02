@@ -27,7 +27,12 @@ Canlı bir `.m3u8` açıldığında indirme yerine kayıt ekranı çıkar:
   kilitlense de uygulama kapansa da kayıt sürer. **Bu cihazda** seçilirse kayıt tarayıcıda yapılır;
   "Ekran kapansa da sürdür" ekran kilidini tutar (telefon ekranı kapanırsa tarayıcı sekmeyi
   dondurabilir, bu yüzden uzun kayıtlarda sunucu önerilir).
-- Kayıt diğer indirmelerle aynı anda çalışır, sıra beklemez.
+- Kayıt diğer indirmelerle aynı anda çalışır, sıra beklemez; aynı anda birden çok kayıt yapılabilir
+  (sunucuda varsayılan en fazla 8 canlı kayıt ve 4 "açıp kaydet"; `MAX_RECORDINGS` / `MAX_CAPTURES`).
+- **Uygulamayı alta almak kaydı durdurmaz** (sunucuda kaydederken): telefon arka plandaki sayfayı
+  dondursa ya da kapatsa bile kayıt sunucuda sürer. Uygulama öne geldiğinde ya da yeniden açıldığında
+  sunucudaki kayıtlarla eşitlenir; bu arada biten "açıp kaydet" videoları kendiliğinden iner.
+  "Bu cihazda" kayıt tarayıcının içinde çalıştığı için uygulama alttayken durabilir; ekranda uyarı çıkar.
 
 ## Bağlantısı inmeyen videolar: otomatik "açıp kaydet"
 

@@ -184,3 +184,13 @@ siteye kaçarsa (tıklama ele geçirme) videonun sayfasına geri dönülür ve o
 | GET / POST / DELETE | `/capture`, `/capture/:id`, `/capture/:id/stop`, `/capture/:id/file` | `/record` ile aynı |
 
 Token `Authorization: Bearer <token>` başlığıyla ya da `?token=` parametresiyle gönderilir.
+
+## Eşzamanlı kayıt sınırları
+
+| Değişken | Varsayılan | Anlamı |
+|---|---|---|
+| `MAX_RECORDINGS` | 8 | Aynı anda çalışabilen canlı (m3u8) kayıt sayısı |
+| `MAX_CAPTURES` | 4 | Aynı anda açık tutulan "açıp kaydet" tarayıcı sekmesi sayısı |
+
+Kayıtlar sunucuda çalıştığından uygulama alta alınsa da sürer. Sunucu telefonda (Termux) çalışıyorsa
+`termux-wake-lock` açın ve Termux için pil optimizasyonunu kapatın; yoksa Android Termux'u da uyutabilir.

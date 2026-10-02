@@ -2,7 +2,7 @@
 // tarayıcıdaki kayıt parça kaçırır; sunucu (bilgisayar veya Termux) ise uyumaz. Kayıt orada sürer,
 // uygulama yalnızca durumu izler; bitince dosya sunucudan indirilir.
 import { renderApi, getRenderServer, formatSize, hms, pumpToSink, sleep } from './util.js';
-import { addJob, getJobs } from './downloads.js';
+import { addJob, getJobs, createSink } from './downloads.js';
 
 const POLL_MS = 2000;
 
@@ -33,6 +33,27 @@ export async function startServerCapture({ url, name, thumb }) {
     return track(state, thumb, 'capture');
 }
 
+/* Telefon tarayıcısı uygulama alta alınınca sayfayı dondurabilir ya da kapatabilir; kayıt sunucuda
+ * sürer. Bitince telefona aktarılacak kayıtlar burada tutulur: uygulama yeniden açılınca (ya da öne
+ * gelince) iş kaldığı yerden izlenir ve dosya yine kendiliğinden iner. */
+const TRANSFER_KEY = 'indirici.pendingCaptures';
+
+function pendingTransfers() {
+    try {
+        return JSON.parse(localStorage.getItem(TRANSFER_KEY) || '{}');
+    } catch (_) {
+        return {};
+    }
+}
+
+function setPendingTransfer(id, value) {
+    const all = pendingTransfers();
+    if (value) all[id] = value; else delete all[id];
+    try {
+        localStorage.setItem(TRANSFER_KEY, JSON.stringify(all));
+    } catch (_) { /* depolama kapalı: yeniden açılışta "Kaydet" ile alınır */ }
+}
+
 /**
  * Bağlantısı inmeyen videoyu, verilen indirme işinin içinde "açıp kaydeder": video sunucudaki
  * tarayıcıda hızlandırılmış oynatılır, bitince dosya bu cihaza normal bir indirme gibi alınır
@@ -50,16 +71,30 @@ export async function captureIntoJob(job, { pageUrl = '', mediaUrl = '', kind = 
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ pageUrl, mediaUrl, kind, name })
     }, 30000);
+    setPendingTransfer(start.id, { saveMode: job.saveMode === 'disk' ? 'downloads' : job.saveMode, why, at: Date.now() });
+    return followCapture(job, start, { createSinkFor, why });
+}
+
+/** Sunucudaki kaydı izler; bitince dosyayı bu cihaza alır. Yeniden açılışta da kullanılır. */
+async function followCapture(job, start, { createSinkFor, why = '' }) {
     const id = start.id;
     job.captureId = id;
+    // Kayıt sunucuda sürer: kuyruk sınırına sayılmaz, sayfa kapanırken uyarı verilmez.
+    job.serverRec = id;
+    job.serverKind = 'capture';
     job.kind = 'rec';
     job.canStop = true;
     job.stopRequested = false;
-    job.rec = { mode: 'capture', startedAt: Date.now(), mediaSec: 0, duration: 0, speed: 0, phase: start.phase, server: true, why };
+    job.rec = { mode: 'capture', startedAt: start.startedAt || Date.now(), mediaSec: start.mediaSec || 0,
+        duration: start.duration || 0, speed: 0, phase: start.phase, server: true, why };
     job.hooks.stop = () => renderApi(`/capture/${id}/stop`, { method: 'POST' }, 10000).catch(() => {});
-    job.hooks.cancel = () => renderApi(`/capture/${id}`, { method: 'DELETE' }, 10000).catch(() => {});
+    job.hooks.cancel = () => {
+        setPendingTransfer(id, null);
+        renderApi(`/capture/${id}`, { method: 'DELETE' }, 10000).catch(() => {});
+    };
 
-    // Durum izlenir; sunucuya kısa süre ulaşılamazsa beklenir.
+    // Durum izlenir. Sayfa arka planda dondurulduysa ya da sunucuya kısa süre ulaşılamadıysa
+    // vazgeçilmez: kayıt sunucuda sürüyor, ulaşılınca kaldığı yerden izlenir.
     let state = start;
     let failures = 0;
     while (state.state === 'capturing' || state.state === 'waiting') {
@@ -69,8 +104,13 @@ export async function captureIntoJob(job, { pageUrl = '', mediaUrl = '', kind = 
             state = await renderApi(`/capture/${id}`, {}, 10000);
             failures = 0;
         } catch (err) {
-            if (err.status === 404) throw new Error('Kayıt sunucuda bulunamadı');
-            if (++failures >= 20) throw new Error('Sunucuya ulaşılamıyor');
+            if (err.status === 404) {
+                setPendingTransfer(id, null);
+                throw new Error('Kayıt sunucuda bulunamadı');
+            }
+            if (document.visibilityState === 'visible' && ++failures >= 40) {
+                throw new Error('Sunucuya ulaşılamıyor; kayıt sunucuda sürüyor olabilir, uygulamayı yeniden açınca görünür');
+            }
             continue;
         }
         Object.assign(job.rec, {
@@ -84,8 +124,14 @@ export async function captureIntoJob(job, { pageUrl = '', mediaUrl = '', kind = 
         if (state.total) job.progress(state.bytes, state.total); else job.progress(state.bytes, 0);
     }
     job.needsUser = false;
-    if (state.state === 'error') throw new Error(state.error || 'Video kaydedilemedi');
-    if (state.state !== 'done') throw new Error('Kayıt iptal edildi');
+    if (state.state === 'error') {
+        setPendingTransfer(id, null);
+        throw new Error(state.error || 'Video kaydedilemedi');
+    }
+    if (state.state !== 'done') {
+        setPendingTransfer(id, null);
+        throw new Error('Kayıt iptal edildi');
+    }
 
     // Dosyayı bu cihaza al (normal indirme gibi).
     job.rec = null;
@@ -108,6 +154,7 @@ export async function captureIntoJob(job, { pageUrl = '', mediaUrl = '', kind = 
         }, job.signal);
         const blob = await sink.close();
         if (blob) job.attachResult(blob);
+        setPendingTransfer(id, null);
         renderApi(`/capture/${id}`, { method: 'DELETE' }, 10000).catch(() => {});
         const parts = [state.mediaSec ? hms(state.mediaSec) : '', formatSize(received), 'video açılıp kaydedildi'].filter(Boolean);
         if (state.blockedAds) parts.push(`${state.blockedAds} reklam engellendi`);
@@ -118,17 +165,57 @@ export async function captureIntoJob(job, { pageUrl = '', mediaUrl = '', kind = 
     }
 }
 
-/** Uygulama yeniden açıldığında sunucuda süren veya biten kayıtları geri getirir. */
-export async function restoreServerRecordings() {
+/**
+ * Sunucuda süren veya biten kayıtları uygulamaya bağlar: uygulama yeniden açıldığında ve alttan
+ * öne geldiğinde çağrılır. Zaten izlenenler atlanır; telefona aktarılacak "açıp kaydet" işleri
+ * kaldığı yerden izlenir ve bitince dosya kendiliğinden iner.
+ */
+let restoring = null;
+export function restoreServerRecordings() {
+    // Açılış ve öne gelme aynı anda tetiklenebilir; aynı iş iki kez eklenmesin.
+    if (!restoring) restoring = doRestore().finally(() => { restoring = null; });
+    return restoring;
+}
+
+async function doRestore() {
     if (!canServerRecord()) return;
-    try {
-        for (const kind of ['record', 'capture']) {
-            const { items } = await renderApi(`/${kind}`, {}, 8000).catch(() => ({ items: [] }));
-            for (const state of items || []) {
-                if (!getJobs().some((j) => j.serverRec === state.id)) track(state, null, kind);
+    const pending = pendingTransfers();
+    for (const kind of ['record', 'capture']) {
+        let items = [];
+        try {
+            ({ items = [] } = await renderApi(`/${kind}`, {}, 8000));
+        } catch (_) {
+            continue; // sunucu kapalı veya eski sürüm
+        }
+        for (const state of items) {
+            if (getJobs().some((j) => j.serverRec === state.id || j.captureId === state.id)) continue;
+            const transfer = kind === 'capture' && pending[state.id];
+            if (transfer && ['capturing', 'waiting', 'done'].includes(state.state)) {
+                const saveMode = transfer.saveMode || 'downloads';
+                const job = addJob({
+                    name: state.fileName,
+                    kind: 'rec',
+                    now: true,
+                    saveMode,
+                    run: (job) => followCapture(job, state, {
+                        why: transfer.why || '',
+                        createSinkFor: (n, t) => createSink(n, { mode: saveMode, mime: t })
+                    })
+                });
+                job.captureId = state.id;
+            } else {
+                if (transfer) setPendingTransfer(state.id, null);
+                track(state, null, kind);
             }
         }
-    } catch (_) { /* sunucu kapalı veya eski sürüm: kayıt özelliği yok */ }
+    }
+    // Sunucuda artık olmayan bekleyen aktarımlar unutulur.
+    try {
+        const { items = [] } = await renderApi('/capture', {}, 8000);
+        for (const id of Object.keys(pendingTransfers())) {
+            if (!items.some((i) => i.id === id)) setPendingTransfer(id, null);
+        }
+    } catch (_) { /* sunucu kapalı */ }
 }
 
 function fileUrl(kind, id) {

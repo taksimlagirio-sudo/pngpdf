@@ -18,7 +18,7 @@ import { mergeFmp4 } from './fmp4.mjs';
 import { parsePlaylist, createMuxer } from './recorder.mjs';
 import { installRouting, guardNavigation } from './adblock.mjs';
 
-const MAX_ACTIVE = 2;
+const MAX_ACTIVE = Number(process.env.MAX_CAPTURES) || 4;
 const SPEED = 16;                 // Chrome'un izin verdiği en yüksek oynatma hızı
 const TICK_MS = 700;
 const PLAYER_TIMEOUT_MS = 25000;  // temiz oynatıcıda veri gelmezse sayfaya geç
