@@ -22,4 +22,6 @@
 [[headers]]
   for = "/assets/*"
   [headers.values]
-    Cache-Control = "public, max-age=604800"
+    # Her açılışta sunucuya "değişti mi?" diye sorulsun (ETag ile ucuz). Uzun max-age, telefonun
+    # yeni sayfayla birlikte eski JS'i günlerce kullanmasına ve düğmelerin çalışmamasına yol açtı.
+    Cache-Control = "public, max-age=0, must-revalidate"

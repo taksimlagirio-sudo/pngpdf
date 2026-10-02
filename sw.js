@@ -1,5 +1,5 @@
 // Service worker: çevrimdışı kabuk + arka plan indirmeleri (Background Fetch)
-const VERSION = 'v7';
+const VERSION = 'v8';
 const SHELL_CACHE = `shell-${VERSION}`;
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -27,7 +27,9 @@ self.addEventListener('install', (event) => {
     event.waitUntil((async () => {
         const cache = await caches.open(SHELL_CACHE);
         // Tek bir dosya 404 verirse kurulumun tamamı düşmesin.
-        await Promise.all(SHELL_FILES.map((file) => cache.add(file).catch(() => null)));
+        // cache:'reload' → tarayıcının HTTP önbelleğindeki eski kopyalar değil, sunucudaki güncel dosya.
+        await Promise.all(SHELL_FILES.map((file) =>
+            cache.add(new Request(file, { cache: 'reload' })).catch(() => null)));
         await self.skipWaiting();
     })());
 });
@@ -57,7 +59,7 @@ self.addEventListener('fetch', (event) => {
     if (request.mode === 'navigate') {
         event.respondWith((async () => {
             try {
-                return await fetch(request);
+                return await fetch(request, { cache: 'no-cache' });
             } catch (_) {
                 const cache = await caches.open(SHELL_CACHE);
                 return (await cache.match('./index.html')) || Response.error();
@@ -71,7 +73,8 @@ self.addEventListener('fetch', (event) => {
     event.respondWith((async () => {
         const cache = await caches.open(SHELL_CACHE);
         try {
-            const response = await fetch(request);
+            // no-cache: HTTP önbelleğinde kopya olsa bile sunucuya doğrulat (eski JS kalmasın).
+            const response = await fetch(request, { cache: 'no-cache' });
             if (response.ok) cache.put(request, response.clone());
             return response;
         } catch (_) {
