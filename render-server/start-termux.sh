@@ -16,4 +16,5 @@ fi
 # Telefon ekranı kapanınca Termux'un uyutulmasını engelle (Termux:API gerekmez).
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
 
-CHROME_PATH="$CHROME" exec node server.mjs
+# OPEN_APP=1: sunucu açılınca İndirici Chrome'da kendiliğinden açılır (token gerekmez).
+CHROME_PATH="$CHROME" OPEN_APP=1 exec node server.mjs

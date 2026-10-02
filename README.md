@@ -125,8 +125,11 @@ isteklerini toplar. Algıla → **🖥️ Kendi sunucum** bölümüne adresini v
 - CORS'a kapalı sitelerden indirmeler bu sunucu üzerinden yapılır: süre sınırı yok, medyayı
   açan sayfanın `Referer`'ı iletilir.
 
-Telefondan erişim için sunucunun https adresi olmalı (Tailscale önerilir); ayrıntılar
-`render-server/README.md`'de.
+Sunucu uygulamanın kendisini de sunar: `http://127.0.0.1:8787/` adresinden açınca token'ı
+kendiliğinden alır, hiçbir şey girmen gerekmez. Telefonda Termux ile kurup otomatik başlatmayı
+açarsan, Termux'u açmak yeterli olur: sunucu başlar ve İndirici Chrome'da açılır. Başka bir
+cihazdan (ör. Netlify'daki siteden bilgisayardaki sunucuya) bağlanmak için ise https adres ve
+token gerekir (Tailscale önerilir). Ayrıntılar `render-server/README.md`'de.
 
 ## Tarayıcı eklentisi
 

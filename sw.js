@@ -1,5 +1,5 @@
 // Service worker: çevrimdışı kabuk + arka plan indirmeleri (Background Fetch)
-const VERSION = 'v8';
+const VERSION = 'v9';
 const SHELL_CACHE = `shell-${VERSION}`;
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -53,8 +53,13 @@ self.addEventListener('fetch', (event) => {
     if (request.method !== 'GET') return;
 
     const url = new URL(request.url);
-    // Proxy ve dış kaynaklar asla önbelleğe alınmaz (indirilen videolar kotayı doldurur).
-    if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
+    // Yalnızca uygulamanın kendi dosyaları ele alınır. Dış kaynaklar ve (uygulama kendi sunucundan
+    // açıldığında) sunucunun /fetch, /sniff, /local-config gibi uç noktaları asla önbelleğe girmez.
+    if (url.origin !== self.location.origin) return;
+    const isAppPage = url.pathname === '/' || url.pathname.endsWith('/index.html');
+    const isAppFile = (request.mode === 'navigate' && isAppPage) ||
+        url.pathname.startsWith('/assets/') || url.pathname.endsWith('.webmanifest');
+    if (!isAppFile) return;
 
     if (request.mode === 'navigate') {
         event.respondWith((async () => {

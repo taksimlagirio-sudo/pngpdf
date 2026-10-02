@@ -4,7 +4,11 @@
 // (tarayıcı eklentisinin yaptığının aynısı) ve İndirici'ye listeler. Ayrıca süre sınırı olmayan
 // bir indirme proxy'si sunar; böylece Netlify fonksiyonunun 10–26 sn sınırına takılınmaz.
 //
-// Uç noktalar (OPTIONS hariç hepsi token ister):
+// Ayrıca İndirici'nin kendisini sunar (http://127.0.0.1:8787/): uygulama bu adresten açılınca
+// token'ı /local-config'ten kendisi alır, kullanıcı hiçbir şey girmez.
+//
+// Uç noktalar (statik dosyalar, /local-config ve OPTIONS hariç hepsi token ister):
+//   GET  /local-config       → yalnızca bu cihazdan, aynı kökenli sayfaya token verir
 //   GET  /health             → bağlantı ve token kontrolü
 //   POST /sniff {url,waitMs} → sayfayı çalıştırıp bulunan medya listesini döner
 //   GET  /fetch?url=…        → akışlı indirme proxy'si (Range ve Referer iletilir)
@@ -14,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import dns from 'node:dns/promises';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { classify, dedupKey, isSegment } from './media.mjs';
@@ -293,6 +298,64 @@ async function proxyFetch(req, res, target, refererParam) {
     stream.pipe(res);
 }
 
+/* ---------------- Uygulamanın kendisi (statik dosyalar) ---------------- */
+
+const APP_ROOT = path.resolve(HERE, '..');
+const ASSETS_DIR = path.join(APP_ROOT, 'assets') + path.sep;
+// Yalnızca bu dosyalar sunulur; .git, render-server/.render-token, node_modules vb. asla.
+const APP_FILES = new Set(['/index.html', '/manifest.webmanifest', '/sw.js']);
+const STATIC_TYPES = {
+    '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8',
+    '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8'
+};
+
+function staticFile(pathname) {
+    let decoded;
+    try {
+        decoded = decodeURIComponent(pathname);
+    } catch (_) {
+        return null;
+    }
+    if (decoded === '/') decoded = '/index.html';
+    if (APP_FILES.has(decoded)) return path.join(APP_ROOT, decoded);
+    if (!decoded.startsWith('/assets/')) return null;
+    const full = path.resolve(APP_ROOT, '.' + decoded);
+    // "../" ile assets klasörünün dışına çıkılamasın.
+    return full.startsWith(ASSETS_DIR) ? full : null;
+}
+
+function serveStatic(req, res, file) {
+    let body;
+    try {
+        if (!fs.statSync(file).isFile()) throw new Error('dosya değil');
+        body = fs.readFileSync(file);
+    } catch (_) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        return res.end('Bulunamadı');
+    }
+    if (file.endsWith('index.html')) {
+        // Uygulama bu sunucudan açıldığını anlasın ve token'ı kendisi alsın.
+        body = Buffer.from(body.toString('utf8').replace('<html lang="tr">', '<html lang="tr" data-local-server="1">'));
+    }
+    res.writeHead(200, {
+        'content-type': STATIC_TYPES[path.extname(file)] || 'application/octet-stream',
+        'content-length': body.length,
+        'cache-control': 'no-cache'
+    });
+    res.end(req.method === 'HEAD' ? undefined : body);
+}
+
+// Token yalnızca bu cihazın kendisinden açılan, aynı kökenli sayfaya verilir. Host başlığı
+// kontrolü, kötü niyetli bir sitenin alan adını 127.0.0.1'e çözdürüp (DNS rebinding) token'ı
+// okumasını engeller; tarayıcıdaki başka sitelerin istekleri de Sec-Fetch-Site ile ayıklanır.
+function localConfigAllowed(req) {
+    const host = (req.headers.host || '').toLowerCase();
+    const loopback = [`127.0.0.1:${PORT}`, `localhost:${PORT}`, `[::1]:${PORT}`].includes(host);
+    const site = req.headers['sec-fetch-site'];
+    return loopback && (!site || site === 'same-origin');
+}
+
 /* ---------------- HTTP ---------------- */
 
 function readJson(req, limit = 64 * 1024) {
@@ -329,6 +392,19 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(204, CORS_HEADERS);
         return res.end();
     }
+
+    if (req.method === 'GET' || req.method === 'HEAD') {
+        const file = staticFile(url.pathname);
+        if (file) return serveStatic(req, res, file);
+
+        if (url.pathname === '/local-config') {
+            // Bilerek CORS başlığı YOK: başka bir site bu yanıtı okuyamasın.
+            const ok = localConfigAllowed(req);
+            res.writeHead(ok ? 200 : 403, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            return res.end(JSON.stringify(ok ? { token: TOKEN } : { error: 'Yalnızca bu cihazdan açılan uygulamaya verilir' }));
+        }
+    }
+
     if (!authorized(req, url)) {
         return sendJson(res, 401, { error: 'Geçersiz veya eksik token' });
     }
@@ -372,11 +448,31 @@ const server = http.createServer(async (req, res) => {
     }
 });
 
+const APP_URL = `http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}/`;
+
+// Termux'ta (OPEN_APP=1) sunucu açılınca uygulamayı Chrome'da aç.
+function openApp() {
+    if (process.env.OPEN_APP !== '1') return;
+    const child = spawn('termux-open-url', [APP_URL], { stdio: 'ignore', detached: true });
+    child.on('error', () => console.log(`Uygulamayı açmak için tarayıcıda şu adrese git: ${APP_URL}`));
+    child.unref();
+}
+
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        // Başka bir Termux oturumunda zaten çalışıyor; ikinci kopyaya gerek yok.
+        console.log(`Sunucu zaten çalışıyor: ${APP_URL}`);
+        process.exit(0);
+    }
+    throw err;
+});
+
 server.listen(PORT, HOST, () => {
     console.log(`İndirici render sunucusu çalışıyor: http://${HOST}:${PORT}`);
-    console.log(`Token: ${TOKEN}`);
-    console.log('İndirici → Algıla → "Kendi sunucum" bölümüne adresi ve token\'ı girin.');
+    console.log(`Uygulama: ${APP_URL}  (bu adresten açınca token gerekmez)`);
+    console.log(`Token (başka cihaz/adresten bağlanırken): ${TOKEN}`);
     if (ALLOW_PRIVATE) console.log('UYARI: ALLOW_PRIVATE=1 — yerel ağ adreslerine erişim açık.');
+    openApp();
 });
 
 const shutdown = async () => {

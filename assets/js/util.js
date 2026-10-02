@@ -110,6 +110,24 @@ async function renderRequest(config, path, init = {}, timeoutMs = 0) {
     return body;
 }
 
+/**
+ * Uygulama kendi sunucundan açıldıysa (sunucu <html data-local-server="1"> ekler) token'ı
+ * sunucudan alıp ayarı kendiliğinden kaydeder; kullanıcının hiçbir şey girmesi gerekmez.
+ */
+export async function autoConfigureLocalServer() {
+    if (document.documentElement.dataset.localServer !== '1') return false;
+    try {
+        const res = await fetch('local-config', { cache: 'no-store' });
+        if (!res.ok) return false;
+        const { token } = await res.json();
+        if (!token) return false;
+        setRenderServer({ url: location.origin, token });
+        return true;
+    } catch (_) {
+        return false; // sunucu kapalı: önbellekten açılmış uygulama, önceki ayar kalır
+    }
+}
+
 /** Sunucuya erişilebiliyor ve token doğru mu? */
 export function checkRenderServer(config) {
     return renderRequest(config, '/health', {}, 8000);

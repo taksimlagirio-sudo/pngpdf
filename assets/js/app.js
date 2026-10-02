@@ -1,5 +1,5 @@
 // Sekme yönetimi, PWA kurulumu ve paylaşım hedefi
-import { $ } from './util.js';
+import { $, autoConfigureLocalServer } from './util.js';
 import { initDownloadBar } from './downloads.js';
 import { initPdfTab } from './pdf.js';
 import { initImageTab } from './image.js';
@@ -28,6 +28,8 @@ initPdfTab();
 initImageTab();
 initVideoTab();
 initHlsTab();
+// Kendi sunucundan açıldıysa token'ı kendiliğinden al (Algıla sekmesi ayarı buna göre gösterir).
+await autoConfigureLocalServer();
 const detectTab = initDetectTab();
 
 /* ---- Diğer uygulamaların üstünde yüzen mini pencere ---- */

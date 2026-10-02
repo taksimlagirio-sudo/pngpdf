@@ -317,7 +317,11 @@ export function initDetectTab() {
         };
 
         const current = getRenderServer();
-        if (current) {
+        if (current && current.url === location.origin) {
+            urlInput2.value = current.url;
+            tokenInput.value = current.token;
+            showState(true, '🔗 Uygulama bu cihazdaki sunucudan açıldı; otomatik bağlı, token gerekmez.');
+        } else if (current) {
             urlInput2.value = current.url;
             tokenInput.value = current.token;
             showState(true, 'Kayıtlı. Sayfa adresleri bu sunucuda açılacak.');
