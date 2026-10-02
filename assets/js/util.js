@@ -87,11 +87,24 @@ export function setRenderServer(config) {
     } catch (_) { /* depolama kapalı: ayar bu oturumla sınırlı kalmaz */ }
 }
 
-async function renderRequest(config, path, init = {}) {
-    const res = await fetch(`${config.url}${path}`, {
-        ...init,
-        headers: { authorization: `Bearer ${config.token}`, ...(init.headers || {}) }
-    });
+async function renderRequest(config, path, init = {}, timeoutMs = 0) {
+    // Sunucu hiç yanıt vermezse (kapalı tünel, izin bekleyen istek vb.) sonsuza kadar beklemeyelim.
+    const controller = new AbortController();
+    const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    if (init.signal) init.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    let res;
+    try {
+        res = await fetch(`${config.url}${path}`, {
+            ...init,
+            signal: controller.signal,
+            headers: { authorization: `Bearer ${config.token}`, ...(init.headers || {}) }
+        });
+    } catch (err) {
+        if (controller.signal.aborted && timer) throw new Error(`${Math.round(timeoutMs / 1000)} saniyede yanıt gelmedi`);
+        throw new Error('Sunucuya ulaşılamadı (' + (err.message || 'ağ hatası') + ')');
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || `Sunucu ${res.status} döndü`);
     return body;
@@ -99,7 +112,7 @@ async function renderRequest(config, path, init = {}) {
 
 /** Sunucuya erişilebiliyor ve token doğru mu? */
 export function checkRenderServer(config) {
-    return renderRequest(config, '/health');
+    return renderRequest(config, '/health', {}, 8000);
 }
 
 /** Sayfayı kendi sunucunda gerçek tarayıcıyla çalıştırıp attığı medya isteklerini döner. */

@@ -331,7 +331,8 @@ export function initDetectTab() {
                 status.textContent = 'Adres (http/https) ve token gerekli.';
                 return;
             }
-            status.textContent = 'Bağlanılıyor...';
+            status.textContent = 'Bağlanılıyor... (Chrome yerel ağ izni isterse "İzin ver"e bas)';
+            status.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             try {
                 const health = await checkRenderServer(config);
                 setRenderServer(config);
@@ -339,6 +340,7 @@ export function initDetectTab() {
             } catch (err) {
                 showState(Boolean(getRenderServer()), `❌ Bağlanılamadı: ${err.message}. ` +
                     'Sunucu açık mı, adres https mi (veya 127.0.0.1), token doğru mu?');
+                status.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             }
         });
 
