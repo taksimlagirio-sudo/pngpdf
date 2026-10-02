@@ -145,6 +145,7 @@ const ERROR_TEXT = {
  * @param {object} deps
  * @param {string} deps.dir
  * @param {() => Promise<any>} deps.getBrowser
+ * @param {object} [deps.logins]  sunucu tarayıcısında saklanan girişler (logins.mjs)
  * @param {(page: any, started: number, state: object) => Promise<void>} deps.nudgePlayback
  * @param {(url: URL) => Promise<void>} deps.assertPublicTarget
  * @param {(url: string) => string} deps.refererFor
@@ -152,7 +153,7 @@ const ERROR_TEXT = {
  * @param {string} deps.hlsScript  hls.min.js dosyasının yolu
  * @param {() => Promise<{h264: boolean}>} deps.codecSupport
  */
-export function createCapturer({ dir, appRoot, getBrowser, nudgePlayback, assertPublicTarget, refererFor, userAgent, hlsScript, codecSupport }) {
+export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback, assertPublicTarget, refererFor, userAgent, hlsScript, codecSupport }) {
     fs.mkdirSync(dir, { recursive: true });
     const captures = new Map();
     const metaFile = (id) => path.join(dir, `${id}.json`);
@@ -194,10 +195,12 @@ export function createCapturer({ dir, appRoot, getBrowser, nudgePlayback, assert
     async function run(cap) {
         const browser = await getBrowser();
         const context = await browser.newContext({
+            storageState: logins?.storageState(),
             userAgent,
             viewport: { width: 1280, height: 720 },
             bypassCSP: true // temiz oynatıcıyı sitenin sayfasına yerleştirebilmek için
         });
+        logins?.attach(context);
         cap.context = context;
         const tracks = new Map(); // SourceBuffer kimliği → {mime, ms, fd, file, bytes}
         const msBytes = new Map();
@@ -367,10 +370,10 @@ export function createCapturer({ dir, appRoot, getBrowser, nudgePlayback, assert
                 result = await playLoop({ timeoutMs: USER_TIMEOUT_MS, nudge: false, waitingUser: true });
                 if (result === 'nostart') {
                     throw new Error('Video başlatılmadı (5 dakika beklendi). ' +
-                        (cap.directStatus >= 400 ? directReason(cap.directStatus, true) : (cap.lastFailure || '')));
+                        (cap.directStatus >= 400 ? directReason(cap.directStatus, true, cap.sameDevice) : (cap.lastFailure || '')));
                 }
             } else if (result === 'nostart') {
-                throw new Error(cap.directStatus >= 400 ? directReason(cap.directStatus, Boolean(cap.pageUrl)) : (cap.lastFailure || 'Video oynatılamadı'));
+                throw new Error(cap.directStatus >= 400 ? directReason(cap.directStatus, Boolean(cap.pageUrl), cap.sameDevice) : (cap.lastFailure || 'Video oynatılamadı'));
             }
 
             cap.state = 'capturing';
@@ -408,6 +411,7 @@ export function createCapturer({ dir, appRoot, getBrowser, nudgePlayback, assert
             for (const track of tracks.values()) {
                 try { fs.closeSync(track.fd); } catch (_) { /* zaten kapalı */ }
             }
+            if (!cap.cancelled) await logins?.save(context);
             await context.close().catch(() => {});
             cap.context = null;
             cap.page = null;
@@ -621,7 +625,7 @@ export function createCapturer({ dir, appRoot, getBrowser, nudgePlayback, assert
                     timeout: 60000
                 });
                 const status = res.status();
-                if (status !== 200 && status !== 206) throw new Error(directReason(status, Boolean(cap.pageUrl)));
+                if (status !== 200 && status !== 206) throw new Error(directReason(status, Boolean(cap.pageUrl), cap.sameDevice));
                 const body = await res.body();
                 fs.writeSync(fd, body, 0, body.length, offset);
                 offset += body.length;
@@ -687,7 +691,7 @@ export function createCapturer({ dir, appRoot, getBrowser, nudgePlayback, assert
          * pageUrl: videonun bulunduğu sayfa (biliniyorsa). mediaUrl: videonun/yayının kendi adresi.
          * Eski istemciler için `url` sayfa adresi sayılır.
          */
-        async start({ url, pageUrl, mediaUrl, kind, name, maxSec }) {
+        async start({ url, pageUrl, mediaUrl, kind, name, maxSec, sameDevice }) {
             pageUrl = pageUrl || (!mediaUrl ? url : '');
             if (!pageUrl && !mediaUrl) throw new Error('Adres gerekli');
             for (const u of [pageUrl, mediaUrl]) if (u) await assertPublicTarget(new URL(u));
@@ -702,7 +706,7 @@ export function createCapturer({ dir, appRoot, getBrowser, nudgePlayback, assert
                 kind: kind || '', baseName, fileName: `${baseName}.mp4`, file: '', ext: 'mp4', work,
                 state: 'capturing', phase: 'Başlıyor', startedAt: Date.now(), endedAt: 0, mediaSec: 0, duration: 0,
                 bytes: 0, speed: 0, maxSec: Math.max(0, Number(maxSec) || 0), reason: '', error: '', warning: '',
-                stopRequested: false, cancelled: false
+                stopRequested: false, cancelled: false, sameDevice: Boolean(sameDevice)
             };
             const codecs = await codecSupport().catch(() => null);
             if (codecs && !codecs.h264) {
@@ -758,6 +762,7 @@ export function createCapturer({ dir, appRoot, getBrowser, nudgePlayback, assert
             else if (action.type === 'back') await page.goBack({ timeout: 10000 }).catch(() => {});
             else if (action.type === 'reload') await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
             await page.waitForTimeout(300);
+            logins?.save(cap.context).catch(() => {}); // kayıt sırasında yapılan giriş de saklansın
             return publicState(cap);
         },
         file(id) {
@@ -804,15 +809,16 @@ function sameResource(a, b) {
 }
 
 /** Bağlantı reddedildiğinde kullanıcıya gösterilecek açıklama. */
-function directReason(status, hadPage) {
+function directReason(status, hadPage, sameDevice) {
     if (status === 404 || status === 410) {
         return `Video bulunamadı (HTTP ${status}); bağlantının süresi dolmuş olabilir. Videonun sayfasından yeni bağlantı al.`;
     }
     if (status === 401 || status === 403 || status === 451) {
-        return `Video sunucusu bağlantıyı reddetti (HTTP ${status}). Bağlantı büyük ihtimalle süreli/imzalı ya da yalnızca ` +
-            `açıldığı cihaza (IP) veya sitenin oturumuna bağlı.` +
-            (hadPage ? '' : ' Videonun bulunduğu sayfanın adresini de ver;') +
-            ' olmazsa "Telefonda aç" ile kendi tarayıcında açıp indir.';
+        return `Video sunucusu bağlantıyı reddetti (HTTP ${status}). Bağlantı büyük ihtimalle süreli/imzalı ` +
+            (sameDevice ? 'ya da sitenin oturumuna (girişine) bağlı.' : 'ya da yalnızca açıldığı cihaza (IP) veya sitenin oturumuna bağlı.') +
+            (hadPage ? '' : ' Videonun bulunduğu sayfanın adresini de ver.') +
+            ' Site giriş istiyorsa sayfayı "Kendim dokunayım" ile açıp bir kez giriş yap; giriş sunucuda saklanır.' +
+            ' Olmazsa "Telefonda aç" ile kendi tarayıcında açıp indir.';
     }
     return `Video sunucusu hata verdi (HTTP ${status}).`;
 }

@@ -192,6 +192,10 @@ isteklerini toplar. **Ayarlar → Kendi sunucum** bölümüne adresini ve token'
 - Site dışarıdan çekilmeyi tamamen reddediyorsa da sayfa doğrudan sunucuda açılmayı dener.
 - Oynatıcı tıklama, onay ya da kod bekliyorsa **👆 Sayfayı aç, kendim dokunayım**: sunucudaki
   sayfanın canlı görüntüsüne dokunarak adımları kendin geçersin, gelen medya listelenir.
+- **Girişler saklanır:** bu ekranda bir siteye bir kez giriş yaparsan çerezler sunucuda
+  (`render-server/.logins.json`) saklanır; o sitenin sayfaları ve videoları sonra (sunucu yeniden
+  başlasa da) girişli açılır, kaydedilir. **Ayarlar → Sitelere girişler**'den site site çıkış yapılır;
+  hiç saklanmasın istersen sunucuyu `SAVE_LOGINS=0` ile başlat.
 - CORS'a kapalı sitelerden indirmeler bu sunucu üzerinden yapılır: süre sınırı yok, medyayı
   açan sayfanın `Referer`'ı iletilir.
 

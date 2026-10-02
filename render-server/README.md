@@ -194,3 +194,20 @@ Token `Authorization: Bearer <token>` başlığıyla ya da `?token=` parametresi
 
 Kayıtlar sunucuda çalıştığından uygulama alta alınsa da sürer. Sunucu telefonda (Termux) çalışıyorsa
 `termux-wake-lock` açın ve Termux için pil optimizasyonunu kapatın; yoksa Android Termux'u da uyutabilir.
+
+## Sitelere girişler
+
+"Kendim dokunayım" ekranında (ya da kayıt sırasında dokunarak) bir siteye giriş yapılınca sunucu
+tarayıcısının çerezleri ve localStorage'ı `.logins.json` dosyasına (yalnızca sahibi okuyabilir, 0600)
+yazılır; sonraki koklama, oturum ve "açıp kaydet" işleri bu girişle açılır. Dosya başka yere gönderilmez.
+
+| Değişken | Varsayılan | Anlamı |
+|---|---|---|
+| `SAVE_LOGINS` | 1 | `0` ise girişler saklanmaz |
+| `LOGIN_FILE` | `.logins.json` | Girişlerin yazılacağı dosya |
+
+`GET /logins` kayıtlı siteleri listeler, `DELETE /logins?domain=ornek.com` o siteden (alan adı boşsa
+hepsinden) çıkış yapar.
+
+Video bağlantısı reddedildiğinde (403) istek sunucunun kendi makinesinden geliyorsa (sunucu telefonda)
+hata açıklamasında "cihaza (IP) bağlı" ihtimali söylenmez; giriş/oturum ve süreli bağlantı öne çıkar.

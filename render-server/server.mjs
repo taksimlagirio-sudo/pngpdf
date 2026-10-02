@@ -35,11 +35,15 @@ import { fileURLToPath } from 'node:url';
 import { classify, dedupKey, isSegment } from './media.mjs';
 import { createRecorder } from './recorder.mjs';
 import { createCapturer } from './capture.mjs';
+import { createLoginStore } from './logins.mjs';
 import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '0.4.0';
 const PORT = Number(process.env.PORT) || 8787;
+// Sunucu tarayıcısında yapılan girişler saklanır (SAVE_LOGINS=0 ile kapatılır).
+const logins = createLoginStore(process.env.LOGIN_FILE || path.join(HERE, '.logins.json'),
+    { enabled: process.env.SAVE_LOGINS !== '0' });
 // Varsayılan yalnızca bu cihazdan erişim; Tailscale/tünel localhost'a yönlendirir.
 const HOST = process.env.HOST || '127.0.0.1';
 const ALLOW_PRIVATE = process.env.ALLOW_PRIVATE === '1';
@@ -233,7 +237,7 @@ const PLAY_SELECTORS = [
  */
 async function openRecordedPage(pageUrl, contextOptions) {
     const browser = await getBrowser();
-    const context = await browser.newContext(contextOptions);
+    const context = logins.attach(await browser.newContext({ storageState: logins.storageState(), ...contextOptions }));
     await context.addInitScript(CODEC_SPOOF);
     // Reklamlar engellenir: reklam videoları listeye düşmesin, oynatıcı reklamla oyalanmasın.
     const state0 = { blockedAds: 0 };
@@ -449,6 +453,7 @@ async function closeSession(id) {
     const session = sessions.get(id);
     if (!session) return;
     sessions.delete(id);
+    await logins.save(session.context);
     await session.context.close().catch(() => {});
 }
 
@@ -683,6 +688,7 @@ const capturer = createCapturer({
     dir: process.env.CAPTURE_DIR || path.join(HERE, '.captures'),
     appRoot: APP_ROOT,
     getBrowser,
+    logins,
     nudgePlayback,
     assertPublicTarget,
     userAgent: DESKTOP_UA,
@@ -703,7 +709,12 @@ async function handleJobs(req, res, url) {
     const manager = kind === 'capture' ? capturer : recorder;
     if (url.pathname === `/${kind}`) {
         if (req.method === 'GET') return sendJson(res, 200, { items: manager.list() });
-        if (req.method === 'POST') return sendJson(res, 200, await manager.start(await readJson(req)));
+        if (req.method === 'POST') {
+            // İstek bu makineden geliyorsa (sunucu telefonda) video bağlantısı IP'ye takılmaz;
+            // hata açıklaması buna göre seçilir.
+            const sameDevice = /^(127\.|::1$|::ffff:127\.)/.test(req.socket.remoteAddress || '');
+            return sendJson(res, 200, await manager.start({ ...(await readJson(req)), sameDevice }));
+        }
     }
     const match = url.pathname.match(/^\/(?:record|capture)\/([0-9a-f]{24})(\/stop|\/file|\/shot|\/action)?$/);
     if (!match) return false;
@@ -790,7 +801,15 @@ const server = http.createServer(async (req, res) => {
 
     try {
         if (url.pathname === '/health' && req.method === 'GET') {
-            return sendJson(res, 200, { ok: true, name: 'indirici-render-server', version: VERSION, adblock: adblockStatus() });
+            return sendJson(res, 200, { ok: true, name: 'indirici-render-server', version: VERSION, adblock: adblockStatus(), logins: { enabled: logins.enabled, sites: logins.sites().length } });
+        }
+
+        if (url.pathname === '/logins' && req.method === 'GET') {
+            return sendJson(res, 200, { enabled: logins.enabled, sites: logins.sites() });
+        }
+        if (url.pathname === '/logins' && req.method === 'DELETE') {
+            logins.clear(String(url.searchParams.get('domain') || '').toLowerCase());
+            return sendJson(res, 200, { enabled: logins.enabled, sites: logins.sites() });
         }
 
         if (url.pathname === '/sniff' && req.method === 'POST') {
@@ -856,6 +875,7 @@ const server = http.createServer(async (req, res) => {
             }
             if (sub === '/action' && req.method === 'POST') {
                 await sessionAction(session, await readJson(req));
+                logins.save(session.context).catch(() => {}); // giriş yapıldıysa hemen saklansın
                 return sendJson(res, 200, await sessionState(session));
             }
         }
