@@ -16,6 +16,12 @@
 //   GET  /session/:id[/shot] → oturum durumu (bulunan medya) / ekran görüntüsü (JPEG)
 //   POST /session/:id/action → {type:'tap',x,y} | scroll | type | key | back | reload
 //   DELETE /session/:id      → oturumu kapat
+//   GET  /record             → sunucudaki canlı kayıtlar (süren + biten)
+//   POST /record {url,name,format,limitSec,...} → canlı HLS kaydını başlat (sunucuda sürer)
+//   GET  /record/:id         → kayıt durumu; POST /record/:id/stop → durdur ve kaydet
+//   GET  /record/:id/file    → biten kaydın dosyası; DELETE /record/:id → iptal et / sil
+//   POST /capture {url,name} → inmeyen videoyu sunucuda hızlandırılmış oynatıp kaydet
+//   GET  /capture[/:id[/file]], POST /capture/:id/stop, DELETE /capture/:id → /record ile aynı
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -26,9 +32,11 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { classify, dedupKey, isSegment } from './media.mjs';
+import { createRecorder } from './recorder.mjs';
+import { createCapturer } from './capture.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.1.0';
+const VERSION = '0.3.0';
 const PORT = Number(process.env.PORT) || 8787;
 // Varsayılan yalnızca bu cihazdan erişim; Tailscale/tünel localhost'a yönlendirir.
 const HOST = process.env.HOST || '127.0.0.1';
@@ -154,7 +162,13 @@ async function getBrowser() {
             const args = ['--autoplay-policy=no-user-gesture-required', '--mute-audio'];
             // Termux'ta (Android) Chromium'un kum havuzu çalışmıyor; orada sandbox'sız başlat.
             if (process.platform === 'android' || process.env.NO_SANDBOX === '1') args.push('--no-sandbox');
-            const browser = await chromium.launch({
+            // Google Chrome kuruluysa onu kullan: Playwright'ın Chromium'unda H.264/AAC yok, bu yüzden
+            // "sunucuda oynatıp kaydet" sitelerin çoğunda ancak gerçek Chrome ile çalışır.
+            let browser = null;
+            if (!process.env.CHROME_PATH && process.platform !== 'android' && process.env.USE_CHROME !== '0') {
+                browser = await chromium.launch({ headless: true, channel: 'chrome', args }).catch(() => null);
+            }
+            browser = browser || await chromium.launch({
                 headless: true,
                 executablePath: process.env.CHROME_PATH || undefined,
                 args
@@ -269,35 +283,28 @@ async function clickConsent(page) {
     return false;
 }
 
-async function sniff(pageUrl, waitMs) {
-    const { context, page, state } = await openRecordedPage(pageUrl,
-        { userAgent: DESKTOP_UA, viewport: { width: 1280, height: 800 } });
+// Oynatıcılar çoğu zaman "oynat"a basılmadan medyayı istemez; sessizce başlatmayı dene.
+async function tryPlay(page) {
+    for (const frame of page.frames()) {
+        await frame.evaluate(() => {
+            document.querySelectorAll('video, audio').forEach((el) => {
+                el.muted = true;
+                const p = el.play && el.play();
+                if (p && p.catch) p.catch(() => {});
+            });
+        }).catch(() => {});
+    }
+}
 
-    const started = Date.now();
-    let title = '';
-    let finalUrl = pageUrl;
-    try {
-        await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
-        finalUrl = page.url();
-
-        // Oynatıcılar çoğu zaman "oynat"a basılmadan medyayı istemez; sessizce başlatmayı dene.
-        const tryPlay = async () => {
-            for (const frame of page.frames()) {
-                await frame.evaluate(() => {
-                    document.querySelectorAll('video, audio').forEach((el) => {
-                        el.muted = true;
-                        const p = el.play && el.play();
-                        if (p && p.catch) p.catch(() => {});
-                    });
-                }).catch(() => {});
-            }
-        };
-        await tryPlay();
-
-        // Oynatıcı özel bir "oynat" düğmesi bekliyorsa: önce çerez onayı, sonra bilinen düğmeler,
-        // olmazsa en büyük video/oynatıcı alanının ortası, o da olmazsa sayfanın ortası tıklanır.
-        // Her adım bir şeye tıkladıysa true döner; tıklayacak bir şey yoksa beklemeden sonrakine geçilir.
-        const clickSteps = [
+/**
+ * Oynatıcı özel bir "oynat" düğmesi bekliyorsa sırayla dener: çerez onayı, bilinen düğmeler,
+ * en büyük video/oynatıcı alanının ortası, en son sayfanın ortası. Her çağrıda (zamanı geldiyse)
+ * bir adım ilerler; `nudge` çağrılar arasında durumu tutar.
+ */
+async function nudgePlayback(page, started, nudge) {
+    if (!nudge.steps) {
+        nudge.nextAt = started + 2500;
+        nudge.steps = [
             () => clickConsent(page),
             async () => {
                 for (const frame of page.frames()) {
@@ -324,22 +331,61 @@ async function sniff(pageUrl, waitMs) {
                 return true;
             },
             async () => {
-                await page.mouse.click(640, 400).catch(() => {});
+                const size = page.viewportSize() || { width: 1280, height: 800 };
+                await page.mouse.click(size.width / 2, size.height / 2).catch(() => {});
                 return true;
             }
         ];
-        let nextClickAt = started + 2500;
+    }
+    if (Date.now() < nudge.nextAt) return;
+    await tryPlay(page);
+    while (nudge.steps.length && !(await nudge.steps.shift()())) { /* sıradaki adım */ }
+    nudge.nextAt = Date.now() + 1500;
+}
+
+let codecPromise = null;
+/** Sunucudaki tarayıcı H.264/AAC oynatabiliyor mu? (bir kez ölçülür) */
+function codecSupport() {
+    if (!codecPromise) {
+        codecPromise = (async () => {
+            const browser = await getBrowser();
+            const page = await browser.newPage();
+            try {
+                return await page.evaluate(() => ({
+                    h264: Boolean(window.MediaSource && MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"')),
+                    aac: Boolean(window.MediaSource && MediaSource.isTypeSupported('audio/mp4; codecs="mp4a.40.2"'))
+                }));
+            } finally {
+                await page.close().catch(() => {});
+            }
+        })().catch((err) => {
+            codecPromise = null;
+            throw err;
+        });
+    }
+    return codecPromise;
+}
+
+async function sniff(pageUrl, waitMs) {
+    const { context, page, state } = await openRecordedPage(pageUrl,
+        { userAgent: DESKTOP_UA, viewport: { width: 1280, height: 800 } });
+
+    const started = Date.now();
+    let title = '';
+    let finalUrl = pageUrl;
+    try {
+        await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
+        finalUrl = page.url();
+
+        await tryPlay(page);
+        const nudge = {};
 
         // Medya bulununca biraz daha bekleyip (master → varyant gibi takip istekleri için) bitir;
         // bulunamazsa süre dolana kadar bekle.
         while (Date.now() - started < waitMs) {
             if (state.firstMediaAt && Date.now() - state.firstMediaAt > 2000) break;
             await page.waitForTimeout(400);
-            if (!state.firstMediaAt && Date.now() >= nextClickAt) {
-                await tryPlay();
-                while (clickSteps.length && !(await clickSteps.shift()())) { /* sıradaki adım */ }
-                nextClickAt = Date.now() + 1500;
-            }
+            if (!state.firstMediaAt) await nudgePlayback(page, started, nudge);
         }
         title = await page.title().catch(() => '');
     } finally {
@@ -560,6 +606,77 @@ function localConfigAllowed(req) {
     return loopback && (!site || site === 'same-origin');
 }
 
+/* ---------------- Canlı kayıt ---------------- */
+
+const recorder = createRecorder({
+    dir: process.env.RECORD_DIR || path.join(HERE, '.recordings'),
+    appRoot: APP_ROOT,
+    assertPublicTarget,
+    userAgent: DESKTOP_UA,
+    refererFor(url) {
+        try {
+            return refererByUrl.get(url) || refererByHost.get(new URL(url).host) || '';
+        } catch (_) {
+            return '';
+        }
+    }
+});
+
+function sendRecordFile(req, res, file) {
+    // Türkçe karakterli adlar için RFC 5987; eski tarayıcılar için ASCII yedek.
+    const ascii = file.name.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
+    res.writeHead(200, {
+        ...CORS_HEADERS,
+        'content-type': file.mime,
+        'content-length': file.size,
+        'content-disposition': `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+        'cache-control': 'no-store'
+    });
+    if (req.method === 'HEAD') return res.end();
+    const stream = fs.createReadStream(file.path);
+    res.on('close', () => stream.destroy());
+    stream.on('error', () => res.destroy());
+    stream.pipe(res);
+}
+
+const capturer = createCapturer({
+    dir: process.env.CAPTURE_DIR || path.join(HERE, '.captures'),
+    getBrowser,
+    nudgePlayback,
+    assertPublicTarget,
+    userAgent: DESKTOP_UA,
+    codecSupport
+});
+
+/** /record (canlı HLS kaydı) ve /capture (sunucuda oynatıp kaydetme) aynı biçimde yönetilir. */
+async function handleJobs(req, res, url) {
+    const [, kind] = url.pathname.match(/^\/(record|capture)/) || [];
+    const manager = kind === 'capture' ? capturer : recorder;
+    if (url.pathname === `/${kind}`) {
+        if (req.method === 'GET') return sendJson(res, 200, { items: manager.list() });
+        if (req.method === 'POST') return sendJson(res, 200, await manager.start(await readJson(req)));
+    }
+    const match = url.pathname.match(/^\/(?:record|capture)\/([0-9a-f]{24})(\/stop|\/file)?$/);
+    if (!match) return false;
+    const [, id, sub = ''] = match;
+    if (sub === '' && req.method === 'GET') {
+        const state = manager.get(id);
+        return state ? sendJson(res, 200, state) : sendJson(res, 404, { error: 'Kayıt bulunamadı' });
+    }
+    if (sub === '' && req.method === 'DELETE') {
+        return sendJson(res, manager.delete(id) ? 200 : 404, { ok: true });
+    }
+    if (sub === '/stop' && req.method === 'POST') {
+        const state = manager.stop(id);
+        return state ? sendJson(res, 200, state) : sendJson(res, 404, { error: 'Kayıt bulunamadı' });
+    }
+    if (sub === '/file' && (req.method === 'GET' || req.method === 'HEAD')) {
+        const file = manager.file(id);
+        return file ? sendRecordFile(req, res, file) : sendJson(res, 404, { error: 'Dosya hazır değil' });
+    }
+    return false;
+}
+
 /* ---------------- HTTP ---------------- */
 
 function readJson(req, limit = 64 * 1024) {
@@ -656,6 +773,10 @@ const server = http.createServer(async (req, res) => {
             await assertPublicTarget(target);
             const session = await openSession(target.href);
             return sendJson(res, 200, await sessionState(session));
+        }
+
+        if (/^\/(record|capture)(\/|$)/.test(url.pathname)) {
+            if ((await handleJobs(req, res, url)) !== false) return;
         }
 
         const sessionMatch = url.pathname.match(/^\/session\/([0-9a-f]{24})(\/shot|\/action)?$/);

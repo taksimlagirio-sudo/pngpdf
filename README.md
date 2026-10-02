@@ -1,26 +1,60 @@
-# Dönüştürücü & İndirici
+# İndirici
 
 Tamamen tarayıcıda çalışan, sunucuya dosya yüklemeyen küçük bir araç seti.
 Netlify üzerinde statik site olarak yayınlanır.
 
-## Sekmeler
+## Bölümler
 
-| Sekme | Ne yapar |
+Telefonda alt sekme çubuğu, masaüstünde sol kenar çubuğu (geniş ekranda sağda indirmeler sütunu).
+Koyu (varsayılan) ve açık tema; renk: sıcak grafit nötrler + lime.
+
+| Bölüm | Ne yapar |
 | --- | --- |
-| 🔎 **Algıla** | Yapıştırdığınız adresin ardında ne olduğunu bulur (tür, format, boyut, çözünürlük/süre, şifreleme), önizleme gösterir ve uygun indirme yolunu sunar. |
-| 📄 **PDF** | Seçtiğiniz resimleri tek tek PDF'e çevirir, yeni sekmede açar veya indirir. Kalite kaydırıcısıyla dosya boyutunu ayarlarsınız. |
-| 🖼️ **JPG / PNG** | Resimleri JPG, PNG veya WEBP olarak yeniden kaydeder. Kalite ve maksimum genişlik (yeniden boyutlandırma) ayarlanabilir; resim bir adresten de eklenebilir. |
-| 🎬 **MP4** | Doğrudan dosya bağlantılarını (mp4, webm, mp3, jpg...) ilerleme çubuğuyla indirir. |
-| 📡 **HLS** | `.m3u8` yayınlarını indirir: master playlist'te kalite seçtirir, parçaları paralel indirip tek dosyada birleştirir. |
+| **Algıla** | Yapıştırdığınız adresin ardında ne olduğunu bulur. Video/ses dosyası, HLS yayını (kalite, format, aralık seçimi), canlı yayın (süre sınırlı kayıt) ya da web sayfası (içindeki medya ve resimler). |
+| **Resimler** | Bir sayfadaki görselleri bulur; türe göre süzer, simgeleri gizler, seçtiklerinizi tek tek ya da ZIP olarak indirir. |
+| **İndirmeler** | Süren kayıtlar, indirmeler, sıradakiler ve geçmiş. Aynı anda en fazla 1/2/3/5 iş; sıradakini "Şimdi başlat". |
+| **Ayarlar** | Tema, varsayılan kaydetme yöntemi (İndirilenler / Galeri / Konum seç), bağlantı yöntemi, arka planda indirme, kendi sunucum. |
+
+## Canlı yayın kaydı (başlat → süre dolunca ya da durdurunca kaydet)
+
+Canlı bir `.m3u8` açıldığında indirme yerine kayıt ekranı çıkar:
+
+- **Kayıt süresi:** Sınırsız, 30 dk, 1 sa, 2 sa veya özel dakika. Süre dolunca kayıt kendiliğinden
+  durur ve dosya kaydedilir; **Durdur ve kaydet** ile istediğiniz an bitirebilirsiniz.
+- Kayıt "şu andan itibaren"dir: playlist düzenli aralıklarla okunur, yeni parçalar sırayla dosyaya
+  eklenir. Kartta geçen süre, boyut, bit hızı, kalan süre ve (varsa) kaçan parça sayısı görünür.
+- **Nerede kaydedilsin:** kendi sunucunuz ayarlıysa varsayılan **Sunucumda**'dır — telefon
+  kilitlense de uygulama kapansa da kayıt sürer. **Bu cihazda** seçilirse kayıt tarayıcıda yapılır;
+  "Ekran kapansa da sürdür" ekran kilidini tutar (telefon ekranı kapanırsa tarayıcı sekmeyi
+  dondurabilir, bu yüzden uzun kayıtlarda sunucu önerilir).
+- Kayıt diğer indirmelerle aynı anda çalışır, sıra beklemez.
+
+## İnmeyen videolar: sunucuda oynatıp kaydet
+
+Kendi sunucun ayarlıysa, bir sayfada video adresi bulunamadığında ya da video doğrudan inmediğinde
+**Sunucuda kaydet** düğmesi çıkar. Sayfa sunucuda açılır, video sessiz ve hızlandırılmış (16 kata
+kadar) oynatılır, oynatıcının yüklediği video yakalanır. Sen ekranı izlemezsin; İndirmeler'de
+kaydedilen sürenin hızla dolduğunu görürsün. Çıkan dosya normal hızda ve orijinal kalitededir.
+DRM korumalı videolar kaydedilmez. Ayrıntılar ve gereksinimler (Google Chrome) için
+`render-server/README.md`.
+
+## HLS: format ve aralık
+
+- **MP4** (varsayılan): TS yayınlar tarayıcıda, yeniden kodlamadan MP4'e çevrilir
+  (`assets/vendor/mux-mp4.min.js`, mux.js) — telefon galerisinde ve her oynatıcıda açılır.
+  fMP4 yayınlar zaten MP4 olarak birleştirilir.
+- **TS:** parçalar olduğu gibi birleştirilir (VLC ile açılır). **Ses:** yalnızca ses, M4A olarak.
+- **Aralık:** tamamlanmış yayının yalnızca bir bölümünü (ör. `0:12:00 – 0:20:30`) indirir.
+- Süren bir HLS indirmesi de **Durdur ve kaydet** ile o ana kadar inen kısmı kaydedebilir.
 
 ## Telefonda uygulama gibi kullanma (PWA)
 
-- **Android/Chrome:** site açıkken üstteki **📲 Ana ekrana ekle** düğmesi (veya menüden "Uygulamayı yükle").
+- **Android/Chrome:** Ayarlar → **Ana ekrana ekle** (veya tarayıcı menüsünden "Uygulamayı yükle").
 - **iOS/Safari:** **Paylaş → Ana Ekrana Ekle**.
 - Eklendikten sonra tam ekran açılır, çevrimdışıyken de arayüz yüklenir (service worker kabuk önbelleği).
 - **Paylaş hedefi:** başka bir uygulamadan bir bağlantıyı paylaşırken listede bu uygulama çıkar; paylaşılan adres
   doğrudan "Algıla" sekmesine düşer ve otomatik analiz edilir.
-- Ana ekran kısayolundan uzun basınca "Algıla / MP4 / HLS / Resim" kısayolları gelir.
+- Ana ekran simgesine uzun basınca "Algıla / Resimler / İndirmeler" kısayolları gelir.
 
 ## İçerik algılama
 
@@ -44,22 +78,24 @@ Netlify üzerinde statik site olarak yayınlanır.
 - **DRM korumalı** yayınlarda indirme düğmesi çıkmaz, sebebi yazılır.
 - Master playlist algılanırsa kalite listesi çıkar; seçtiğiniz kalite indirilir.
 
-## Arka planda indirme, alt çubuk ve galeriye kaydetme
+## İndirmeler, kuyruk ve galeriye kaydetme
 
-- Ekranın altındaki **mini görev çubuğu** tüm indirmeleri sekmeden bağımsız gösterir. Dokununca liste açılır;
-  her satırda küçük önizleme, ad, yüzde, hız ve kalan süre, ayrıca iptal düğmesi vardır. Biten işler
-  **indirme geçmişi** olarak listede kalır (en fazla 12 kayıt, "Kapat" ile silinir).
-- Biten bir dosyada **📤 Galeriye kaydet** düğmesi çıkar: Web Share ile sistem paylaşım sayfası açılır,
-  oradan Fotoğraflar/Galeri veya Dosyalar'a kaydedebilirsiniz (Android ve iOS'ta çalışır; masaüstü
-  tarayıcılarda düğme görünmez).
-- Resim dönüştürme ve PDF indirmeleri de çubukta görünür; onlar da paylaşılabilir.
+- Tüm işler **İndirmeler** bölümünde: süren kayıtlar (kırmızı kart), indirmeler (yüzde, hız, kalan süre),
+  sıradakiler ve geçmiş. Telefonda diğer bölümlerdeyken sekme çubuğunun üstündeki şerit süren işleri gösterir;
+  geniş masaüstü ekranında sağ sütunda durur.
+- **Aynı anda en fazla** 1/2/3/5 iş çalışır, fazlası sıraya girer ("Sıraya ekle" ya da sınır dolunca).
+  Sıradaki bir işi **Şimdi başlat** ile beklemeden başlatabilirsiniz. Canlı kayıtlar sıra beklemez.
+- **Kaydet** yöntemi: *İndirilenler* (bitince indirilir), *Galeri* (bitince **Galeriye** düğmesi sistem
+  paylaşım sayfasını açar → Fotoğraflar/Galeri) ya da *Konum seç* (dosya doğrudan diske yazılır).
+- İndirme veya kayıt sürerken ekran kilidi tutulur (Ayarlar'dan kapatılabilir); sayfa yanlışlıkla
+  kapatılmak istenirse uyarı çıkar. Bildirim izni verildiyse uygulama arka plandayken biten işler bildirilir.
 - **🌙 Arka planda indir** (varsayılan **kapalı**, isteğe bağlı) seçiliyken indirme service worker'a devredilir
   (Background Fetch): uygulamayı kapatsanız bile sürer ve Android'de sistem indirme çubuğunda görünür.
   Kaynak siteye tarayıcıdan doğrudan erişilemiyorsa (CORS) arka plan isteği kendi sunucun üzerinden yapılır.
   Bu yol her sitede çalışmaz; bu yüzden **otomatik yedeklemesi** var: arka plan başarısız olursa ya da 25
-  saniye ilerleme olmazsa indirme kendiliğinden normal (uygulama açıkken) yola geçer, çubukta da
-  **⚡ Normal indir** düğmesi çıkar. Yani arka plan denemesi indirmeyi asla yarıda bırakmaz. Bittiğinde uygulamaya döndüğünüzde
-  alt çubukta **💾 Kaydet** olarak belirir (dosya, siz kaydedene kadar önbellekte durur).
+  saniye ilerleme olmazsa indirme kendiliğinden normal (uygulama açıkken) yola geçer, İndirmeler'de de
+  **Normal indir** düğmesi çıkar. Yani arka plan denemesi indirmeyi asla yarıda bırakmaz. Bittiğinde uygulamaya döndüğünüzde
+  İndirmeler'de **Kaydet** olarak belirir (dosya, siz kaydedene kadar önbellekte durur).
 - HLS'te arka plan yalnızca şifresiz, canlı olmayan ve 400 parçadan kısa yayınlarda kullanılır; diğerlerinde
   indirme uygulama açıkken sürer ve destekleyen cihazlarda ekran kilidi (wake lock) alınır.
 - Background Fetch'i desteklemeyen tarayıcılarda (Safari, Firefox) seçenek pasifleşir, indirme normal şekilde
@@ -72,22 +108,15 @@ En yakın yol **resim-içinde-resim (PiP)**: indirme durumu bir canvas'a çizili
 PiP penceresinde gösteriliyor. Android Chrome'da bu pencere uygulamadan çıkınca da **diğer uygulamaların
 üstünde yüzer**; masaüstü Chrome'da diğer pencerelerin üstünde kalır.
 
-- İki yerden açılır: **Algıla** sekmesinin en üstünde, "Bağlantıyı yapıştırın" alanının hemen üstündeki
-  **🪟 Üstte göster** düğmesi (her zaman görünür, indirme olmasa da açılır) ve indirme sürerken alt çubuktaki
-  **🪟** düğmesi. Tarayıcı izni gereği açmak için bir dokunuş şarttır.
-- Pencerede dosya adı, yüzde, ilerleme çubuğu ve hız/kalan süre görünür; bittiğinde yeşile döner.
+- **İndirmeler** başlığındaki **Üstte göster** düğmesiyle açılır (masaüstünde sağ sütunda da var).
+  Tarayıcı izni gereği açmak için bir dokunuş şarttır.
+- Pencerede dosya adı, yüzde, ilerleme çubuğu ve hız görünür; canlı kayıt sürerken kayıt süresi,
+  kalan süre ve diğer indirmelerin hızı gösterilir.
 - iOS Safari'de canvas akışıyla PiP desteklenmediği için düğme görünmez.
 - Sekme tamamen arka planda kalırsa tarayıcı zamanlayıcıları yavaşlatabilir; bu yüzden **gerçek** arka plan
   göstergesi Background Fetch'in Android sistem bildirimidir. Yüzen pencere onun görsel tamamlayıcısıdır.
 - Sistem seviyesinde gerçek bir "diğer uygulamaların üstünde çubuk" (SYSTEM_ALERT_WINDOW) yalnızca yerel bir
   Android uygulamasıyla (TWA/Capacitor sarmalayıcı + overlay izni) mümkündür; bu depo saf web uygulamasıdır.
-
-## Yerele kaydetme
-
-- **💾 Doğrudan seçtiğim konuma kaydet** seçiliyse File System Access API ile dosya konumu sorulur ve veri
-  indirilirken parça parça diske yazılır — büyük videolarda bellek şişmez.
-- Desteklenmeyen tarayıcılarda (ör. iOS Safari) seçenek pasifleşir; dosya normal şekilde "İndirilenler"
-  klasörüne kaydedilir.
 
 ## HLS hakkında
 
@@ -95,8 +124,7 @@ PiP penceresinde gösteriliyor. Android Chrome'da bu pencere uygulamadan çıkı
 - Parçalar 4'lü paralellikle indirilir, başarısız parça 3 kez denenir.
 - `#EXT-X-KEY:METHOD=AES-128` ile şifreli yayınlar WebCrypto ile çözülür (anahtar playlist'te açıkça verildiği için).
 - `SAMPLE-AES`, Widevine, FairPlay gibi **DRM korumalı yayınlar desteklenmez** ve hata mesajıyla reddedilir.
-- Çıktı: fMP4 (`#EXT-X-MAP` içeren) yayınlar `.mp4`, klasik TS yayınlar `.ts` olarak kaydedilir. `.ts` dosyaları VLC ve çoğu oynatıcıda doğrudan açılır; MP4'e çevirmek isterseniz `ffmpeg -i video.ts -c copy video.mp4` yeterlidir (tarayıcıda remux yapılmaz).
-- Video tamamen bellekte birleştirildiği için çok uzun yayınlarda tarayıcı belleği sınır olabilir.
+- "Konum seç" kullanılmıyorsa dosya bellekte birleştirilir (büyük parçalar Blob'a katlanır); çok uzun yayınlarda "Konum seç" ya da sunucuda kayıt daha güvenlidir.
 
 ## CORS ve gizlilik
 
@@ -117,7 +145,7 @@ sunucum), *Sadece doğrudan*, *Sadece kendi sunucum*.
 Statik sayfa taraması JavaScript çalıştırmadığı için oynatma anında üretilen video adreslerini
 göremez. [`render-server/`](render-server/README.md) kendi bilgisayarında (veya Termux ile
 telefonda) çalışan küçük bir sunucudur: sayfayı gerçek bir Chromium'da açıp attığı medya
-isteklerini toplar. Algıla → **🖥️ Kendi sunucum** bölümüne adresini ve token'ını girince:
+isteklerini toplar. **Ayarlar → Kendi sunucum** bölümüne adresini ve token'ını girince:
 
 - Sayfa linkleri (paylaşılanlar dahil) bu sunucuda çalıştırılır; bulunan medya, statik taramanın
   buldukları ile birleştirilir. Tek medya bulunursa doğrudan o açılır.
@@ -150,27 +178,29 @@ npx serve .            # veya python3 -m http.server
 ## Dosya yapısı
 
 ```
-index.html                    # sekmeli arayüz + alt görev çubuğu
+index.html                    # bölümler (Algıla, Resimler, İndirmeler, Ayarlar) + sekme/kenar çubuğu
 manifest.webmanifest          # PWA tanımı (ikonlar, paylaş hedefi, kısayollar)
 sw.js                         # service worker: çevrimdışı kabuk + Background Fetch
-assets/css/style.css
-assets/icons/                 # PWA ikonları (192, 512, maskable, apple-touch)
-assets/js/app.js              # sekmeler, PWA kurulumu, paylaşım hedefi
-assets/js/util.js             # ortak yardımcılar (fetch, akış, canvas)
-assets/js/downloads.js        # indirme yöneticisi, alt çubuk, diske yazma, arka plan
-assets/js/detect.js           # tür/format algılama (magic number + başlıklar)
-assets/js/detect-tab.js       # "Algıla" sekmesi arayüzü
-assets/js/floatbar.js         # PiP ile yüzen mini indirme penceresi
-assets/js/pdf.js              # resim -> PDF
-assets/js/image.js            # resim -> JPG/PNG/WEBP
+assets/css/style.css          # tasarım: tema değişkenleri, telefon + masaüstü yerleşimi
+assets/icons/                 # uygulama ikonu (svg + PWA png'leri)
+assets/vendor/mux-mp4.min.js  # mux.js (TS → MP4 dönüştürme, Apache-2.0)
+assets/js/app.js              # kabuk: bölümler, tema, PWA kurulumu, paylaşım hedefi
+assets/js/prefs.js            # tercihler (tema, kaydetme, bağlantı, eşzamanlılık)
+assets/js/downloads.js        # iş kuyruğu, kayıt kartları, İndirmeler ekranı, hedefe yazma, arka plan
+assets/js/hls.js              # m3u8 ayrıştırma, VOD indirme (aralık/format), canlı kayıt
+assets/js/serverrec.js        # canlı kaydı kendi sunucunda başlatma/izleme
+assets/js/detect.js           # tür/format algılama, sayfadaki medya ve resimleri bulma
+assets/js/detect-tab.js       # Algıla ekranı
+assets/js/images.js           # Resimler ekranı
+assets/js/zip.js              # sıkıştırmasız ZIP üretici
+assets/js/settings.js         # Ayarlar ekranı + kendi sunucum
+assets/js/floatbar.js         # PiP ile yüzen mini indirme/kayıt penceresi
+assets/js/remote.js           # "Sayfayı aç, kendim dokunayım"
 assets/js/video.js            # doğrudan dosya indirici
-assets/js/hls.js              # m3u8 ayrıştırma + parça birleştirme
-render-server/                # kendi cihazında çalışan render + indirme proxy sunucusu
+assets/js/util.js             # ortak yardımcılar (fetch, akış, biçimleme)
+render-server/                # render + indirme proxy + canlı kayıt + sunucuda oynatıp kaydetme
 extension/                    # Chrome/Edge geliştirici uzantısı (ağ isteklerinden medya yakalama)
 ```
-
-> Service worker ve Background Fetch yalnızca **HTTPS** (veya localhost) üzerinde çalışır; Netlify'da
-> yayınlandığında bu koşul sağlanır.
 
 ## Sorumluluk
 
