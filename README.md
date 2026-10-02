@@ -34,8 +34,11 @@ Canlı bir `.m3u8` açıldığında indirme yerine kayıt ekranı çıkar:
 Video algılanıp bağlantısı hata verirse (403, oturum/çerez isteyen, süreli bağlantı...) indirme
 **kendiliğinden** "açıp kaydet"e geçer; ayrıca bir seçim yapılmaz:
 
-1. Video, kendi sunucundaki tarayıcıda temiz bir oynatıcıda açılır (bulunduğu sayfa biliniyorsa önce
-   o sayfa açılır ki çerezler otursun), olmazsa sayfanın kendisi açılıp oynat düğmeleri denenir.
+1. Bağlantı önce kendi sunucundaki tarayıcıya istetilir (bulunduğu sayfa biliniyorsa önce o sayfa,
+   yoksa sitenin ana sayfası açılır ki çerezler otursun). İstek geçerse dosya — HLS ise parçaları, ayrı
+   ses dahil — tarayıcının o isteğindeki başlık ve çerezlerle **oynatılmadan** indirilir; kodek desteği
+   gerekmez. Devtools'tan kopyalanan uzantısız bağlantılar (`…/videoplayback?…`, `…/get_file/…`) da
+   video sayılır. Olmazsa video temiz bir oynatıcıda, o da olmazsa sayfanın kendisinde oynatılır.
 2. Video sessiz ve hızlandırılmış (16 kata kadar) oynatılır; oynatıcının yüklediği veri yakalanır.
    İndirmeler'de kayıt süresi hızla dolar. Ekran filme alınmadığı için dosya **normal hızda, orijinal
    kalitede ve sesli** çıkar; düz video dosyalarında dosya tarayıcının oturumuyla indirilir.
@@ -45,6 +48,9 @@ Video algılanıp bağlantısı hata verirse (403, oturum/çerez isteyen, sürel
 
 Olmazsa video inmemiş görünür ve nedeni yazar: DRM koruması, erişim reddi (HTTP 403), bağlantının
 süresinin dolması (404), kodek desteği, sayfada video olmaması ya da videonun başlatılmaması.
+Bağlantı sunucudan reddediliyorsa (süreli/imzalı, IP'ye ya da sitenin oturumuna bağlı) kartta videonun
+**bulunduğu sayfa** adresi verilebilir; o sayfanın çerez ve Referer'ıyla yeniden denenir. Yine olmazsa
+**Telefonda aç** bağlantıyı telefonun kendi tarayıcısında (kendi IP'si ve oturumuyla) açar.
 Sayfada video bağlantısı hiç bulunamazsa **Videoyu kaydet** düğmesi aynı yolu elle başlatır.
 Bu özellik için Ayarlar → Kendi sunucum gerekir (ayrıntılar: `render-server/README.md`).
 

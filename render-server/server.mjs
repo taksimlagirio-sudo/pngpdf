@@ -388,12 +388,28 @@ async function sniff(pageUrl, waitMs) {
     const started = Date.now();
     let title = '';
     let finalUrl = pageUrl;
+    let main = null;
     try {
         // Otomatik tıklamalar sayfayı reklama yönlendirirse sayfaya geri dönülür.
         const guard = guardNavigation(page, { onReturn: () => { state.blockedAds++; } });
-        await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
+        // Adresin kendisi ne döndü? Uzantısız video bağlantıları (…/videoplayback?…) ve erişimi
+        // kapalı bağlantılar (403) böyle anlaşılır; uygulama bunları sayfa değil video sayar.
+        let response = null;
+        try {
+            response = await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
+        } catch (err) {
+            if (/Download is starting|net::ERR_ABORTED/i.test(err.message)) {
+                main = { status: 200, contentType: '', download: true };
+                return { title: '', finalUrl, items: [], main, elapsedMs: Date.now() - started };
+            }
+            throw err;
+        }
+        if (response) main = { status: response.status(), contentType: (response.headers()['content-type'] || '').toLowerCase() };
         finalUrl = page.url();
         guard.arm(finalUrl);
+        if (main && (main.status >= 400 || /^(video|audio)\/|mpegurl|dash\+xml/.test(main.contentType))) {
+            return { title: '', finalUrl, items: [], main, elapsedMs: Date.now() - started };
+        }
 
         await tryPlay(page);
         const nudge = {};
@@ -415,7 +431,7 @@ async function sniff(pageUrl, waitMs) {
     for (const item of foundItems(state)) {
         if (!(await isAdRequest(item.url, pageUrl, 'media'))) items.push(item);
     }
-    return { title, finalUrl, items, blockedAds: state.blockedAds, elapsedMs: Date.now() - started };
+    return { title, finalUrl, items, main, blockedAds: state.blockedAds, elapsedMs: Date.now() - started };
 }
 
 /* ---------------- Etkileşimli oturum: kullanıcı sayfaya kendisi dokunur ---------------- */
@@ -665,6 +681,7 @@ function sendRecordFile(req, res, file) {
 
 const capturer = createCapturer({
     dir: process.env.CAPTURE_DIR || path.join(HERE, '.captures'),
+    appRoot: APP_ROOT,
     getBrowser,
     nudgePlayback,
     assertPublicTarget,

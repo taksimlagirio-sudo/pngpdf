@@ -525,6 +525,7 @@ export function initDownloads({ onNavigate } = {}) {
         if (act === 'retry') retry(job);
         if (act === 'dismiss') removeJob(job);
         if (act === 'touch' && job.captureId) openTouch(job);
+        if (act === 'open' && job.openUrl) window.open(job.openUrl, '_blank', 'noopener');
     });
 
     if ('serviceWorker' in navigator) {
@@ -866,6 +867,8 @@ function renderFinished(job) {
         }
     } else if (job.status === 'error') {
         subCls = 'err';
+        // Bağlantı sunucudan da inmediyse telefonun kendi tarayıcısı (kendi IP'si, oturumu) dener.
+        if (job.openUrl) btns.push(btn(job, 'open', 'Telefonda aç', 'primary'));
         if (job.fallback && !job.fallbackUsed) btns.push(btn(job, 'fallback', 'Normal indir', 'primary'));
         else if (job.run) btns.push(btn(job, 'retry', 'Tekrar dene'));
     } else if (job.status === 'cancelled' && job.run) {

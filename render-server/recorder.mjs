@@ -109,7 +109,7 @@ function loadMux(appRoot) {
 const sameBytes = (a, b) => a && b && a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** Dosyaya sarılabilir MP4 yazan birleştirici (uygulamadaki createMuxer'ın sunucu karşılığı). */
-async function createMuxer(file, appRoot) {
+export async function createMuxer(file, appRoot) {
     const fd = fs.openSync(file, 'w');
     let pos = 0;
     const builder = new Mp4Builder({

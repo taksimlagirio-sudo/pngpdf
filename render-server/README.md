@@ -129,7 +129,11 @@ uzun kayıtlar için `termux-wake-lock` açık olmalı.
 Uygulamada bir videonun bağlantısı hata verince (403, oturum isteyen, süreli bağlantı...) indirme
 kendiliğinden buraya geçer (`POST /capture {pageUrl, mediaUrl}`):
 
-- Videonun kendi adresi temiz bir oynatıcıda açılır (MP4 doğrudan, HLS hls.js ile); sayfa biliniyorsa
+- Önce bağlantı tarayıcıya istetilir (sayfa, bilinen Referer ya da sitenin ana sayfası açıldıktan sonra).
+  İstek geçerse dosya ya da HLS yayını (ayrı ses dahil, VOD) tarayıcının o isteğindeki başlıklar ve
+  çerezlerle **oynatılmadan** indirilir — H.264 desteği gerekmez. Türü uzantıdan değil yanıttan
+  anlaşılır (uzantısız bağlantılar da çalışır). Tarayıcının isteği de reddedilirse nedeni döner.
+- Olmazsa videonun kendi adresi temiz bir oynatıcıda açılır (MP4 doğrudan, HLS hls.js ile); sayfa biliniyorsa
   önce sayfa açılır ki çerezler/Referer otursun. Başka kökenden gelen yayın istekleri tarayıcının
   kendi oturumuyla alınıp oynatıcıya verilir. Olmazsa sayfa açılıp oynat düğmeleri denenir.
 - Video **sessiz ve 16 kata kadar hızlı** oynatılır; oynatıcının MediaSource'a eklediği veri yakalanıp

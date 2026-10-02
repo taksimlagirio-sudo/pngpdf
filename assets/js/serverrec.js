@@ -184,7 +184,7 @@ function track(state, thumb = null, kind = 'record') {
 }
 
 function baseDetail(job, state) {
-    const parts = [hms(state.mediaSec || 0), formatSize(state.bytes || 0)];
+    const parts = [state.mediaSec ? hms(state.mediaSec) : '', formatSize(state.bytes || 0)].filter(Boolean);
     if (state.reason) parts.push(state.reason);
     if (state.missed) parts.push(`${state.missed} parça kaçtı`);
     return parts.join(' · ');

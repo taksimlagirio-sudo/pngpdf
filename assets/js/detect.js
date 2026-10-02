@@ -191,10 +191,23 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
         // bir tarayıcıyla açmayı dene; o da yoksa hatayı olduğu gibi göster.
         // Video/yayın adresiyse sayfa gibi taranmaz: hata yukarı iletilir, Algıla ekranı "bağlantı
         // açılmıyor" kartını gösterir ve indirirken video açılıp kaydedilir.
-        if (!getRenderServer() || /\.(m3u8|mpd|mp4|m4v|webm|mov|mkv|ts|mp3|m4a|aac)(\?|$)/i.test(url)) throw err;
-        onStage('Sayfa doğrudan okunamadı, kendi sunucunda açılıyor...');
+        if (/\.(m3u8|mpd|mp4|m4v|webm|mov|mkv|ts|mp3|m4a|aac)(\?|$)/i.test(url)) {
+            err.mediaLike = true;
+            err.mediaKind = /\.m3u8(\?|$)/i.test(url) ? 'hls' : 'video';
+        }
+        if (!getRenderServer() || err.mediaLike) throw err;
+        onStage('Bağlantı doğrudan okunamadı, kendi sunucunda açılıyor...');
         const result = basePageResult(url);
         await sniffOnServer(result, url, signal, onStage);
+        // Uzantısız video bağlantıları (…/videoplayback?…) ve erişimi kapalı bağlantılar: sunucudaki
+        // tarayıcıya göre video ya da hata döndüyse sayfa değil, açılmayan video bağlantısı sayılır.
+        const main = result.details.main;
+        if (main && (main.download || main.status >= 400 || /^(video|audio)\/|mpegurl|dash\+xml/.test(main.contentType))) {
+            err.mediaLike = true;
+            err.mediaKind = /mpegurl/.test(main.contentType) || /m3u8/i.test(url) ? 'hls' : 'video';
+            if (main.status >= 400) err.message = `HTTP ${main.status}`;
+            throw err;
+        }
         return result;
     }
 
@@ -329,6 +342,7 @@ async function sniffOnServer(result, url, signal, onStage) {
     try {
         const sniffed = await renderSniff(url, { signal });
         if (sniffed.title && !result.details.title) result.details.title = sniffed.title;
+        if (sniffed.main) result.details.main = sniffed.main;
 
         // Sunucunun gördükleri önce (gerçekten istenen adresler), statik taramadan gelenler sonra.
         const merged = new Map();
