@@ -122,12 +122,23 @@ async function assertPublicTarget(url) {
 /* ---------------- Tarayıcı ---------------- */
 
 async function loadPlaywright() {
+    // Playwright yüklenirken kendi tarayıcı klasörünü hesaplıyor ve Android'i (Termux) tanımadığı
+    // için "Unsupported platform: android" diye patlıyor. Tarayıcıyı zaten CHROME_PATH ile
+    // verdiğimizden bu klasör hiç kullanılmıyor; yalnızca hesaplanabilsin diye bir yol veriyoruz.
+    if (process.platform === 'android' && !process.env.PLAYWRIGHT_BROWSERS_PATH) {
+        process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(HERE, '.pw-browsers');
+    }
+    let lastError = null;
     for (const name of ['playwright-core', 'playwright']) {
         try {
             return await import(name);
-        } catch (_) { /* sıradakini dene */ }
+        } catch (err) {
+            if (err.code !== 'ERR_MODULE_NOT_FOUND') throw new Error(`Playwright yüklenemedi: ${err.message}`);
+            lastError = err;
+        }
     }
-    throw new Error('playwright-core bulunamadı — render-server klasöründe "npm install" çalıştırın');
+    throw new Error('playwright-core bulunamadı — render-server klasöründe "npm install" çalıştırın' +
+        (lastError ? ` (${lastError.message.split('\n')[0]})` : ''));
 }
 
 let browserPromise = null;
