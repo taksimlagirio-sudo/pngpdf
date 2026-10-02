@@ -1,5 +1,5 @@
 // Bir adresin arkasında ne olduğunu anlar: tür, format, boyut, çözünürlük/süre.
-import { smartFetch, formatSize, fileNameFromUrl, proxyUrl } from './util.js';
+import { smartFetch, formatSize, fileNameFromUrl, proxyUrl, getRenderServer, renderSniff } from './util.js';
 import { parsePlaylist } from './hls.js';
 
 const SNIFF_BYTES = 65536;
@@ -125,12 +125,23 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
     onStage('Bağlanılıyor...');
 
     let access = 'direct';
-    const res = await smartFetch(url, {
-        mode,
-        init: { signal, headers: { Range: `bytes=0-${SNIFF_BYTES - 1}` } },
-        onFallback: () => onStage('Doğrudan erişilemedi (CORS), proxy deneniyor...'),
-        onAccess: (which) => { access = which; }
-    });
+    let res;
+    try {
+        res = await smartFetch(url, {
+            mode,
+            init: { signal, headers: { Range: `bytes=0-${SNIFF_BYTES - 1}` } },
+            onFallback: () => onStage('Doğrudan erişilemedi (CORS), proxy deneniyor...'),
+            onAccess: (which) => { access = which; }
+        });
+    } catch (err) {
+        // Site dışarıdan çekilmeyi reddediyorsa (bot koruması vb.) sayfayı kendi sunucunda gerçek
+        // bir tarayıcıyla açmayı dene; o da yoksa hatayı olduğu gibi göster.
+        if (!getRenderServer()) throw err;
+        onStage('Sayfa doğrudan okunamadı, kendi sunucunda açılıyor...');
+        const result = basePageResult(url);
+        await sniffOnServer(result, url, signal, onStage);
+        return result;
+    }
 
     const headerType = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     const contentRange = res.headers.get('content-range');
@@ -198,6 +209,15 @@ async function scanPage(result, url, mode, signal, onStage) {
 
     let links = findMediaLinks(html, url);
     const embeds = findEmbeds(html, url);
+    result.details.embeds = embeds;
+
+    // Kendi sunucun varsa sayfayı orada gerçekten çalıştır: JS ile oynatma anında üretilen
+    // adresleri ancak böyle görebiliriz. Statik taramanın bulduklarıyla birleştirilir.
+    if (getRenderServer()) {
+        result.details.links = links;
+        await sniffOnServer(result, url, signal, onStage);
+        return;
+    }
 
     // Sayfada bulunamadıysa sayfanın yüklediği script dosyalarına bak.
     if (links.length === 0) {
@@ -207,7 +227,6 @@ async function scanPage(result, url, mode, signal, onStage) {
     }
 
     result.details.links = links;
-    result.details.embeds = embeds;
 
     if (links.length === 0) {
         const known = embeds.find((e) => ['YouTube', 'Vimeo', 'Dailymotion'].includes(e.host));
@@ -216,6 +235,54 @@ async function scanPage(result, url, mode, signal, onStage) {
             : 'Sayfa kaynağında medya adresi bulunamadı. Medya büyük ihtimalle oynatma sırasında ' +
               'JavaScript ile yükleniyor: videoyu başlatıp tarayıcının geliştirici araçlarındaki Ağ ' +
               'sekmesinden .m3u8 veya .mp4 adresini kopyalayıp buraya yapıştırın.');
+    }
+}
+
+function basePageResult(url) {
+    return {
+        url,
+        kind: 'page',
+        format: 'html',
+        mime: 'text/html',
+        ext: 'html',
+        size: 0,
+        sizeText: 'bilinmiyor',
+        resumable: false,
+        headerType: '',
+        suggestedName: fileNameFromUrl(url, 'html'),
+        access: 'render',
+        downloadable: false,
+        target: 'page',
+        warnings: [],
+        details: { links: [], embeds: [] }
+    };
+}
+
+async function sniffOnServer(result, url, signal, onStage) {
+    onStage('Sayfa kendi sunucunda çalıştırılıyor (oynatıcının istekleri bekleniyor)...');
+    try {
+        const sniffed = await renderSniff(url, { signal });
+        if (sniffed.title && !result.details.title) result.details.title = sniffed.title;
+
+        // Sunucunun gördükleri önce (gerçekten istenen adresler), statik taramadan gelenler sonra.
+        const merged = new Map();
+        for (const item of sniffed.items) {
+            if (item.kind === 'image') continue; // sayfa ikonları/görselleri listeyi boğmasın
+            merged.set(item.url, { url: item.url, kind: item.kind, size: item.size || 0, fromRender: true });
+        }
+        for (const item of result.details.links || []) {
+            if (!merged.has(item.url)) merged.set(item.url, item);
+        }
+        result.details.links = [...merged.values()];
+        result.details.fromRender = sniffed.items.length > 0;
+        result.details.renderImages = sniffed.items.filter((i) => i.kind === 'image').length;
+
+        if (result.details.links.length === 0) {
+            result.warnings.push('Sayfa kendi sunucunda çalıştırıldı ama medya isteği görülmedi. ' +
+                'Oynatıcı bir tıklama bekliyor, giriş istiyor veya içerik DRM korumalı olabilir.');
+        }
+    } catch (err) {
+        result.warnings.push(`Kendi sunucuna ulaşılamadı: ${err.message}`);
     }
 }
 
@@ -340,15 +407,15 @@ async function describeImage(result, url, mode, signal) {
 }
 
 // Video/ses süresini, çözünürlüğünü ve (videoda) bir önizleme karesini okur.
-// Doğrudan adres CORS'a takılırsa proxy adresiyle yeniden denenir; proxy aynı kökenli
-// olduğu için canvas "tainted" olmaz ve kare yakalanabilir.
+// Doğrudan adres CORS'a takılırsa proxy adresiyle yeniden denenir. Netlify proxy'si aynı
+// kökenli, kendi sunucun ise CORS başlığı gönderiyor; ikisinde de canvas okunabilir kalır.
 async function describeMedia(result, url, mode) {
     const candidates = mode === 'proxy'
         ? [proxyUrl(url)]
         : mode === 'direct' ? [url] : [url, proxyUrl(url)];
 
     for (const src of candidates) {
-        const ok = await probeMediaElement(result, src, src !== url);
+        const ok = await probeMediaElement(result, src, src.startsWith('/'));
         if (ok) return;
     }
 }

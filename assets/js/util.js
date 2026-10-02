@@ -61,8 +61,67 @@ export function isHttpUrl(value) {
     }
 }
 
-// Netlify function'ı üzerinden CORS engelini aşmak için proxy adresi.
+/* ---------------- Kendi render sunucusu (render-server/) ---------------- */
+
+const RENDER_KEY = 'indirici.renderServer';
+
+/** Kullanıcının kendi cihazında çalışan render sunucusu ayarı ({url, token}) ya da null. */
+export function getRenderServer() {
+    try {
+        const value = JSON.parse(localStorage.getItem(RENDER_KEY) || 'null');
+        if (value && value.url && value.token) return value;
+    } catch (_) { /* depolama kapalı veya bozuk */ }
+    return null;
+}
+
+export function setRenderServer(config) {
+    try {
+        if (config) {
+            localStorage.setItem(RENDER_KEY, JSON.stringify({
+                url: config.url.trim().replace(/\/+$/, ''),
+                token: config.token.trim()
+            }));
+        } else {
+            localStorage.removeItem(RENDER_KEY);
+        }
+    } catch (_) { /* depolama kapalı: ayar bu oturumla sınırlı kalmaz */ }
+}
+
+async function renderRequest(config, path, init = {}) {
+    const res = await fetch(`${config.url}${path}`, {
+        ...init,
+        headers: { authorization: `Bearer ${config.token}`, ...(init.headers || {}) }
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `Sunucu ${res.status} döndü`);
+    return body;
+}
+
+/** Sunucuya erişilebiliyor ve token doğru mu? */
+export function checkRenderServer(config) {
+    return renderRequest(config, '/health');
+}
+
+/** Sayfayı kendi sunucunda gerçek tarayıcıyla çalıştırıp attığı medya isteklerini döner. */
+export function renderSniff(url, { signal, waitMs } = {}) {
+    const config = getRenderServer();
+    if (!config) return Promise.resolve(null);
+    return renderRequest(config, '/sniff', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url, waitMs }),
+        signal
+    });
+}
+
+// CORS engelini aşmak için proxy adresi: kendi sunucun ayarlıysa onu (süre sınırı yok),
+// değilse Netlify fonksiyonunu kullanır. <video src> gibi başlık eklenemeyen yerlerde de
+// çalışsın diye token sorgu parametresiyle gönderilir.
 export function proxyUrl(target) {
+    const server = getRenderServer();
+    if (server) {
+        return `${server.url}/fetch?url=${encodeURIComponent(target)}&token=${encodeURIComponent(server.token)}`;
+    }
     return `/api/proxy?url=${encodeURIComponent(target)}`;
 }
 

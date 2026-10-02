@@ -35,6 +35,14 @@ function classify(url, contentType) {
     return null;
 }
 
+// HLS/DASH parçaları (.ts, .m4s, CMAF) tek başına anlamsız ve oynatıcı saniyede bir yenisini
+// istediği için listeyi doldurur; playlist'in kendisi listelenir, parçalar atlanır.
+function isSegment(url, contentType) {
+    if (/video\/mp2t|video\/iso\.segment|audio\/mp2t/i.test(contentType)) return true;
+    const match = url.split('?')[0].split('#')[0].match(/\.([a-z0-9]{2,5})$/i);
+    return Boolean(match) && ['ts', 'm4s', 'cmfv', 'cmfa'].includes(match[1].toLowerCase());
+}
+
 function dedupKey(url, kind) {
     if (kind === 'hls' || kind === 'dash') {
         try {
@@ -66,6 +74,7 @@ chrome.webRequest.onCompleted.addListener(
 
         const contentType = header(details.responseHeaders, 'content-type');
         const length = header(details.responseHeaders, 'content-length');
+        if (isSegment(details.url, contentType)) return;
         const kind = classify(details.url, contentType);
         if (!kind) return;
 
@@ -88,6 +97,7 @@ chrome.webRequest.onCompleted.addListener(
 chrome.webRequest.onErrorOccurred.addListener(
     (details) => {
         if (details.tabId < 0 || details.error !== 'net::ERR_FAILED') return;
+        if (isSegment(details.url, '')) return;
         const kind = classify(details.url, '');
         if (!kind) return;
         addItem(details.tabId, { url: details.url, kind, mime: '', size: 0, lastSeen: Date.now() });

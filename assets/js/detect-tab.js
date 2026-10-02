@@ -1,5 +1,8 @@
 // "Algıla" sekmesi: adresteki içeriği tanır ve uygun indirme yolunu sunar.
-import { $, escapeHtml, isHttpUrl, formatSize, createProgress } from './util.js';
+import {
+    $, escapeHtml, isHttpUrl, formatSize, createProgress,
+    getRenderServer, setRenderServer, checkRenderServer
+} from './util.js';
 import { analyzeUrl, formatDuration } from './detect.js';
 import { downloadFile } from './video.js';
 import { downloadHls } from './hls.js';
@@ -48,6 +51,8 @@ export function initDetectTab() {
     urlInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') analyze(urlInput.value.trim());
     });
+
+    initServerSettings();
 
     pasteBtn.addEventListener('click', async () => {
         try {
@@ -173,7 +178,8 @@ export function initDetectTab() {
 
             if (list.length) {
                 links = `<p class="hint">🔎 Sayfada <strong>${list.length}</strong> medya bağlantısı bulundu${
-                    info.details.fromScripts ? ' (sayfanın script dosyalarında)' : ''
+                    info.details.fromRender ? ' (🖥️ sayfa kendi sunucunda çalıştırılarak)'
+                        : info.details.fromScripts ? ' (sayfanın script dosyalarında)' : ''
                 } — indirmek için birine dokunun:</p>
                 <div class="variant-list">${list.map((l) => `
                     <button class="variant" data-act="analyze-link" data-url="${escapeHtml(l.url)}">
@@ -295,6 +301,51 @@ export function initDetectTab() {
         progress.setTitle('✅ Tamamlandı');
         progress.set(1);
         progress.setDetail(detail || '');
+    }
+
+    /** "Kendi sunucum" bölümü: adres+token kaydet, sağlık kontrolü yap, rozeti güncelle. */
+    function initServerSettings() {
+        const urlInput2 = $('serverUrl');
+        const tokenInput = $('serverToken');
+        const status = $('serverStatus');
+        const badge = $('serverBadge');
+
+        const showState = (on, text) => {
+            badge.textContent = on ? 'açık' : 'kapalı';
+            badge.classList.toggle('on', on);
+            if (text !== undefined) status.textContent = text;
+        };
+
+        const current = getRenderServer();
+        if (current) {
+            urlInput2.value = current.url;
+            tokenInput.value = current.token;
+            showState(true, 'Kayıtlı. Sayfa adresleri bu sunucuda açılacak.');
+        } else {
+            showState(false);
+        }
+
+        $('serverSaveBtn').addEventListener('click', async () => {
+            const config = { url: urlInput2.value.trim().replace(/\/+$/, ''), token: tokenInput.value.trim() };
+            if (!isHttpUrl(config.url) || !config.token) {
+                status.textContent = 'Adres (http/https) ve token gerekli.';
+                return;
+            }
+            status.textContent = 'Bağlanılıyor...';
+            try {
+                const health = await checkRenderServer(config);
+                setRenderServer(config);
+                showState(true, `✅ Bağlandı (sürüm ${health.version}). Sayfa adresleri artık bu sunucuda açılacak.`);
+            } catch (err) {
+                showState(Boolean(getRenderServer()), `❌ Bağlanılamadı: ${err.message}. ` +
+                    'Sunucu açık mı, adres https mi (veya 127.0.0.1), token doğru mu?');
+            }
+        });
+
+        $('serverClearBtn').addEventListener('click', () => {
+            setRenderServer(null);
+            showState(false, 'Kendi sunucun devre dışı; Netlify proxy\'si kullanılacak.');
+        });
     }
 
     /** Paylaşım hedefi (?url=) veya kısayolla gelen adresi doldurur. */

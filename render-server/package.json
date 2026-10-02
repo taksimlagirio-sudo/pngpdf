@@ -1,0 +1,18 @@
+{
+  "name": "indirici-render-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "İndirici için kendi cihazında çalışan sayfa render + medya koklama sunucusu",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "install-browser": "npx playwright-core install chromium"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "playwright-core": "^1.48.0"
+  }
+}

@@ -114,6 +114,29 @@ içinde bir yedek proxy var (`/api/proxy?url=...`):
 Her indirme sekmesinde bağlantı yöntemi seçilebilir: *Otomatik* (önce doğrudan, hata olursa proxy),
 *Sadece doğrudan*, *Sadece proxy*.
 
+## Kendi sunucum (render sunucusu)
+
+Statik sayfa taraması JavaScript çalıştırmadığı için oynatma anında üretilen video adreslerini
+göremez. [`render-server/`](render-server/README.md) kendi bilgisayarında (veya Termux ile
+telefonda) çalışan küçük bir sunucudur: sayfayı gerçek bir Chromium'da açıp attığı medya
+isteklerini toplar. Algıla → **🖥️ Kendi sunucum** bölümüne adresini ve token'ını girince:
+
+- Sayfa linkleri (paylaşılanlar dahil) bu sunucuda çalıştırılır; bulunan medya, statik taramanın
+  buldukları ile birleştirilir. Tek medya bulunursa doğrudan o açılır.
+- Site dışarıdan çekilmeyi tamamen reddediyorsa da sayfa doğrudan sunucuda açılmayı dener.
+- Tüm "proxy" indirmeleri Netlify yerine bu sunucu üzerinden yapılır: süre sınırı yok, medyayı
+  açan sayfanın `Referer`'ı iletilir.
+
+Telefondan erişim için sunucunun https adresi olmalı (Tailscale önerilir); ayrıntılar
+`render-server/README.md`'de.
+
+## Tarayıcı eklentisi
+
+[`extension/`](extension/README.md) Chrome/Edge için paketlenmemiş bir geliştirici uzantısıdır:
+açık sekmenin gerçek ağ isteklerinden medyayı yakalar, canlı HLS yayınını "şu andan itibaren"
+kaydedebilir ve senin oturumunla çalıştığı için giriş gerektiren sayfalarda da işe yarar.
+Android Chrome eklenti desteklemediği için masaüstü içindir.
+
 ## Yerel çalıştırma
 
 ```bash
@@ -145,6 +168,8 @@ assets/js/image.js            # resim -> JPG/PNG/WEBP
 assets/js/video.js            # doğrudan dosya indirici
 assets/js/hls.js              # m3u8 ayrıştırma + parça birleştirme
 netlify/functions/proxy.mjs   # CORS proxy'si
+render-server/                # kendi cihazında çalışan render + indirme proxy sunucusu
+extension/                    # Chrome/Edge geliştirici uzantısı (ağ isteklerinden medya yakalama)
 ```
 
 > Service worker ve Background Fetch yalnızca **HTTPS** (veya localhost) üzerinde çalışır; Netlify'da

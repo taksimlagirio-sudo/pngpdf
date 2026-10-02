@@ -37,8 +37,23 @@ async function refresh() {
     tabId = await resolveTabId();
     if (!tabId) return;
     const res = await chrome.runtime.sendMessage({ type: 'get-items', tabId });
-    items = (res?.items || []).sort((a, b) => b.lastSeen - a.lastSeen);
+    items = dropHlsSiblings(res?.items || []).sort((a, b) => b.lastSeen - a.lastSeen);
     renderList();
+}
+
+// Bazı yayınlar fMP4 parçalarını ".mp4" adıyla verir; HLS playlist'iyle aynı klasördeki
+// video kayıtları parça olduğundan ayrı video gibi listelenmez.
+function dropHlsSiblings(list) {
+    const dirOf = (url) => {
+        try {
+            const u = new URL(url);
+            return u.origin + u.pathname.slice(0, u.pathname.lastIndexOf('/') + 1);
+        } catch (_) {
+            return url;
+        }
+    };
+    const dirs = new Set(list.filter((i) => i.kind === 'hls').map((i) => dirOf(i.url)));
+    return list.filter((i) => i.kind !== 'video' || !dirs.has(dirOf(i.url)));
 }
 
 function renderList() {

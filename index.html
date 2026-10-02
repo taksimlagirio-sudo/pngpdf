@@ -64,6 +64,28 @@
                     🪟 En üstteki <strong>"Üstte göster"</strong> düğmesi (veya indirme sürerken alt çubuktaki 🪟)
                     indirme durumunu <strong>diğer uygulamaların üstünde</strong> yüzen mini pencerede tutar.
                 </p>
+
+                <details class="server-box" id="serverBox">
+                    <summary>🖥️ Kendi sunucum <span class="server-badge" id="serverBadge">kapalı</span></summary>
+                    <p class="hint">
+                        Bilgisayarında (veya telefonda Termux'ta) <code>render-server</code>'ı çalıştırırsan
+                        sayfalar orada gerçek bir tarayıcıyla açılır: JS ile oynatma anında üretilen video
+                        adresleri de bulunur, indirmeler süre sınırı olmadan onun üzerinden yapılır.
+                    </p>
+                    <div class="field">
+                        <label class="field-label" for="serverUrl">Adres</label>
+                        <input type="url" class="input" id="serverUrl" placeholder="https://bilgisayarim.tailXXXX.ts.net veya http://127.0.0.1:8787">
+                    </div>
+                    <div class="field">
+                        <label class="field-label" for="serverToken">Token</label>
+                        <input type="password" class="input" id="serverToken" placeholder="Sunucu açılışta yazdırır" autocomplete="off">
+                    </div>
+                    <div class="actions" style="margin-top: 0;">
+                        <button class="btn btn-secondary" id="serverClearBtn">Kapat</button>
+                        <button class="btn btn-primary" id="serverSaveBtn">Kaydet ve test et</button>
+                    </div>
+                    <p class="hint" id="serverStatus"></p>
+                </details>
             </div>
 
             <div class="actions">
