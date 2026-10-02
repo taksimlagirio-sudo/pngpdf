@@ -43,18 +43,38 @@ https adresi verir. Bu adres internete açıktır; koruma yalnızca token'dır.
 
 ## Kurulum (telefonun kendisi: Android + Termux) — deneysel
 
-Sunucu telefonda çalışırsa İndirici'ye `http://127.0.0.1:8787` yazabilirsin (localhost, https
-sayfalardan da çağrılabiliyor; Chrome yerel ağ erişimi için izin isteyebilir, izin ver).
+Sunucu telefonda çalışınca İndirici'ye `http://127.0.0.1:8787` yazılır; Tailscale gerekmez.
 
-```bash
-pkg install nodejs x11-repo
-pkg install chromium
-cd render-server && npm install
-CHROME_PATH="$(command -v chromium-browser || command -v chromium)" npm start
-```
+1. Termux'u **F-Droid**'den kur (Play Store sürümü eski ve güncellenmiyor).
+2. Termux'ta:
+   ```bash
+   pkg update
+   pkg install git nodejs x11-repo
+   pkg install chromium
+   git clone https://github.com/taksimlagirio-sudo/pngpdf
+   cd pngpdf/render-server
+   sh start-termux.sh
+   ```
+   Betik Chromium'u bulur, bağımlılıkları kurar, telefonun uyutmasını engeller
+   (`termux-wake-lock`) ve sunucuyu başlatır. Ekranda **Token** satırı çıkar, onu kopyala.
+3. Chrome'da İndirici'yi aç → **Algıla** → **🖥️ Kendi sunucum**:
+   - Adres: `http://127.0.0.1:8787`
+   - Token: kopyaladığın değer
+   - **Kaydet ve test et**. Chrome "yerel ağdaki cihazlara erişim" izni sorarsa izin ver.
+4. Termux'u kapatma; arkada açık kalsın. Android ayarlarında Termux için pil
+   optimizasyonunu kapatırsan arka planda öldürülmez.
 
-Playwright Termux'u resmi olarak desteklemiyor; çalışmazsa bilgisayar kurulumunu kullan.
-Uzun işlerde Termux'un uyumaması için `termux-wake-lock` çalıştır.
+Sonraki seferlerde sadece: `cd pngpdf/render-server && sh start-termux.sh`.
+Güncellemek için: `cd pngpdf && git pull`.
+
+Notlar:
+- Playwright, Termux'u resmi olarak desteklemiyor; `npx playwright-core install chromium`
+  orada çalışmaz, bu yüzden Termux'un kendi `chromium` paketi kullanılıyor. Android'de Chromium
+  kum havuzu desteklemediği için sunucu onu otomatik `--no-sandbox` ile başlatıyor.
+- Başlatırken hata alırsan çıktıyı not et; büyük ihtimalle Chromium paketinin adı/yolu farklıdır,
+  `CHROME_PATH=/tam/yol sh start-termux.sh` ile elle verebilirsin.
+- Sayfa çalıştırmak telefonda bilgisayara göre yavaş ve pil yiyici; uzun canlı yayın gibi işler
+  için bilgisayar kurulumu daha uygun.
 
 ## Güvenlik
 

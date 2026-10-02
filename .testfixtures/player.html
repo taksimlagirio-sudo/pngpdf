@@ -1,0 +1,1 @@
+<!DOCTYPE html><html><head><title>Oynatıcı</title></head><body><script>(async()=>{const t=await (await fetch('/.testfixtures/vod.m3u8')).text();for(const l of t.split('\n')){ if(l && !l.startsWith('#')) await fetch('/.testfixtures/'+l); }})();</script></body></html>

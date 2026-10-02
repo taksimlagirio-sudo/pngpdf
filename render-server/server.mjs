@@ -131,10 +131,13 @@ async function getBrowser() {
     if (!browserPromise) {
         browserPromise = (async () => {
             const { chromium } = await loadPlaywright();
+            const args = ['--autoplay-policy=no-user-gesture-required', '--mute-audio'];
+            // Termux'ta (Android) Chromium'un kum havuzu çalışmıyor; orada sandbox'sız başlat.
+            if (process.platform === 'android' || process.env.NO_SANDBOX === '1') args.push('--no-sandbox');
             const browser = await chromium.launch({
                 headless: true,
                 executablePath: process.env.CHROME_PATH || undefined,
-                args: ['--autoplay-policy=no-user-gesture-required', '--mute-audio']
+                args
             });
             browser.on('disconnected', () => { browserPromise = null; });
             return browser;
