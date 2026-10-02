@@ -2,6 +2,7 @@
 // (İndirilenler / Galeri / Konum seç), arka plan indirme ve İndirmeler ekranı + sağ sütun + şerit.
 import { $, formatSize, escapeHtml, saveBlob, hms, formatLeft } from './util.js';
 import { getPrefs, setPref, onPrefs } from './prefs.js';
+import { openRemoteView } from './remote.js';
 
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -74,10 +75,16 @@ export async function createSink(name, { mode = effectiveSaveMode(), mime = 'app
                 types: [{ description: 'Dosya', accept: { [mime]: ['.' + ext] } }]
             });
             const writable = await handle.createWritable();
+            let size = 0;
             return {
                 mode: 'disk',
                 name: handle.name || name,
-                async write(chunk) { await writable.write(chunk); },
+                async write(chunk) {
+                    await writable.write({ type: 'write', position: size, data: chunk });
+                    size += chunk.byteLength || chunk.size || 0;
+                },
+                /** Daha önce yazılmış bir konumu düzeltir (MP4 başlığındaki boyut gibi). */
+                async patch(position, bytes) { await writable.write({ type: 'write', position, data: bytes }); },
                 async close() { await writable.close(); return null; },
                 async abort() { try { await writable.abort(); } catch (_) { /* zaten kapalı */ } }
             };
@@ -89,6 +96,7 @@ export async function createSink(name, { mode = effectiveSaveMode(), mime = 'app
     }
 
     const FOLD_BYTES = 32 * 1024 * 1024;
+    let head = null; // ilk parça ayrı tutulur: sonradan yamanabilsin (MP4 başlığı)
     let parts = [];
     let pending = [];
     let pendingBytes = 0;
@@ -102,20 +110,30 @@ export async function createSink(name, { mode = effectiveSaveMode(), mime = 'app
         mode: mode === 'gallery' ? 'gallery' : 'downloads',
         name,
         async write(chunk) {
+            if (!head) {
+                head = chunk instanceof Uint8Array ? chunk : new Uint8Array(await new Blob([chunk]).arrayBuffer());
+                return;
+            }
             pending.push(chunk);
             pendingBytes += chunk.byteLength || chunk.size || 0;
             if (pendingBytes >= FOLD_BYTES) fold();
         },
+        async patch(position, bytes) {
+            if (!head || position + bytes.length > head.length) throw new Error('Dosya başlığı düzeltilemedi');
+            head.set(bytes, position);
+        },
         async close() {
             fold();
-            const blob = new Blob(parts, { type: mime });
+            const blob = new Blob(head ? [head, ...parts] : parts, { type: mime });
             parts = [];
+            head = null;
             if (mode !== 'gallery') saveBlob(blob, name);
             return blob;
         },
         async abort() {
             parts = [];
             pending = [];
+            head = null;
         }
     };
 }
@@ -506,6 +524,7 @@ export function initDownloads({ onNavigate } = {}) {
         if (act === 'fallback') runFallback(job);
         if (act === 'retry') retry(job);
         if (act === 'dismiss') removeJob(job);
+        if (act === 'touch' && job.captureId) openTouch(job);
     });
 
     if ('serviceWorker' in navigator) {
@@ -597,6 +616,12 @@ function renderNow() {
     if (!needsTick && ticker) {
         clearInterval(ticker);
         ticker = null;
+    }
+
+    // Video başladıysa (ya da iş bittiyse) dokunma penceresi kendiliğinden kapanır.
+    if (sheet) {
+        const job = jobs.get(sheet.jobId);
+        if (!job || !job.needsUser) sheet.view.close();
     }
 
     const state = snapshot();
@@ -701,23 +726,56 @@ function concRow(conc) {
 
 function renderCapture(job) {
     const rec = job.rec;
-    const done = rec.duration > 0 ? Math.min(1, rec.mediaSec / rec.duration) : null;
-    const speed = rec.speed > 0.5 ? `×${rec.speed.toLocaleString('tr-TR', { maximumFractionDigits: 0 })} hız` : '';
-    const left = done !== null && rec.speed > 0.5 ? formatLeft((rec.duration - rec.mediaSec) / rec.speed) + ' kaldı' : '';
+    // Düz dosya oturumla indiriliyorsa ilerleme bayttan, oynatılarak kaydediliyorsa video süresinden.
+    const byBytes = !rec.mediaSec && job.total > 0;
+    let done = null;
+    if (byBytes) done = Math.min(1, job.received / job.total);
+    else if (rec.duration > 0) done = Math.min(1, rec.mediaSec / rec.duration);
+    const speed = !byBytes && rec.speed > 0.5 ? `×${rec.speed.toLocaleString('tr-TR', { maximumFractionDigits: 0 })} hız` : speedText(job.speed);
+    const left = !byBytes && done !== null && rec.speed > 0.5 ? formatLeft((rec.duration - rec.mediaSec) / rec.speed) + ' kaldı' : '';
     const stopping = job.stopRequested;
+    const notes = [rec.phase || 'Hazırlanıyor'];
+    if (rec.blockedAds) notes.push(`${rec.blockedAds} reklam engellendi`);
+    const waiting = job.needsUser ? `
+            <div class="notice">${escapeHtml(job.detail || 'Video kendiliğinden başlamadı.')}<br>
+                "Videoyu başlat"a dokun, açılan sayfada oynata bas; video başladığı an kayıt kendiliğinden başlar.</div>
+            <button class="btn-big" data-job="${job.id}" data-job-act="touch">Videoyu başlat</button>` : '';
     return `
         <div class="rec-card">
-            <div class="rec-head"><span class="rec-tag"><span class="rec-dot"></span>HIZLI KAYIT</span>
+            <div class="rec-head"><span class="rec-tag"><span class="rec-dot"></span>KAYIT</span>
                 <span class="dl-name">${escapeHtml(job.name)}</span></div>
-            <div class="rec-time-row"><span class="rec-time">${hms(rec.mediaSec)}</span><span class="rec-size">${formatSize(job.bytes)}</span></div>
+            ${rec.why ? `<div class="hint">${escapeHtml(rec.why)} · video açılıp kaydediliyor</div>` : ''}
+            <div class="rec-time-row"><span class="rec-time">${byBytes ? Math.round(done * 100) + '%' : hms(rec.mediaSec)}</span><span class="rec-size">${formatSize(job.bytes)}</span></div>
             <div class="sec">
                 <div class="progress rec${done === null ? ' indeterminate' : ''}"><div style="width:${done === null ? 35 : done * 100}%"></div></div>
-                <div class="dl-sub"><span>${rec.duration ? 'Video ' + hms(rec.duration) : escapeHtml(rec.phase || 'Hazırlanıyor')}</span><span>${[speed, left].filter(Boolean).join(' · ')}</span></div>
+                <div class="dl-sub"><span>${byBytes ? formatSize(job.total) : rec.duration ? 'Video ' + hms(rec.duration) : ''}</span><span>${[speed, left].filter(Boolean).join(' · ')}</span></div>
             </div>
-            ${job.detail && (stopping || rec.warning) ? `<div class="hint">${escapeHtml(job.detail)}</div>` : ''}
-            <div class="rec-foot"><span>${escapeHtml(rec.phase || '')} · sunucuda oynatılıyor</span>
-                <div class="dl-btns">${stopping ? '' : btn(job, 'cancel', 'İptal', 'text') + btn(job, 'stop', 'Durdur ve kaydet', 'danger')}</div></div>
+            ${waiting}
+            ${!job.needsUser && job.detail && (stopping || rec.warning) ? `<div class="hint">${escapeHtml(job.detail)}</div>` : ''}
+            <div class="rec-foot"><span>${escapeHtml(notes.join(' · '))}</span>
+                <div class="dl-btns">${stopping ? '' : btn(job, 'cancel', 'İptal', 'text') + (job.needsUser ? '' : btn(job, 'stop', 'Durdur ve kaydet', 'danger'))}</div></div>
         </div>`;
+}
+
+/* "Videoyu başlat": kaydın beklediği sayfanın görüntüsü açılır, kullanıcı oynata dokunur. */
+let sheet = null;
+function openTouch(job) {
+    if (sheet) sheet.view.close();
+    const el = document.createElement('div');
+    el.className = 'sheet-backdrop';
+    el.innerHTML = '<div class="sheet"><div class="sheet-slot"></div></div>';
+    document.body.appendChild(el);
+    const view = openRemoteView(el.querySelector('.sheet-slot'), null, {
+        captureId: job.captureId,
+        onClose: () => {
+            el.remove();
+            sheet = null;
+        }
+    });
+    el.addEventListener('click', (e) => {
+        if (e.target === el) view.close();
+    });
+    sheet = { jobId: job.id, view };
 }
 
 function renderRec(job) {

@@ -1,32 +1,50 @@
-// "Sunucuda oynatıp kaydet": adresi bulunamayan / doğrudan inmeyen videolar için.
-// Sayfa sunucudaki tarayıcıda açılır, video sessiz ve hızlandırılmış (16 kata kadar) oynatılır.
-// Oynatıcının MediaSource'a (MSE) eklediği video/ses verisi yakalanıp diske yazılır; bitince
-// izler tek bir MP4'te birleştirilir. Ekran görüntüsü yeniden kodlanmadığından kalite orijinaldir
-// ve dosya normal hızda oynar. Oynatıcı MSE kullanmıyorsa (düz <video src>) dosya sayfanın kendi
-// oturumuyla (çerezleriyle) indirilir. DRM'li (EME) yayınlar kaydedilmez.
+// "Videoyu aç ve kaydet": bağlantısı inmeyen videolar için (403, oturum/çerez isteyen, adresi
+// gizlenmiş). Sunucudaki tarayıcıda video açılır ve sessiz, hızlandırılmış (16 kata kadar) oynatılır;
+// oynatıcının yüklediği video/ses verisi yakalanıp tek, sarılabilir MP4'e dönüştürülür. Ekran
+// görüntüsü yeniden kodlanmadığından kalite orijinaldir ve dosya normal hızda oynar.
+//
+// Sıra:
+//   1) Videonun kendi adresi biliniyorsa temiz bir oynatıcıda açılır (reklam, yanlış video yok).
+//      Sayfa biliniyorsa önce sayfa açılır ki çerezler/Referer otursun.
+//   2) Olmazsa sayfanın kendisi açılır, oynat düğmeleri denenir.
+//   3) Video yine başlamazsa kullanıcı beklenir: uygulamada sayfanın görüntüsü çıkar, kullanıcı
+//      oynata dokunur; video başladığı an kayıt kendiliğinden başlar.
+// Olmazsa nedeni (DRM, kodek, erişim reddi, video yok...) açıkça yazılır.
+// Oynatıcı MediaSource kullanmıyorsa (düz <video src>) dosya, tarayıcının oturumuyla indirilir.
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { mergeFmp4 } from './fmp4.mjs';
+import { installRouting, guardNavigation } from './adblock.mjs';
 
 const MAX_ACTIVE = 2;
 const SPEED = 16;                 // Chrome'un izin verdiği en yüksek oynatma hızı
 const TICK_MS = 700;
-const START_TIMEOUT_MS = 45000;   // bu sürede veri gelmezse başarısız
+const PLAYER_TIMEOUT_MS = 25000;  // temiz oynatıcıda veri gelmezse sayfaya geç
+const PAGE_TIMEOUT_MS = 40000;    // sayfada oynat düğmeleri denenirken
+const USER_TIMEOUT_MS = 5 * 60 * 1000; // kullanıcının oynata dokunması beklenir
 const STALL_MS = 60000;           // bu kadar ilerleme olmazsa elde olanla bitir
 const KEEP_FINISHED_MS = 48 * 60 * 60 * 1000;
+const RANGE_CHUNK = 8 * 1024 * 1024;
 
 // Sayfaya (ve tüm çerçevelerine) en başta eklenir: MediaSource'a eklenen veriyi sunucuya iletir.
+// Her MediaSource'a bir kimlik verilir ki reklamın ayrı oynatıcısındaki veri asıl videoya karışmasın.
 const CAPTURE_SCRIPT = `(() => {
     if (window.__indiriciHooked) return;
     window.__indiriciHooked = true;
+    window.__indiriciBlobs = {};
     const send = (...args) => { try { window.__indiriciMse(...args); } catch (_) {} };
     const toB64 = (u8) => {
         let s = '';
         for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
         return btoa(s);
     };
+    const ids = new WeakMap();
     let next = 0;
+    const idOf = (ms) => {
+        if (!ids.has(ms)) ids.set(ms, 'm' + (++next) + Math.random().toString(36).slice(2, 6));
+        return ids.get(ms);
+    };
     const hook = (MS) => {
         if (!MS || !MS.prototype || MS.prototype.__indiriciHooked) return;
         MS.prototype.__indiriciHooked = true;
@@ -34,7 +52,7 @@ const CAPTURE_SCRIPT = `(() => {
         MS.prototype.addSourceBuffer = function (mime) {
             const sb = add.call(this, mime);
             const id = (++next) + '-' + Math.random().toString(36).slice(2, 8);
-            send('sb', id, String(mime));
+            send('sb', id, String(mime), idOf(this));
             const append = sb.appendBuffer;
             sb.appendBuffer = function (data) {
                 try {
@@ -50,6 +68,16 @@ const CAPTURE_SCRIPT = `(() => {
     hook(window.MediaSource);
     hook(window.ManagedMediaSource);
     hook(window.WebKitMediaSource);
+    const createUrl = URL.createObjectURL;
+    URL.createObjectURL = function (obj) {
+        const url = createUrl.call(this, obj);
+        try {
+            if ((window.MediaSource && obj instanceof MediaSource) || (window.ManagedMediaSource && obj instanceof ManagedMediaSource)) {
+                window.__indiriciBlobs[url] = idOf(obj);
+            }
+        } catch (_) {}
+        return url;
+    };
     if (navigator.requestMediaKeySystemAccess) {
         const original = navigator.requestMediaKeySystemAccess.bind(navigator);
         navigator.requestMediaKeySystemAccess = (system, config) => {
@@ -79,7 +107,7 @@ function driveVideo(speed) {
         if (best.playbackRate !== speed) {
             try { best.playbackRate = speed; } catch (_) { /* oynatıcı sınırlıyor */ }
         }
-        if (best.paused) {
+        if (best.paused && (best.currentTime > 0 || best.readyState > 0 || best.autoplay || best.src)) {
             const p = best.play();
             if (p && p.catch) p.catch(() => {});
         }
@@ -90,34 +118,51 @@ function driveVideo(speed) {
         duration: isFinite(best.duration) ? best.duration : (best.duration === Infinity ? -1 : 0),
         ended: best.ended,
         paused: best.paused,
-        rate: best.playbackRate,
         src: src.startsWith('blob:') ? 'blob' : src,
+        ms: (window.__indiriciBlobs || {})[src] || null,
         error: best.error ? best.error.code : 0,
         width: best.videoWidth,
         height: best.videoHeight
     };
 }
 
+/** Temiz oynatıcı sayfası: video ya da hls.js ile HLS. */
+function playerHtml() {
+    return '<!doctype html><html><head><meta name="viewport" content="width=device-width"></head>' +
+        '<body style="margin:0;background:#000"><video id="__v" muted playsinline controls ' +
+        'style="width:100vw;height:100vh"></video></body></html>';
+}
+
+const ERROR_TEXT = {
+    1: 'oynatma iptal edildi',
+    2: 'video indirilirken ağ hatası oluştu',
+    3: 'video çözülemedi (bozuk ya da desteklenmeyen veri)',
+    4: 'bu video biçimi/kodeki sunucudaki tarayıcıda oynatılamıyor'
+};
+
 /**
  * @param {object} deps
  * @param {string} deps.dir
- * @param {() => Promise<import('playwright-core').Browser>} deps.getBrowser
+ * @param {() => Promise<any>} deps.getBrowser
  * @param {(page: any, started: number, state: object) => Promise<void>} deps.nudgePlayback
  * @param {(url: URL) => Promise<void>} deps.assertPublicTarget
+ * @param {(url: string) => string} deps.refererFor
  * @param {string} deps.userAgent
+ * @param {string} deps.hlsScript  hls.min.js dosyasının yolu
  * @param {() => Promise<{h264: boolean}>} deps.codecSupport
  */
-export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTarget, userAgent, codecSupport }) {
+export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTarget, refererFor, userAgent, hlsScript, codecSupport }) {
     fs.mkdirSync(dir, { recursive: true });
     const captures = new Map();
     const metaFile = (id) => path.join(dir, `${id}.json`);
 
     function publicState(cap) {
         return {
-            id: cap.id, state: cap.state, url: cap.url, fileName: cap.fileName, file: cap.file, ext: cap.ext,
-            startedAt: cap.startedAt, endedAt: cap.endedAt, mediaSec: cap.mediaSec, duration: cap.duration,
-            bytes: cap.bytes, speed: cap.speed, maxSec: cap.maxSec, reason: cap.reason, error: cap.error,
-            warning: cap.warning, phase: cap.phase, mode: 'capture'
+            id: cap.id, state: cap.state, url: cap.pageUrl || cap.mediaUrl, pageUrl: cap.pageUrl, mediaUrl: cap.mediaUrl,
+            fileName: cap.fileName, file: cap.file, ext: cap.ext, startedAt: cap.startedAt, endedAt: cap.endedAt,
+            mediaSec: cap.mediaSec, duration: cap.duration, bytes: cap.bytes, total: cap.total || 0, speed: cap.speed,
+            reason: cap.reason, error: cap.error, warning: cap.warning, phase: cap.phase, blockedAds: cap.blockedAds || 0,
+            needsUser: cap.state === 'waiting', mode: 'capture'
         };
     }
     const persist = (cap) => {
@@ -147,13 +192,25 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
 
     async function run(cap) {
         const browser = await getBrowser();
-        const context = await browser.newContext({ userAgent, viewport: { width: 1280, height: 720 } });
+        const context = await browser.newContext({
+            userAgent,
+            viewport: { width: 1280, height: 720 },
+            bypassCSP: true // temiz oynatıcıyı sitenin sayfasına yerleştirebilmek için
+        });
         cap.context = context;
-        const tracks = new Map(); // id -> {mime, fd, file, bytes}
+        const tracks = new Map(); // SourceBuffer kimliği → {mime, ms, fd, file, bytes}
+        const msBytes = new Map();
+        const mediaStatus = new Map(); // yayın isteklerinin HTTP durumları (neden olmadığını söylemek için)
         let drm = '';
         let lastDataAt = 0;
+        let playerMode = false;
 
-        await context.exposeBinding('__indiriciMse', (_source, type, id, payload) => {
+        await installRouting(context, {
+            onBlocked: () => { cap.blockedAds = (cap.blockedAds || 0) + 1; },
+            // Temiz oynatıcıda başka kökenden yayın istekleri: sunucuda alınıp CORS izniyle verilir.
+            needsCors: (request) => playerMode && ['xhr', 'fetch', 'media'].includes(request.resourceType())
+        });
+        await context.exposeBinding('__indiriciMse', (_source, type, id, payload, ms) => {
             if (cap.finishing) return;
             if (type === 'drm') {
                 drm = id;
@@ -161,7 +218,7 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
             }
             if (type === 'sb') {
                 const file = path.join(cap.work, `${tracks.size}.bin`);
-                tracks.set(id, { mime: payload || '', fd: fs.openSync(file, 'w'), file, bytes: 0 });
+                tracks.set(id, { mime: payload || '', ms: ms || '', fd: fs.openSync(file, 'w'), file, bytes: 0 });
                 return;
             }
             if (type === 'data') {
@@ -170,60 +227,71 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
                 const buf = Buffer.from(payload, 'base64');
                 fs.writeSync(track.fd, buf);
                 track.bytes += buf.length;
+                msBytes.set(track.ms, (msBytes.get(track.ms) || 0) + buf.length);
                 cap.bytes += buf.length;
                 lastDataAt = Date.now();
             }
         });
-        await context.exposeBinding('__indiriciChunk', (_source, b64) => {
-            if (cap.directFd === undefined || cap.directFd === null) return;
-            const buf = Buffer.from(b64, 'base64');
-            fs.writeSync(cap.directFd, buf);
-            cap.bytes += buf.length;
-            lastDataAt = Date.now();
-        });
         await context.addInitScript(CAPTURE_SCRIPT);
         const page = await context.newPage();
+        cap.page = page;
+        // Oynat'a basınca sayfa reklama yönlendirilirse videonun sayfasına geri dönülür.
+        const guard = guardNavigation(page, { onReturn: () => { cap.blockedAds = (cap.blockedAds || 0) + 1; } });
         context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
+        page.on('response', (response) => {
+            const type = response.request().resourceType();
+            if (['media', 'xhr', 'fetch'].includes(type) && /\.(m3u8|mpd|mp4|m4s|ts|webm|m4v|aac)(\?|$)/i.test(response.url())) {
+                mediaStatus.set(response.url(), response.status());
+            }
+        });
 
-        const started = Date.now();
-        const nudgeState = {};
-        let lastProgress = { at: Date.now(), time: 0 };
-        let direct = null;
-        let sample = { at: Date.now(), time: 0 };
-
-        try {
-            cap.phase = 'Sayfa açılıyor';
-            await page.goto(cap.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            cap.phase = 'Oynatıcı başlatılıyor';
-
+        // Oynatmayı sürer; video başlayıp veri gelirse sonuna kadar kaydeder.
+        // Dönüş: 'done' (kayıt bitti) | 'nostart' (süre içinde başlamadı).
+        let progressive = null;
+        const playLoop = async ({ timeoutMs, nudge, waitingUser = false }) => {
+            const started = Date.now();
+            const nudgeState = {};
+            let lastProgress = { at: Date.now(), time: 0 };
+            let sample = { at: Date.now(), time: 0 };
+            let lastVideo = null;
             for (;;) {
                 if (cap.cancelled) throw new Error('iptal');
-                if (cap.stopRequested) { cap.reason = 'durduruldu'; break; }
-                if (drm) throw new Error(`Yayın DRM korumalı (${drm}); kaydedilemez`);
+                if (cap.stopRequested) { cap.reason = 'durduruldu'; return 'done'; }
+                if (drm) throw new Error(`Video DRM ile korunuyor (${drm}); kopyalanması engellenmiş, kaydedilemez`);
 
-                // Ana çerçeve ve iframe'lerdeki videoları sür; en çok ilerleyeni esas al.
                 let video = null;
                 let videoFrame = null;
                 for (const frame of page.frames()) {
-                    const v = await frame.evaluate(driveVideo, SPEED).catch(() => null);
+                    const v = await frame.evaluate(driveVideo, waitingUser && !cap.bytes ? 1 : SPEED).catch(() => null);
                     if (v && (!video || v.time > video.time || (v.duration > video.duration && v.time >= video.time))) {
                         video = v;
                         videoFrame = frame;
                     }
                 }
+                lastVideo = video || lastVideo;
+                const flowing = cap.bytes > 0 || progressive;
 
-                if (video && video.src && video.src !== 'blob' && !tracks.size && !direct && video.time > 0) {
-                    // MSE yok: dosya düz adresten geliyor; videonun çerçevesinden, sayfanın oturumuyla indirilir.
-                    cap.phase = 'Dosya indiriliyor';
-                    direct = downloadDirect(videoFrame, video.src, cap).catch((err) => {
-                        cap.directError = err.message;
-                    });
+                if (video && video.ms) cap.mainMs = video.ms;
+                if (video && video.src && video.src !== 'blob' && !tracks.size && !progressive && video.time > 0) {
+                    // MSE yok: düz dosya. Tarayıcının çerez/oturumuyla parça parça indirilir.
+                    if (cap.state === 'waiting') {
+                        cap.state = 'capturing'; // kullanıcı başlattı
+                        persist(cap);
+                    }
+                    progressive = downloadProgressive(context, video.src, videoFrame.url() || page.url(), cap)
+                        .catch((err) => { cap.progressiveError = err.message; });
+                    videoFrame.evaluate(() => document.querySelectorAll('video').forEach((v) => v.pause())).catch(() => {});
                 }
-                if (direct && cap.directError) throw new Error(cap.directError);
+                if (cap.progressiveError) throw new Error(cap.progressiveError);
+                if (cap.progressiveDone) { cap.reason = 'video indirildi'; return 'done'; }
 
-                if (video) {
+                if (video && flowing && !progressive) {
+                    if (cap.state === 'waiting') {
+                        cap.state = 'capturing'; // kullanıcı başlattı
+                        persist(cap);
+                    }
                     if (video.duration > 0) cap.duration = video.duration;
-                    if (video.duration === -1) cap.duration = 0; // canlı yayın
+                    if (video.duration === -1) cap.duration = 0;
                     if (video.time > cap.mediaSec + 0.01) {
                         cap.mediaSec = video.time;
                         lastProgress = { at: Date.now(), time: video.time };
@@ -237,46 +305,83 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
                     if (video.ended || (cap.duration > 0 && video.time >= cap.duration - 0.3)) {
                         cap.reason = 'video bitti';
                         cap.mediaSec = cap.duration || cap.mediaSec;
-                        break;
+                        return 'done';
+                    }
+                    if (Date.now() - Math.max(lastProgress.at, lastDataAt) > STALL_MS) {
+                        cap.reason = 'oynatma durdu, elde olan kaydedildi';
+                        return 'done';
                     }
                 }
-                if (cap.maxSec > 0 && cap.mediaSec >= cap.maxSec) { cap.reason = 'süre doldu'; break; }
-                if (cap.directDone) { cap.reason = 'dosya indirildi'; break; }
-
-                if (!cap.bytes && !direct) {
-                    if (Date.now() - started > START_TIMEOUT_MS) {
-                        throw new Error(video
-                            ? (video.error ? 'Video bu sunucudaki tarayıcıda oynatılamadı (codec desteklenmiyor olabilir)' : 'Video oynatılmaya başlamadı')
-                            : 'Sayfada oynatılabilir video bulunamadı');
+                if (!flowing) {
+                    if (Date.now() - started > timeoutMs) {
+                        cap.lastFailure = explain(lastVideo, mediaStatus);
+                        return 'nostart';
                     }
-                    await nudgePlayback(page, started, nudgeState);
-                } else if (Date.now() - Math.max(lastProgress.at, lastDataAt) > STALL_MS) {
-                    cap.reason = 'oynatma ilerlemiyor, elde olan kaydedildi';
-                    break;
+                    if (nudge) await nudgePlayback(page, started, nudgeState);
                 }
-                cap.warning = video && video.error ? 'Oynatıcı hata verdi; elde olan kaydedilecek' : cap.warning;
                 persistThrottled(cap);
                 await new Promise((r) => setTimeout(r, TICK_MS));
             }
+        };
 
+        try {
+            const attempts = [];
+            if (cap.mediaUrl) attempts.push('player');
+            if (cap.pageUrl) attempts.push('page');
+            let result = 'nostart';
+            for (const attempt of attempts) {
+                if (attempt === 'player') {
+                    cap.phase = 'Video açılıyor';
+                    playerMode = true;
+                    guard.expect();
+                    await openPlayer(page, cap);
+                    guard.arm();
+                    result = await playLoop({ timeoutMs: PLAYER_TIMEOUT_MS, nudge: false });
+                    playerMode = false;
+                } else {
+                    cap.phase = 'Sayfa açılıyor';
+                    guard.expect();
+                    await page.goto(cap.pageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+                    guard.arm();
+                    cap.phase = 'Oynatıcı başlatılıyor';
+                    result = await playLoop({ timeoutMs: PAGE_TIMEOUT_MS, nudge: true });
+                }
+                if (result === 'done') break;
+            }
+
+            if (result === 'nostart' && cap.pageUrl) {
+                // Kullanıcı başlatsın: uygulamada sayfanın görüntüsü çıkar, oynata dokunur.
+                cap.state = 'waiting';
+                cap.phase = 'Videoyu başlatmak için dokun';
+                cap.warning = cap.lastFailure || '';
+                persist(cap);
+                result = await playLoop({ timeoutMs: USER_TIMEOUT_MS, nudge: false, waitingUser: true });
+                if (result === 'nostart') throw new Error('Video başlatılmadı (5 dakika beklendi). ' + (cap.lastFailure || ''));
+            } else if (result === 'nostart') {
+                throw new Error(cap.lastFailure || 'Video oynatılamadı');
+            }
+
+            cap.state = 'capturing';
             cap.finishing = true;
-            if (direct) {
+            if (progressive) {
                 cap.phase = 'Dosya indiriliyor';
-                await direct;
+                await progressive;
+                if (cap.progressiveError) throw new Error(cap.progressiveError);
             }
             cap.phase = 'Dosya hazırlanıyor';
-            await finalize(cap, tracks);
+            await finalize(cap, tracks, msBytes);
             cap.state = 'done';
+            cap.warning = '';
         } catch (err) {
             cap.finishing = true;
             if (cap.cancelled) {
                 remove(cap.id);
                 return;
             }
-            // Bir şey yakalandıysa (ör. durdurmadan önce hata) onu kaydetmeyi dene.
-            if (cap.bytes > 0 && !/DRM/.test(err.message)) {
+            // Bir şey yakalandıysa (ör. ortada hata) onu kaydetmeyi dene.
+            if (cap.bytes > 0 && !progressive && !/DRM/.test(err.message)) {
                 try {
-                    await finalize(cap, tracks);
+                    await finalize(cap, tracks, msBytes);
                     cap.state = 'done';
                     cap.reason = `yarıda kaldı: ${err.message}`;
                 } catch (_) {
@@ -293,12 +398,35 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
             }
             await context.close().catch(() => {});
             cap.context = null;
+            cap.page = null;
             cap.endedAt = Date.now();
             cap.phase = '';
             if (captures.has(cap.id)) persist(cap);
             if (cap.work) fs.rm(cap.work, { recursive: true, force: true }, () => {});
             cap.work = null;
         }
+    }
+
+    /** Videonun kendi adresini temiz oynatıcıda açar (sayfa biliniyorsa onun kökeninde). */
+    async function openPlayer(page, cap) {
+        const base = cap.pageUrl || new URL(cap.mediaUrl).origin + '/';
+        await page.goto(base, { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+        await page.setContent(playerHtml()).catch(() => {});
+        const isHls = cap.kind === 'hls' || /\.m3u8(\?|$)/i.test(cap.mediaUrl);
+        if (isHls) await page.addScriptTag({ path: hlsScript }).catch(() => {});
+        await page.evaluate(({ src, hls }) => {
+            const v = document.getElementById('__v');
+            if (hls && window.Hls && window.Hls.isSupported()) {
+                const h = new window.Hls({ maxBufferLength: 60, startLevel: -1, capLevelToPlayerSize: false });
+                h.on(window.Hls.Events.MANIFEST_PARSED, () => { h.currentLevel = h.levels.length - 1; });
+                h.loadSource(src);
+                h.attachMedia(v);
+                window.__hls = h;
+            } else {
+                v.src = src;
+            }
+            v.play().catch(() => {});
+        }, { src: cap.mediaUrl, hls: isHls }).catch(() => {});
     }
 
     let lastPersist = 0;
@@ -309,49 +437,61 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
         }
     }
 
-    /** MSE kullanmayan oynatıcı: dosyayı sayfanın içinden (çerez/oturumla) akış olarak çeker. */
-    async function downloadDirect(frame, src, cap) {
+    /** Düz video dosyasını tarayıcının çerezleriyle, parça parça (Range) indirir. */
+    async function downloadProgressive(context, src, referer, cap) {
         const file = path.join(cap.work, 'direct.bin');
-        cap.directFd = fs.openSync(file, 'w');
+        const fd = fs.openSync(file, 'w');
         cap.directFile = file;
+        cap.phase = 'Video indiriliyor';
         try {
-            const info = await frame.evaluate(async (url) => {
-                const res = await fetch(url, { credentials: 'include' });
-                if (!res.ok) throw new Error(`Kaynak ${res.status} döndü`);
-                const total = Number(res.headers.get('content-length')) || 0;
-                const reader = res.body.getReader();
-                for (;;) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    let s = '';
-                    for (let i = 0; i < value.length; i += 0x8000) s += String.fromCharCode.apply(null, value.subarray(i, i + 0x8000));
-                    await window.__indiriciChunk(btoa(s));
-                }
-                return { type: res.headers.get('content-type') || '', total };
-            }, src);
-            cap.directType = info.type;
-            cap.directDone = true;
+            let offset = 0;
+            let total = 0;
+            for (;;) {
+                if (cap.cancelled || cap.stopRequested) break;
+                const end = offset + RANGE_CHUNK - 1;
+                const res = await context.request.get(src, {
+                    headers: { range: `bytes=${offset}-${end}`, referer: referer || refererFor(src) || '' },
+                    timeout: 60000
+                });
+                const status = res.status();
+                if (status !== 200 && status !== 206) throw new Error(`Video sunucusu erişimi reddetti (HTTP ${status})`);
+                const body = await res.body();
+                fs.writeSync(fd, body, 0, body.length, offset);
+                offset += body.length;
+                cap.bytes = offset;
+                cap.directType = res.headers()['content-type'] || cap.directType;
+                if (status === 200) { total = offset; break; } // sunucu Range desteklemiyor: tamamı geldi
+                const range = res.headers()['content-range'] || '';
+                total = Number(range.split('/')[1]) || 0;
+                cap.total = total;
+                if (!body.length || (total && offset >= total)) break;
+            }
+            cap.total = total || offset;
+            cap.progressiveDone = true;
         } finally {
-            fs.closeSync(cap.directFd);
-            cap.directFd = null;
+            fs.closeSync(fd);
         }
     }
 
-    async function finalize(cap, tracks) {
+    async function finalize(cap, tracks, msBytes) {
         const out = path.join(dir, `${cap.id}.out`);
         if (cap.directFile && fs.existsSync(cap.directFile) && fs.statSync(cap.directFile).size > 0) {
-            const ext = /webm/.test(cap.directType || '') ? 'webm' : /audio/.test(cap.directType || '') ? 'm4a' : 'mp4';
+            const type = cap.directType || '';
+            cap.ext = /webm/.test(type) ? 'webm' : /audio/.test(type) ? 'm4a' : 'mp4';
             fs.renameSync(cap.directFile, out);
-            cap.ext = ext;
         } else {
             for (const track of tracks.values()) {
                 try { fs.closeSync(track.fd); } catch (_) { /* zaten kapalı */ }
                 track.fd = null;
             }
-            const list = [...tracks.values()].filter((t) => t.bytes > 0);
+            // Yalnızca asıl videonun MediaSource'u (reklam oynatıcısının verisi karışmasın).
+            let main = cap.mainMs;
+            if (!main || !msBytes.get(main)) main = [...msBytes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+            const list = [...tracks.values()].filter((t) => t.bytes > 0 && (!main || t.ms === main));
             if (!list.length) throw new Error('Video verisi yakalanamadı');
             const result = await mergeFmp4(list, out);
             cap.ext = result.ext;
+            if (result.duration) cap.mediaSec = result.duration;
             if (result.warning) cap.warning = result.warning;
         }
         cap.file = `${cap.id}.out`;
@@ -361,7 +501,7 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
 
     setInterval(() => {
         for (const cap of captures.values()) {
-            if (cap.state !== 'capturing' && Date.now() - (cap.endedAt || 0) > KEEP_FINISHED_MS) remove(cap.id);
+            if (!['capturing', 'waiting'].includes(cap.state) && Date.now() - (cap.endedAt || 0) > KEEP_FINISHED_MS) remove(cap.id);
         }
     }, 60 * 60 * 1000).unref();
 
@@ -373,17 +513,23 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
             const cap = captures.get(id);
             return cap ? publicState(cap) : null;
         },
-        async start({ url, name, maxSec }) {
-            const target = new URL(url);
-            await assertPublicTarget(target);
-            const active = [...captures.values()].filter((c) => c.state === 'capturing').length;
-            if (active >= MAX_ACTIVE) throw new Error(`Aynı anda en fazla ${MAX_ACTIVE} sunucu kaydı yapılabilir`);
+        /**
+         * pageUrl: videonun bulunduğu sayfa (biliniyorsa). mediaUrl: videonun/yayının kendi adresi.
+         * Eski istemciler için `url` sayfa adresi sayılır.
+         */
+        async start({ url, pageUrl, mediaUrl, kind, name, maxSec }) {
+            pageUrl = pageUrl || (!mediaUrl ? url : '');
+            if (!pageUrl && !mediaUrl) throw new Error('Adres gerekli');
+            for (const u of [pageUrl, mediaUrl]) if (u) await assertPublicTarget(new URL(u));
+            const active = [...captures.values()].filter((c) => ['capturing', 'waiting'].includes(c.state)).length;
+            if (active >= MAX_ACTIVE) throw new Error(`Aynı anda en fazla ${MAX_ACTIVE} video kaydı yapılabilir`);
             const id = randomBytes(12).toString('hex');
             const baseName = String(name || 'video').replace(/[\\/:*?"<>|]+/g, '_').trim().slice(0, 100) || 'video';
             const work = path.join(dir, `${id}.work`);
             fs.mkdirSync(work, { recursive: true });
             const cap = {
-                id, url: target.href, baseName, fileName: `${baseName}.mp4`, file: '', ext: 'mp4', work,
+                id, pageUrl: pageUrl ? new URL(pageUrl).href : '', mediaUrl: mediaUrl ? new URL(mediaUrl).href : '',
+                kind: kind || '', baseName, fileName: `${baseName}.mp4`, file: '', ext: 'mp4', work,
                 state: 'capturing', phase: 'Başlıyor', startedAt: Date.now(), endedAt: 0, mediaSec: 0, duration: 0,
                 bytes: 0, speed: 0, maxSec: Math.max(0, Number(maxSec) || 0), reason: '', error: '', warning: '',
                 stopRequested: false, cancelled: false
@@ -406,7 +552,7 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
         stop(id) {
             const cap = captures.get(id);
             if (!cap) return null;
-            if (cap.state === 'capturing') {
+            if (['capturing', 'waiting'].includes(cap.state)) {
                 cap.stopRequested = true;
                 cap.phase = 'Durduruluyor';
             }
@@ -415,12 +561,34 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
         delete(id) {
             const cap = captures.get(id);
             if (!cap) return false;
-            if (cap.state === 'capturing') {
+            if (['capturing', 'waiting'].includes(cap.state)) {
                 cap.cancelled = true;
                 if (cap.context) cap.context.close().catch(() => {});
                 return true; // run() iptali görünce dosyaları siler
             }
             return remove(id);
+        },
+        /** Kullanıcının dokunması için sayfanın görüntüsü (JPEG). */
+        async shot(id) {
+            const cap = captures.get(id);
+            if (!cap || !cap.page) return null;
+            return cap.page.screenshot({ type: 'jpeg', quality: 55, timeout: 8000 });
+        },
+        /** Kullanıcının dokunuşu/kaydırması sayfaya uygulanır. */
+        async action(id, action) {
+            const cap = captures.get(id);
+            if (!cap || !cap.page) throw new Error('Kayıt sayfası kapalı');
+            const page = cap.page;
+            const { width, height } = page.viewportSize() || { width: 1280, height: 720 };
+            const fraction = (v) => Math.min(1, Math.max(0, Number(v) || 0));
+            if (action.type === 'tap') await page.mouse.click(fraction(action.x) * width, fraction(action.y) * height);
+            else if (action.type === 'scroll') await page.mouse.wheel(0, Math.max(-3, Math.min(3, Number(action.dy) || 0)) * height);
+            else if (action.type === 'type') await page.keyboard.type(String(action.text || '').slice(0, 500), { delay: 20 });
+            else if (action.type === 'key' && ['Enter', 'Backspace', 'Escape', 'Tab', 'Space'].includes(action.key)) await page.keyboard.press(action.key);
+            else if (action.type === 'back') await page.goBack({ timeout: 10000 }).catch(() => {});
+            else if (action.type === 'reload') await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+            await page.waitForTimeout(300);
+            return publicState(cap);
         },
         file(id) {
             const cap = captures.get(id);
@@ -431,4 +599,16 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
             return { path: full, name: cap.fileName, mime, size: fs.statSync(full).size };
         }
     };
+}
+
+/** Video neden başlamadı/oynamadı: kullanıcıya gösterilecek açıklama. */
+function explain(video, mediaStatus) {
+    const denied = [...mediaStatus.values()].find((s) => s === 401 || s === 403 || s === 451);
+    if (denied) return `Video sunucusu erişimi reddetti (HTTP ${denied}); giriş, bölge ya da süreli bağlantı gerekiyor olabilir.`;
+    const missing = [...mediaStatus.values()].find((s) => s === 404 || s === 410);
+    if (missing) return `Video bulunamadı (HTTP ${missing}); bağlantının süresi dolmuş olabilir.`;
+    if (!video) return 'Sayfada video oynatıcısı bulunamadı.';
+    if (video.error) return `Video oynatılamadı: ${ERROR_TEXT[video.error] || 'bilinmeyen hata'}.`;
+    if (!video.time && (video.paused || !video.src)) return 'Video kendiliğinden başlamadı; oynat düğmesine basılması gerekiyor.';
+    return 'Video başladı ama veri gelmedi.';
 }

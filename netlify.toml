@@ -25,3 +25,9 @@
     # Her açılışta sunucuya "değişti mi?" diye sorulsun (ETag ile ucuz). Uzun max-age, telefonun
     # yeni sayfayla birlikte eski JS'i günlerce kullanmasına ve düğmelerin çalışmamasına yol açtı.
     Cache-Control = "public, max-age=0, must-revalidate"
+
+# Tarayıcı modülleri (.mjs) doğru türle sunulsun; aksi halde modül olarak yüklenmez.
+[[headers]]
+  for = "/*.mjs"
+  [headers.values]
+    Content-Type = "text/javascript; charset=utf-8"

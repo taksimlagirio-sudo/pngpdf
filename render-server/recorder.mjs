@@ -1,16 +1,20 @@
 // Canlı HLS yayınını sunucuda kaydetme. Telefondaki tarayıcı ekran kapanınca sekmeyi dondurur ve
 // kayıt parça kaçırır; bu sunucu ise uyumaz. Playlist düzenli aralıklarla okunur, yeni parçalar
-// sırayla diske yazılır; süre sınırı dolunca ya da "durdur" gelince dosya kapanır. İstenirse TS
-// parçaları mux.js ile (yeniden kodlamadan) MP4'e/M4A'ya çevrilir.
+// diske yazılır; süre sınırı dolunca ya da "durdur" gelince dosya kapanır.
+// Çıktı uygulamadakiyle aynı: tek, sarılabilir MP4 (ayrı ses izi varsa birleştirilir), zaman
+// çizelgesi kaydın başladığı andan (0:00) başlar. TS parçaları mux.js ile çevrilir, MP4'ü
+// uygulamanın assets/js/mp4mux.mjs dosyası kurar.
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { randomBytes, createDecipheriv } from 'node:crypto';
+import { Mp4Builder } from '../assets/js/mp4mux.mjs';
 
 const MAX_ACTIVE = 4;
 const SEGMENT_RETRY = 3;
 const PLAYLIST_FAILURES_LIMIT = 8;
 const KEEP_FINISHED_MS = 48 * 60 * 60 * 1000;
+const VIDEO_CODEC = /avc1|avc3|hvc1|hev1|dvh1|vp08|vp09|av01/i;
 
 /* ---------------- Playlist ---------------- */
 
@@ -31,15 +35,28 @@ export function parsePlaylist(text, baseUrl) {
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     const resolve = (uri) => new URL(uri, baseUrl).href;
     if (lines.some((l) => l.startsWith('#EXT-X-STREAM-INF'))) {
+        const audio = {};
         const variants = [];
         for (let i = 0; i < lines.length; i++) {
-            if (!lines[i].startsWith('#EXT-X-STREAM-INF')) continue;
             const attrs = parseAttributes(lines[i].slice(lines[i].indexOf(':') + 1));
+            if (lines[i].startsWith('#EXT-X-MEDIA:') && (attrs.TYPE || '').toUpperCase() === 'AUDIO' && attrs.URI) {
+                (audio[attrs['GROUP-ID'] || ''] = audio[attrs['GROUP-ID'] || ''] || [])
+                    .push({ url: resolve(attrs.URI), isDefault: (attrs.DEFAULT || '').toUpperCase() === 'YES' });
+            }
+            if (!lines[i].startsWith('#EXT-X-STREAM-INF')) continue;
             const uri = lines.slice(i + 1).find((l) => !l.startsWith('#'));
-            if (uri) variants.push({ url: resolve(uri), bandwidth: parseInt(attrs.BANDWIDTH || '0', 10) });
+            if (!uri) continue;
+            const codecs = attrs.CODECS || '';
+            variants.push({
+                url: resolve(uri),
+                bandwidth: parseInt(attrs.BANDWIDTH || '0', 10),
+                audioGroup: attrs.AUDIO || '',
+                video: codecs ? VIDEO_CODEC.test(codecs) : true
+            });
         }
-        variants.sort((a, b) => b.bandwidth - a.bandwidth);
-        return { type: 'master', variants };
+        const video = variants.filter((v) => v.video);
+        (video.length ? video : variants).sort((a, b) => b.bandwidth - a.bandwidth);
+        return { type: 'master', variants: video.length ? video : variants, audio };
     }
 
     const segments = [];
@@ -63,7 +80,7 @@ export function parsePlaylist(text, baseUrl) {
             const attrs = parseAttributes(line.slice(line.indexOf(':') + 1));
             map = { url: resolve(attrs.URI), range: attrs.BYTERANGE ? parseByteRange(attrs.BYTERANGE, 0) : null };
         } else if (!line.startsWith('#')) {
-            segments.push({ url: resolve(line), duration, range, key, seq: seq + segments.length });
+            segments.push({ url: resolve(line), duration, range, key, map, seq: seq + segments.length });
             if (range) lastByteEnd = range.offset + range.length;
             range = null;
             duration = 0;
@@ -89,51 +106,64 @@ function loadMux(appRoot) {
     return muxjs;
 }
 
-function createWriter(file, { format, isFmp4, appRoot }) {
-    const stream = fs.createWriteStream(file);
-    const write = (chunk) => new Promise((resolve, reject) => {
-        stream.write(chunk, (err) => (err ? reject(err) : resolve()));
-    });
-    const close = () => new Promise((resolve) => stream.end(resolve));
+const sameBytes = (a, b) => a && b && a.length === b.length && a.every((x, i) => x === b[i]);
 
-    let tm = null;
-    if (!isFmp4 && (format === 'mp4' || format === 'audio')) {
-        try {
-            const mux = loadMux(appRoot);
-            tm = new (mux.mp4 || mux).Transmuxer({ remux: format !== 'audio' });
-        } catch (err) {
-            console.warn('Dönüştürücü yok, TS olarak kaydediliyor:', err.message);
+/** Dosyaya sarılabilir MP4 yazan birleştirici (uygulamadaki createMuxer'ın sunucu karşılığı). */
+async function createMuxer(file, appRoot) {
+    const fd = fs.openSync(file, 'w');
+    let pos = 0;
+    const builder = new Mp4Builder({
+        write: async (bytes) => {
+            fs.writeSync(fd, bytes, 0, bytes.length, pos);
+            pos += bytes.length;
         }
-    }
-    if (!tm) return { fellBack: Boolean(!isFmp4 && format !== 'ts'), push: write, finish: close };
-
-    let initWritten = false;
-    let out = [];
-    tm.on('data', (segment) => {
-        if (format === 'audio' && segment.type !== 'audio') return;
-        if (!initWritten) {
-            out.push(Buffer.from(segment.initSegment.buffer, segment.initSegment.byteOffset, segment.initSegment.byteLength));
-            initWritten = true;
-        }
-        out.push(Buffer.from(segment.data.buffer, segment.data.byteOffset, segment.data.byteLength));
     });
+    await builder.start();
+    const transmuxers = new Map();
+    const lastInit = new Map();
+    const addInit = (id, bytes) => {
+        if (sameBytes(lastInit.get(id), bytes)) return;
+        lastInit.set(id, bytes);
+        builder.addInit(id, bytes);
+    };
+    const u8 = (x) => new Uint8Array(x.buffer, x.byteOffset, x.byteLength);
     return {
-        fellBack: false,
-        async push(data) {
-            tm.push(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
-            tm.flush();
-            const chunks = out;
-            out = [];
-            for (const chunk of chunks) await write(chunk);
+        builder,
+        async push(streamId, data, map) {
+            if (map) {
+                addInit(streamId, u8(map));
+                await builder.addFragment(streamId, u8(data));
+                return;
+            }
+            let entry = transmuxers.get(streamId);
+            if (!entry) {
+                const mux = loadMux(appRoot);
+                const tm = new (mux.mp4 || mux).Transmuxer({ remux: false, keepOriginalTimestamps: true });
+                entry = { tm, out: [] };
+                tm.on('data', (segment) => entry.out.push(segment));
+                transmuxers.set(streamId, entry);
+            }
+            entry.tm.push(u8(data));
+            entry.tm.flush();
+            for (const segment of entry.out.splice(0)) {
+                const id = `${streamId}-${segment.type}`;
+                addInit(id, Uint8Array.from(segment.initSegment));
+                await builder.addFragment(id, Uint8Array.from(segment.data));
+            }
         },
-        finish: close
+        async finish() {
+            const result = await builder.finish();
+            fs.writeSync(fd, result.patch.bytes, 0, result.patch.bytes.length, result.patch.position);
+            fs.closeSync(fd);
+            return result;
+        },
+        close() {
+            try { fs.closeSync(fd); } catch (_) { /* zaten kapalı */ }
+        }
     };
 }
 
 /* ---------------- Kayıt yöneticisi ---------------- */
-
-const EXT = { mp4: 'mp4', ts: 'ts', audio: 'm4a' };
-const MIME = { mp4: 'video/mp4', ts: 'video/mp2t', m4a: 'audio/mp4' };
 
 /**
  * @param {object} deps
@@ -154,15 +184,16 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
         } catch (_) { /* disk dolu: durum yalnızca bellekte */ }
     };
 
-    // Sunucu yeniden başladıysa önceki kayıtlar listede kalsın; yarıda kalanlar "bitti" sayılır.
+    // Sunucu yeniden başladıysa önceki kayıtlar listede kalsın. Yarıda kalan kaydın dosyası
+    // kapanmadığı (MP4 tabloları yazılmadığı) için oynatılamaz; hata olarak gösterilir.
     for (const name of fs.readdirSync(dir)) {
         if (!name.endsWith('.json')) continue;
         try {
             const state = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
             if (!fs.existsSync(path.join(dir, state.file))) continue;
             if (state.state === 'recording' || state.state === 'stopping') {
-                state.state = 'done';
-                state.reason = 'sunucu yeniden başladı';
+                state.state = 'error';
+                state.error = 'Sunucu kayıt sürerken kapandı; kayıt tamamlanamadı';
                 state.endedAt = state.endedAt || Date.now();
             }
             recordings.set(state.id, { ...state, stopRequested: false, controller: new AbortController() });
@@ -171,8 +202,8 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
 
     function publicState(rec) {
         return {
-            id: rec.id, state: rec.state, url: rec.url, fileName: rec.fileName, file: rec.file, ext: rec.ext,
-            format: rec.format, quality: rec.quality, limitSec: rec.limitSec, limitLabel: rec.limitLabel,
+            id: rec.id, state: rec.state, url: rec.url, audioUrl: rec.audioUrl, fileName: rec.fileName, file: rec.file,
+            ext: rec.ext, quality: rec.quality, limitSec: rec.limitSec, limitLabel: rec.limitLabel,
             startedAt: rec.startedAt, endedAt: rec.endedAt, mediaSec: rec.mediaSec, bytes: rec.bytes,
             missed: rec.missed, reason: rec.reason, error: rec.error, warning: rec.warning
         };
@@ -198,25 +229,29 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
     async function run(rec) {
         const { signal } = rec.controller;
         const keyCache = new Map();
+        const mapCache = new Map();
+        const bytesOf = async (url, range) => Buffer.from(await (await upstream(url, { range, signal })).arrayBuffer());
         const fetchSegment = async (segment) => {
             let lastError;
             for (let attempt = 1; attempt <= SEGMENT_RETRY; attempt++) {
                 if (signal.aborted) throw new Error('iptal');
                 try {
-                    const res = await upstream(segment.url, { range: segment.range, signal });
-                    let data = Buffer.from(await res.arrayBuffer());
+                    let map = null;
+                    if (segment.map) {
+                        const mapKey = segment.map.url + (segment.map.range ? '#' + segment.map.range.offset : '');
+                        if (!mapCache.has(mapKey)) mapCache.set(mapKey, await bytesOf(segment.map.url, segment.map.range));
+                        map = mapCache.get(mapKey);
+                    }
+                    let data = await bytesOf(segment.url, segment.range);
                     if (segment.key) {
-                        if (!keyCache.has(segment.key.uri)) {
-                            const keyRes = await upstream(segment.key.uri, { signal });
-                            keyCache.set(segment.key.uri, Buffer.from(await keyRes.arrayBuffer()));
-                        }
+                        if (!keyCache.has(segment.key.uri)) keyCache.set(segment.key.uri, await bytesOf(segment.key.uri));
                         const iv = Buffer.alloc(16);
                         if (segment.key.iv) Buffer.from(segment.key.iv.replace(/^0x/i, ''), 'hex').copy(iv);
                         else iv.writeUInt32BE(segment.seq >>> 0, 12);
                         const decipher = createDecipheriv('aes-128-cbc', keyCache.get(segment.key.uri), iv);
                         data = Buffer.concat([decipher.update(data), decipher.final()]);
                     }
-                    return data;
+                    return { data, map };
                 } catch (err) {
                     if (signal.aborted) throw err;
                     lastError = err;
@@ -238,33 +273,36 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
         const elapsed = () => (Date.now() - rec.startedAt) / 1000;
         const limitReached = () => rec.limitSec > 0 && elapsed() >= rec.limitSec;
 
-        let writer = null;
+        let muxer = null;
         try {
-            let playlist = await loadPlaylist(rec.url, signal);
-            if (playlist.type === 'master') {
-                rec.url = playlist.variants[0].url; // kalite seçilmemişse en yükseği
-                playlist = await loadPlaylist(rec.url, signal);
+            // Master verildiyse en yüksek kalite + varsayılan ses seçilir.
+            let first = await loadPlaylist(rec.url, signal);
+            if (first.type === 'master') {
+                const best = first.variants[0];
+                const group = first.audio[best.audioGroup] || [];
+                const audio = group.find((a) => a.isDefault) || group[0];
+                if (!rec.audioUrl && audio) rec.audioUrl = audio.url;
+                rec.url = best.url;
+                first = await loadPlaylist(rec.url, signal);
             }
-            const drm = playlist.segments.find((s) => s.key && s.key.method !== 'AES-128');
-            if (drm) throw new Error(`Yayın DRM korumalı (${drm.key.method})`);
+            const streams = [{ id: 'v', url: rec.url, playlist: first, lastSeq: null }];
+            if (rec.audioUrl) streams.push({ id: 'a', url: rec.audioUrl, playlist: await loadPlaylist(rec.audioUrl, signal), lastSeq: null });
+            for (const s of streams) {
+                const drm = s.playlist.segments.find((x) => x.key && x.key.method !== 'AES-128');
+                if (drm) throw new Error(`Yayın DRM korumalı (${drm.key.method})`);
+            }
 
-            const isFmp4 = Boolean(playlist.map);
-            rec.ext = isFmp4 ? 'mp4' : EXT[rec.format] || 'ts';
-            writer = createWriter(path.join(dir, rec.file), { format: rec.format, isFmp4, appRoot });
-            if (writer.fellBack) rec.ext = 'ts';
-            rec.fileName = `${rec.baseName}.${rec.ext}`;
-
-            let lastSeq = null;
-            let mapWritten = false;
+            muxer = await createMuxer(path.join(dir, rec.file), appRoot);
             let failures = 0;
+            let firstRound = true;
             for (;;) {
                 if (signal.aborted) throw new Error('iptal');
                 if (rec.stopRequested) { rec.reason = 'durduruldu'; break; }
                 if (limitReached()) { rec.reason = 'süre doldu'; break; }
 
-                if (lastSeq !== null) {
+                if (!firstRound) {
                     try {
-                        playlist = await loadPlaylist(rec.url, signal);
+                        for (const s of streams) s.playlist = await loadPlaylist(s.url, signal);
                         failures = 0;
                         rec.warning = '';
                     } catch (err) {
@@ -276,59 +314,60 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
                         continue;
                     }
                 }
+                firstRound = false;
 
-                if (playlist.map && !mapWritten) {
-                    const init = await fetchSegment({ ...playlist.map, key: null });
-                    await writer.push(init);
-                    rec.bytes += init.length;
-                    mapWritten = true;
-                }
-
-                const all = playlist.segments;
-                let fresh;
-                if (lastSeq === null) {
-                    fresh = all.slice(-1);
-                } else {
-                    fresh = all.filter((s) => s.seq > lastSeq);
-                    const newest = all.length ? all[all.length - 1].seq : lastSeq;
-                    if (!fresh.length && newest < lastSeq - 10) fresh = all.slice(-1);
-                    else if (fresh.length && fresh[0].seq > lastSeq + 1) rec.missed += fresh[0].seq - lastSeq - 1;
-                }
-
-                for (const segment of fresh) {
-                    if (rec.stopRequested || limitReached() || signal.aborted) break;
-                    let data;
-                    try {
-                        data = await fetchSegment(segment);
-                    } catch (err) {
-                        if (signal.aborted) throw err;
-                        rec.missed++;
-                        lastSeq = segment.seq;
-                        continue;
+                let ended = false;
+                for (const s of streams) {
+                    const all = s.playlist.segments;
+                    let fresh;
+                    if (s.lastSeq === null) {
+                        fresh = all.slice(-1);
+                    } else {
+                        fresh = all.filter((x) => x.seq > s.lastSeq);
+                        const newest = all.length ? all[all.length - 1].seq : s.lastSeq;
+                        if (!fresh.length && newest < s.lastSeq - 10) fresh = all.slice(-1);
+                        else if (fresh.length && fresh[0].seq > s.lastSeq + 1 && s.id === 'v') rec.missed += fresh[0].seq - s.lastSeq - 1;
                     }
-                    await writer.push(data);
-                    lastSeq = segment.seq;
-                    rec.mediaSec += segment.duration;
-                    rec.bytes += data.length;
+                    for (const segment of fresh) {
+                        if (rec.stopRequested || limitReached() || signal.aborted) break;
+                        let result;
+                        try {
+                            result = await fetchSegment(segment);
+                        } catch (err) {
+                            if (signal.aborted) throw err;
+                            if (s.id === 'v') rec.missed++;
+                            s.lastSeq = segment.seq;
+                            continue;
+                        }
+                        await muxer.push(s.id, result.data, result.map);
+                        s.lastSeq = segment.seq;
+                        rec.bytes += result.data.length;
+                    }
+                    if (!s.playlist.isLive) ended = true;
                 }
+                rec.mediaSec = muxer.builder.duration;
                 persist(rec);
 
-                if (!playlist.isLive) { rec.reason = 'yayın bitti'; break; }
-                let ms = Math.min(6000, Math.max(1000, ((playlist.targetDuration || 6) * 1000) / 2));
+                if (ended) { rec.reason = 'yayın bitti'; break; }
+                let ms = Math.min(6000, Math.max(1000, ((streams[0].playlist.targetDuration || 6) * 1000) / 2));
                 if (rec.limitSec > 0) ms = Math.min(ms, Math.max(250, (rec.limitSec - elapsed()) * 1000));
                 await wait(ms);
             }
-            await writer.finish();
+            if (!muxer.builder.hasSamples) throw new Error('Yayından veri alınamadı');
+            const result = await muxer.finish();
+            rec.mediaSec = result.duration;
+            rec.ext = result.hasVideo ? 'mp4' : 'm4a';
+            rec.fileName = `${rec.baseName}.${rec.ext}`;
+            rec.bytes = fs.statSync(path.join(dir, rec.file)).size;
             rec.state = 'done';
         } catch (err) {
-            if (writer) await writer.finish().catch(() => {});
+            if (muxer) muxer.close();
             if (signal.aborted) {
                 rec.state = 'cancelled';
                 remove(rec.id);
                 return;
             }
-            rec.state = rec.bytes > 0 ? 'done' : 'error';
-            if (rec.state === 'done') rec.reason = `hata: ${err.message}`;
+            rec.state = 'error';
             rec.error = err.message;
         } finally {
             rec.endedAt = Date.now();
@@ -364,17 +403,18 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
             const rec = recordings.get(id);
             return rec ? publicState(rec) : null;
         },
-        async start({ url, name, format, limitSec, limitLabel, quality }) {
+        async start({ url, audioUrl, name, limitSec, limitLabel, quality }) {
             const target = new URL(url);
             await assertPublicTarget(target);
+            const audio = audioUrl ? new URL(audioUrl) : null;
+            if (audio) await assertPublicTarget(audio);
             const active = [...recordings.values()].filter((r) => r.state === 'recording').length;
             if (active >= MAX_ACTIVE) throw new Error(`Aynı anda en fazla ${MAX_ACTIVE} kayıt yapılabilir`);
             const id = randomBytes(12).toString('hex');
             const baseName = String(name || 'kayit').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 100) || 'kayit';
-            const fmt = ['mp4', 'ts', 'audio'].includes(format) ? format : 'mp4';
             const rec = {
-                id, url: target.href, baseName, format: fmt, quality: String(quality || '').slice(0, 40),
-                ext: EXT[fmt], file: `${id}.bin`, fileName: `${baseName}.${EXT[fmt]}`,
+                id, url: target.href, audioUrl: audio ? audio.href : null, baseName, quality: String(quality || '').slice(0, 40),
+                ext: 'mp4', file: `${id}.bin`, fileName: `${baseName}.mp4`,
                 limitSec: Math.max(0, Math.min(24 * 3600, Number(limitSec) || 0)),
                 limitLabel: String(limitLabel || '').slice(0, 20),
                 state: 'recording', startedAt: Date.now(), endedAt: 0, mediaSec: 0, bytes: 0, missed: 0,
@@ -411,7 +451,8 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
             if (!rec || rec.state !== 'done') return null;
             const full = path.join(dir, rec.file);
             if (!fs.existsSync(full)) return null;
-            return { path: full, name: rec.fileName, mime: MIME[rec.ext] || 'application/octet-stream', size: fs.statSync(full).size };
+            const mime = rec.ext === 'm4a' ? 'audio/mp4' : 'video/mp4';
+            return { path: full, name: rec.fileName, mime, size: fs.statSync(full).size };
         }
     };
 }

@@ -1077,7 +1077,7 @@ body.has-strip .main {
 .media-head,
 .media-row {
     display: grid;
-    grid-template-columns: 56px minmax(0, 1fr) auto;
+    grid-template-columns: 64px minmax(0, 1fr) auto;
     gap: 12px;
     align-items: center;
     padding: 0 14px;
@@ -1163,7 +1163,7 @@ body.has-strip .main {
 @media (min-width: 720px) {
     .media-head,
     .media-row {
-        grid-template-columns: 72px minmax(0, 1fr) 110px 120px;
+        grid-template-columns: 96px minmax(0, 1fr) 140px 120px;
         gap: 16px;
         padding: 0 16px;
     }
@@ -1862,6 +1862,7 @@ body.can-float .float-only {
 }
 
 #detectStatus:empty,
+#detectPreview:empty,
 #imgStatus:empty,
 #detectResult:empty {
     display: none;
@@ -1875,5 +1876,95 @@ body.can-float .float-only {
 @media (min-width: 960px) {
     .toast {
         bottom: 28px;
+    }
+}
+
+.live-preview video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+}
+
+.preview-msg {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 56px;
+    text-align: center;
+    font-size: 12px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, .65);
+    color: #fff;
+}
+
+.media-row {
+    padding-top: 8px;
+    padding-bottom: 8px;
+}
+
+.media-thumb {
+    width: 64px;
+    height: 36px;
+    border-radius: 7px;
+}
+
+.media-thumb .thumb-badge {
+    bottom: 3px;
+    right: 3px;
+    font-size: 9px;
+    padding: 2px 4px;
+}
+
+.media-thumb .spinner {
+    width: 12px;
+    height: 12px;
+}
+
+.media-sub {
+    display: block;
+    font-size: 11.5px;
+    color: var(--mt);
+    margin-top: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.media-url {
+    display: block;
+}
+
+@media (min-width: 720px) {
+    .media-thumb {
+        width: 96px;
+        height: 54px;
+        border-radius: 9px;
+    }
+}
+
+.sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: var(--ov);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+}
+
+.sheet {
+    width: 100%;
+    max-width: 720px;
+    max-height: 92dvh;
+    overflow: auto;
+    padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 960px) {
+    .sheet-backdrop {
+        align-items: center;
     }
 }

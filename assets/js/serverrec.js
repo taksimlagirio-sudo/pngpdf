@@ -1,7 +1,7 @@
 // Canlı yayını kendi sunucunda kaydetme. Telefonda ekran kapanınca tarayıcı sekmeyi dondurur ve
 // tarayıcıdaki kayıt parça kaçırır; sunucu (bilgisayar veya Termux) ise uyumaz. Kayıt orada sürer,
 // uygulama yalnızca durumu izler; bitince dosya sunucudan indirilir.
-import { renderApi, getRenderServer, formatSize, hms } from './util.js';
+import { renderApi, getRenderServer, formatSize, hms, pumpToSink, sleep } from './util.js';
 import { addJob, getJobs } from './downloads.js';
 
 const POLL_MS = 2000;
@@ -11,11 +11,11 @@ export function canServerRecord() {
 }
 
 /** Sunucuda kaydı başlatır ve İndirmeler'e bir iş olarak ekler. */
-export async function startServerRecording({ url, name, format, limitSec, limitLabel, quality, thumb }) {
+export async function startServerRecording({ url, audioUrl, name, limitSec, limitLabel, quality, thumb }) {
     const state = await renderApi('/record', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ url, name, format, limitSec, limitLabel, quality })
+        body: JSON.stringify({ url, audioUrl, name, limitSec, limitLabel, quality })
     }, 20000);
     return track(state, thumb, 'record');
 }
@@ -31,6 +31,91 @@ export async function startServerCapture({ url, name, thumb }) {
         body: JSON.stringify({ url, name })
     }, 30000);
     return track(state, thumb, 'capture');
+}
+
+/**
+ * Bağlantısı inmeyen videoyu, verilen indirme işinin içinde "açıp kaydeder": video sunucudaki
+ * tarayıcıda hızlandırılmış oynatılır, bitince dosya bu cihaza normal bir indirme gibi alınır
+ * (İndirilenler / Galeri / seçilen konum). Video başlamazsa iş "dokunup başlat" durumuna geçer.
+ * Olmazsa nedeniyle birlikte hata fırlatır.
+ */
+export async function captureIntoJob(job, { pageUrl = '', mediaUrl = '', kind = '', name, createSinkFor, why = '' }) {
+    if (!canServerRecord()) {
+        throw new Error(`${why ? why + ' · ' : ''}Videoyu açıp kaydetmek için Ayarlar → Kendi sunucum ayarlı olmalı.`);
+    }
+    const prefix = why ? `${why} · ` : '';
+    job.setDetail(`${prefix}video açılıp kaydediliyor`);
+    const start = await renderApi('/capture', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pageUrl, mediaUrl, kind, name })
+    }, 30000);
+    const id = start.id;
+    job.captureId = id;
+    job.kind = 'rec';
+    job.canStop = true;
+    job.stopRequested = false;
+    job.rec = { mode: 'capture', startedAt: Date.now(), mediaSec: 0, duration: 0, speed: 0, phase: start.phase, server: true, why };
+    job.hooks.stop = () => renderApi(`/capture/${id}/stop`, { method: 'POST' }, 10000).catch(() => {});
+    job.hooks.cancel = () => renderApi(`/capture/${id}`, { method: 'DELETE' }, 10000).catch(() => {});
+
+    // Durum izlenir; sunucuya kısa süre ulaşılamazsa beklenir.
+    let state = start;
+    let failures = 0;
+    while (state.state === 'capturing' || state.state === 'waiting') {
+        await sleep(1500);
+        if (job.status !== 'active') return;
+        try {
+            state = await renderApi(`/capture/${id}`, {}, 10000);
+            failures = 0;
+        } catch (err) {
+            if (err.status === 404) throw new Error('Kayıt sunucuda bulunamadı');
+            if (++failures >= 20) throw new Error('Sunucuya ulaşılamıyor');
+            continue;
+        }
+        Object.assign(job.rec, {
+            mediaSec: state.mediaSec || 0, duration: state.duration || 0, speed: state.speed || 0,
+            phase: state.phase || '', blockedAds: state.blockedAds || 0
+        });
+        job.needsUser = Boolean(state.needsUser);
+        job.rec.warning = Boolean(state.warning);
+        job.detail = state.warning || '';
+        if (state.bytes > job.bytes) job.addBytes(state.bytes - job.bytes);
+        if (state.total) job.progress(state.bytes, state.total); else job.progress(state.bytes, 0);
+    }
+    job.needsUser = false;
+    if (state.state === 'error') throw new Error(state.error || 'Video kaydedilemedi');
+    if (state.state !== 'done') throw new Error('Kayıt iptal edildi');
+
+    // Dosyayı bu cihaza al (normal indirme gibi).
+    job.rec = null;
+    job.canStop = false;
+    job.kind = 'video';
+    job.bytes = 0;
+    job.samples = [];
+    job.setDetail('Dosya alınıyor');
+    const server = getRenderServer();
+    const res = await fetch(`${server.url}/capture/${id}/file?token=${encodeURIComponent(server.token)}`, { signal: job.signal });
+    if (!res.ok) throw new Error(`Dosya alınamadı (HTTP ${res.status})`);
+    const sink = await createSinkFor(state.fileName, res.headers.get('content-type') || 'video/mp4');
+    job.name = sink.name || state.fileName;
+    let last = 0;
+    try {
+        const received = await pumpToSink(res, sink, (got, total) => {
+            job.addBytes(got - last);
+            last = got;
+            job.progress(got, total);
+        }, job.signal);
+        const blob = await sink.close();
+        if (blob) job.attachResult(blob);
+        renderApi(`/capture/${id}`, { method: 'DELETE' }, 10000).catch(() => {});
+        const parts = [state.mediaSec ? hms(state.mediaSec) : '', formatSize(received), 'video açılıp kaydedildi'].filter(Boolean);
+        if (state.blockedAds) parts.push(`${state.blockedAds} reklam engellendi`);
+        job.done(parts.join(' · '));
+    } catch (err) {
+        await sink.abort();
+        throw err;
+    }
 }
 
 /** Uygulama yeniden açıldığında sunucuda süren veya biten kayıtları geri getirir. */
