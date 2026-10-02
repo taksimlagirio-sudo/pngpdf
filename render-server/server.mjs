@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { classify, dedupKey, isSegment } from './media.mjs';
 import { createRecorder } from './recorder.mjs';
 import { createCapturer } from './capture.mjs';
-import { installRouting, isAdRequest, warmAdblock } from './adblock.mjs';
+import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '0.4.0';
@@ -307,8 +307,18 @@ async function tryPlay(page) {
  * bir adım ilerler; `nudge` çağrılar arasında durumu tutar.
  */
 async function nudgePlayback(page, started, nudge) {
+    // Adımlar bitince birkaç tur daha denenir: ilk tıklama reklama yönlendirip geri dönüldüyse
+    // oynat düğmesine yeniden basılması gerekir.
+    if (nudge.steps && !nudge.steps.length) {
+        nudge.emptiedAt = nudge.emptiedAt || Date.now();
+        if ((nudge.rounds || 1) < 3 && Date.now() - nudge.emptiedAt > 3000) {
+            nudge.rounds = (nudge.rounds || 1) + 1;
+            nudge.steps = null;
+            nudge.emptiedAt = 0;
+        }
+    }
     if (!nudge.steps) {
-        nudge.nextAt = started + 2500;
+        nudge.nextAt = Math.max(nudge.nextAt || 0, started + 2500);
         nudge.steps = [
             () => clickConsent(page),
             async () => {
@@ -379,8 +389,11 @@ async function sniff(pageUrl, waitMs) {
     let title = '';
     let finalUrl = pageUrl;
     try {
+        // Otomatik tıklamalar sayfayı reklama yönlendirirse sayfaya geri dönülür.
+        const guard = guardNavigation(page, { onReturn: () => { state.blockedAds++; } });
         await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
         finalUrl = page.url();
+        guard.arm(finalUrl);
 
         await tryPlay(page);
         const nudge = {};
@@ -760,7 +773,7 @@ const server = http.createServer(async (req, res) => {
 
     try {
         if (url.pathname === '/health' && req.method === 'GET') {
-            return sendJson(res, 200, { ok: true, name: 'indirici-render-server', version: VERSION });
+            return sendJson(res, 200, { ok: true, name: 'indirici-render-server', version: VERSION, adblock: adblockStatus() });
         }
 
         if (url.pathname === '/sniff' && req.method === 'POST') {

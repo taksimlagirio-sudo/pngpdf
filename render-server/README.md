@@ -152,6 +152,9 @@ istekleri engellenir. `npm install` ile gelen `@ghostery/adblocker` kuruluysa Ea
 listeler (video reklam SDK'ları dahil) açılışta indirilir; kurulu değilse ya da liste indirilemezse
 yerleşik reklam alan adı listesi kullanılır. Kapatmak için `ADBLOCK=0`. Tarama sonuçlarından reklam
 medyası da ayıklanır. Kayıtta reklam ayrı bir oynatıcıda geliyorsa onun verisi asıl videoya karışmaz.
+Açılır pencereler kapatılır; açık bir sayfa reklam adresine gitmeye çalışırsa geçiş engellenir, başka bir
+siteye kaçarsa (tıklama ele geçirme) videonun sayfasına geri dönülür ve oynat düğmesine yeniden basılır.
+`/health` yanıtı engelleyicinin durumunu da içerir (`adblock.engine`: `lists` / `builtin` / `off`).
 
 ## Uç noktalar
 

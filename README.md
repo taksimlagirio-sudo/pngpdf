@@ -53,7 +53,11 @@ Bu özellik için Ayarlar → Kendi sunucum gerekir (ayrıntılar: `render-serve
 Sunucudaki tarayıcı reklamları engeller (`@ghostery/adblocker`, EasyList tabanlı listeler; video
 reklam SDK'ları dahil — kurulu değilse yerleşik reklam alan adı listesi). Böylece sayfa taramasında
 reklam videoları listeye düşmez, oynatıcı reklamla oyalanmaz, kayıtta yalnızca asıl videonun verisi
-alınır (reklamın ayrı oynatıcısındaki veri ayıklanır). Engellenen reklam sayısı kayıt kartında yazar.
+alınır (reklamın ayrı oynatıcısındaki veri ayıklanır). Açılır pencereler kapatılır; oynat düğmesine basınca
+sayfa reklama yönlendirilirse geçiş engellenir ya da videonun sayfasına geri dönülüp düğmeye yeniden
+basılır. Engellenen reklam sayısı kayıt kartında yazar. Ayarlar → Reklam engelleme bölümü durumu ve
+engelleyicinin neyi görüp neyi görmediğini gösterir (yalnızca sunucunun açtığı sayfalar; telefonundaki
+tarayıcı, dosyaların ve ayarların değil; listeler GitHub'dan indirilir, adresler hiçbir yere gönderilmez).
 
 ## HLS: önizleme, kalite, ses ve aralık
 

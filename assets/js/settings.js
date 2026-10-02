@@ -31,6 +31,28 @@ export function initSettings({ onServerChange, install }) {
             </div>
         </div>
 
+        <div class="settings-sec">
+            <div class="settings-sec-head"><span class="sec-label">Reklam engelleme</span>
+                <span class="status-chip" id="adblockChip">Sunucu yok</span></div>
+            <div class="server-panel">
+                <span class="hint" id="adblockText">Kendi sunucun ayarlanınca, sunucunun açtığı sayfalarda reklamlar,
+                    açılır pencereler ve reklama yönlendirmeler engellenir.</span>
+                <details>
+                    <summary class="link-btn" style="cursor:pointer">Engelleyici neyi görür, neyi görmez?</summary>
+                    <ul class="hint" style="margin:8px 0 0 18px;display:flex;flex-direction:column;gap:6px">
+                        <li><strong>Görür:</strong> yalnızca kendi sunucundaki tarayıcının açtığı sayfaların istek
+                            adresleri — yani indirmek için açtırdığın sayfalar. "Bu adres reklam mı?" kontrolü sunucunun
+                            içinde yapılır; adresler Ghostery'ye ya da başka bir yere gönderilmez.</li>
+                        <li><strong>Görmez:</strong> telefonundaki tarayıcı, gezdiğin siteler, dosyaların, şifrelerin ve bu
+                            uygulamadaki ayarların. Telefon uygulamasında engelleyici hiç çalışmaz.</li>
+                        <li><strong>Bağlandığı tek yer:</strong> sunucu açılırken reklam listelerini GitHub'dan
+                            (ghostery/adblocker) indirir; bu sırada GitHub yalnızca sunucunun IP adresini görür.</li>
+                        <li>Açık kaynak (MPL-2.0). Tamamen kapatmak için sunucuyu <code>ADBLOCK=0</code> ile başlat.</li>
+                    </ul>
+                </details>
+            </div>
+        </div>
+
         <button class="rows filled hidden" id="installRow" style="width:100%">
             <span class="row"><span class="row-value" style="font-weight:400">Ana ekrana ekle</span><span class="row-chev">›</span></span>
         </button>
@@ -88,6 +110,31 @@ export function initSettings({ onServerChange, install }) {
     const tokenInput = $('serverToken');
     const status = $('serverStatus');
 
+    const adChip = $('adblockChip');
+    const adText = $('adblockText');
+    const showAdblock = (health) => {
+        const ab = health && health.adblock;
+        if (!health) {
+            adChip.textContent = 'Sunucu yok';
+            adChip.classList.remove('on');
+            return;
+        }
+        if (!ab) {
+            adChip.textContent = 'Sunucu eski';
+            adChip.classList.remove('on');
+            adText.textContent = 'Sunucun reklam engelleme içermeyen eski bir sürüm; güncelleyip (git pull) yeniden başlat.';
+            return;
+        }
+        const label = { lists: 'Açık · hazır listeler', builtin: 'Açık · yerleşik liste', loading: 'Açılıyor', off: 'Kapalı' }[ab.engine] || 'Açık';
+        adChip.textContent = label;
+        adChip.classList.toggle('on', ab.enabled);
+        adText.textContent = ab.enabled
+            ? 'Sunucunun açtığı sayfalarda reklamlar, video reklamları, açılır pencereler ve oynat düğmesine basınca reklama ' +
+              'yönlendirmeler engellenir; sayfa reklama kaçarsa videonun sayfasına geri dönülür.' +
+              (ab.engine === 'builtin' ? ' Hazır listeler indirilemedi; yaygın reklam ağlarının yerleşik listesi kullanılıyor.' : '')
+            : 'Sunucu ADBLOCK=0 ile başlatılmış; reklam engelleme kapalı (açılır pencereler yine kapatılır).';
+    };
+
     const showState = (on, text, version) => {
         chip.textContent = on ? `Bağlı${version ? ' · v' + version : ''}` : 'Kapalı';
         chip.classList.toggle('on', on);
@@ -103,7 +150,10 @@ export function initSettings({ onServerChange, install }) {
             ? 'Uygulama bu cihazdaki sunucudan açıldı; otomatik bağlı, token gerekmez.'
             : 'Kayıtlı. Sayfa adresleri bu sunucuda açılacak.');
         checkRenderServer(current)
-            .then((health) => showState(true, undefined, health.version))
+            .then((health) => {
+                showState(true, undefined, health.version);
+                showAdblock(health);
+            })
             .catch(() => {
                 chip.textContent = 'Ulaşılamıyor';
                 chip.classList.remove('on');
@@ -123,6 +173,7 @@ export function initSettings({ onServerChange, install }) {
             const health = await checkRenderServer(config);
             setRenderServer(config);
             showState(true, `Bağlandı (sürüm ${health.version}). Sayfa adresleri artık bu sunucuda açılacak.`, health.version);
+            showAdblock(health);
         } catch (err) {
             showState(Boolean(getRenderServer()), `Bağlanılamadı: ${err.message}. Sunucu açık mı, adres https mi (veya 127.0.0.1), token doğru mu?`);
         }
@@ -132,6 +183,7 @@ export function initSettings({ onServerChange, install }) {
         setRenderServer(null);
         if (getPrefs().conn === 'proxy') setPref('conn', 'auto');
         showState(false, "Kendi sunucun devre dışı; CORS'a kapalı siteler indirilemeyecek.");
+        showAdblock(null);
     });
 
     /* ---- Ana ekrana ekle ---- */

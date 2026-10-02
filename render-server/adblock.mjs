@@ -38,7 +38,13 @@ export function isAdHost(url) {
     return Boolean(host) && AD_HOSTS.some((d) => host === d || host.endsWith('.' + d));
 }
 
+let engineKind = process.env.ADBLOCK === '0' ? 'off' : 'loading';
 let enginePromise = null;
+
+/** Uygulamada gösterilecek durum: kapalı / hazır listeler / yerleşik liste. */
+export function adblockStatus() {
+    return { enabled: engineKind !== 'off', engine: engineKind, builtinHosts: AD_HOSTS.length };
+}
 /** Ghostery motoru (kuruluysa); listeler sunucu açılışında bir kez indirilir. */
 function getEngine() {
     if (process.env.ADBLOCK === '0') return Promise.resolve(null);
@@ -47,9 +53,11 @@ function getEngine() {
             try {
                 const { FiltersEngine, Request } = await import('@ghostery/adblocker');
                 const engine = await FiltersEngine.fromPrebuiltAdsAndTracking(fetch);
+                engineKind = 'lists';
                 console.log('Reklam engelleyici hazır (EasyList tabanlı listeler).');
                 return (url, sourceUrl, type) => engine.match(Request.fromRawDetails({ url, sourceUrl, type })).match;
             } catch (err) {
+                engineKind = 'builtin';
                 console.log(`Reklam engelleyici: hazır listeler yüklenemedi (${err.code || err.message}); yerleşik liste kullanılıyor.`);
                 return null;
             }
@@ -101,8 +109,11 @@ export async function installRouting(context, { onBlocked = () => {}, needsCors 
             isTopDocument = request.isNavigationRequest() && frame === frame.page().mainFrame();
         } catch (_) { /* servis çalışanı isteği */ }
 
-        if (!isTopDocument && await isAdRequest(url, frameUrl, request.resourceType())) {
-            onBlocked(url);
+        // Ana sayfa geçişi: ilk açılış (ve onun yönlendirmeleri) serbest; sayfa zaten açıkken
+        // bir reklam adresine gitmeye çalışırsa (tıklama ele geçirme) engellenir.
+        const pageAlreadyOpen = isTopDocument && /^https?:/i.test(frameUrl);
+        if ((!isTopDocument || pageAlreadyOpen) && await isAdRequest(url, frameUrl, isTopDocument ? 'document' : request.resourceType())) {
+            onBlocked(url, isTopDocument);
             return route.abort('blockedbyclient').catch(() => {});
         }
         if (needsCors(request)) {
@@ -122,4 +133,46 @@ export async function installRouting(context, { onBlocked = () => {}, needsCors 
         }
         return route.fallback();
     });
+}
+
+/** Kaba "aynı site" karşılaştırması: kayıtlı alan adı (ör. ornek.com, ornek.com.tr). */
+function siteOf(url) {
+    const host = hostOf(url).replace(/^www\./, '');
+    const parts = host.split('.');
+    if (parts.length <= 2) return host;
+    const second = parts[parts.length - 2];
+    const takeThree = parts[parts.length - 1].length === 2 && /^(co|com|net|org|gov|edu|ac|gen|bel|k12|biz|info|tv)$/.test(second);
+    return parts.slice(takeThree ? -3 : -2).join('.');
+}
+
+/**
+ * Tıklama ele geçirmeye karşı: sayfa açıldıktan sonra kendiliğinden başka bir siteye giderse
+ * (oynat düğmesi yerine reklama yönlendirme) videonun sayfasına geri dönülür.
+ * Kendi gittiğimiz adreslerden önce `expect()`, sonra `arm()` çağrılır.
+ */
+export function guardNavigation(page, { onReturn = () => {} } = {}) {
+    let home = '';
+    let armed = false;
+    let returns = 0;
+    page.on('framenavigated', (frame) => {
+        if (!armed || frame !== page.mainFrame()) return;
+        const url = frame.url();
+        // Engellenen reklam geçişi tarayıcıyı hata sayfasına (chrome-error://) götürür; o da geri döndürülür.
+        const errorPage = /^chrome-error:/i.test(url);
+        if (returns >= 5 || (!errorPage && (!/^https?:/i.test(url) || siteOf(url) === siteOf(home)))) return;
+        returns++;
+        onReturn(url);
+        armed = false;
+        page.goto(home, { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {})
+            .finally(() => { armed = true; });
+    });
+    return {
+        expect() { armed = false; },
+        arm(url = page.url()) {
+            if (/^https?:/i.test(url)) {
+                home = url;
+                armed = true;
+            }
+        }
+    };
 }

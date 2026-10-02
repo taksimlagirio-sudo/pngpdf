@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { mergeFmp4 } from './fmp4.mjs';
-import { installRouting } from './adblock.mjs';
+import { installRouting, guardNavigation } from './adblock.mjs';
 
 const MAX_ACTIVE = 2;
 const SPEED = 16;                 // Chrome'un izin verdiği en yüksek oynatma hızı
@@ -235,6 +235,8 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
         await context.addInitScript(CAPTURE_SCRIPT);
         const page = await context.newPage();
         cap.page = page;
+        // Oynat'a basınca sayfa reklama yönlendirilirse videonun sayfasına geri dönülür.
+        const guard = guardNavigation(page, { onReturn: () => { cap.blockedAds = (cap.blockedAds || 0) + 1; } });
         context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
         page.on('response', (response) => {
             const type = response.request().resourceType();
@@ -331,12 +333,16 @@ export function createCapturer({ dir, getBrowser, nudgePlayback, assertPublicTar
                 if (attempt === 'player') {
                     cap.phase = 'Video açılıyor';
                     playerMode = true;
+                    guard.expect();
                     await openPlayer(page, cap);
+                    guard.arm();
                     result = await playLoop({ timeoutMs: PLAYER_TIMEOUT_MS, nudge: false });
                     playerMode = false;
                 } else {
                     cap.phase = 'Sayfa açılıyor';
+                    guard.expect();
                     await page.goto(cap.pageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+                    guard.arm();
                     cap.phase = 'Oynatıcı başlatılıyor';
                     result = await playLoop({ timeoutMs: PAGE_TIMEOUT_MS, nudge: true });
                 }
