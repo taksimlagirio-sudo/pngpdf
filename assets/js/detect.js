@@ -130,7 +130,7 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
         res = await smartFetch(url, {
             mode,
             init: { signal, headers: { Range: `bytes=0-${SNIFF_BYTES - 1}` } },
-            onFallback: () => onStage('Doğrudan erişilemedi (CORS), proxy deneniyor...'),
+            onFallback: () => onStage('Doğrudan erişilemedi (CORS), kendi sunucun deneniyor...'),
             onAccess: (which) => { access = which; }
         });
     } catch (err) {
@@ -407,12 +407,12 @@ async function describeImage(result, url, mode, signal) {
 }
 
 // Video/ses süresini, çözünürlüğünü ve (videoda) bir önizleme karesini okur.
-// Doğrudan adres CORS'a takılırsa proxy adresiyle yeniden denenir. Netlify proxy'si aynı
-// kökenli, kendi sunucun ise CORS başlığı gönderiyor; ikisinde de canvas okunabilir kalır.
+// Doğrudan adres CORS'a takılırsa kendi sunucun üzerinden yeniden denenir; sunucu CORS
+// başlığı gönderdiği için canvas okunabilir kalır.
 async function describeMedia(result, url, mode) {
-    const candidates = mode === 'proxy'
+    const candidates = (mode === 'proxy'
         ? [proxyUrl(url)]
-        : mode === 'direct' ? [url] : [url, proxyUrl(url)];
+        : mode === 'direct' ? [url] : [url, proxyUrl(url)]).filter(Boolean);
 
     for (const src of candidates) {
         const ok = await probeMediaElement(result, src, src.startsWith('/'));

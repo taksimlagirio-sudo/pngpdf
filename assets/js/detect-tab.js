@@ -344,7 +344,7 @@ export function initDetectTab() {
 
         $('serverClearBtn').addEventListener('click', () => {
             setRenderServer(null);
-            showState(false, 'Kendi sunucun devre dışı; Netlify proxy\'si kullanılacak.');
+            showState(false, 'Kendi sunucun devre dışı; CORS\'a kapalı siteler indirilemeyecek.');
         });
     }
 

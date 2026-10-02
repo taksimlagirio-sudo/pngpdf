@@ -30,7 +30,7 @@ Netlify üzerinde statik site olarak yayınlanır.
   png, jpg, gif, webp, pdf, zip, MPEG-TS, m3u8, mpd, html).
 - Resimlerde önizleme ve piksel boyutu gösterilir; **videolarda oynatıcıdan bir kare yakalanıp küçük
   önizleme (poster) üretilir** ve bu görsel indirme çubuğunda da kullanılır. Süre ve çözünürlük okunur.
-  (Doğrudan erişimde CORS izni yoksa kare proxy üzerinden alınır; HLS yayınlarında kare üretilmez.)
+  (Doğrudan erişimde CORS izni yoksa kare kendi sunucun üzerinden alınır; HLS yayınlarında kare üretilmez.)
 - HLS'te parça sayısı, süre, kapsayıcı (TS/fMP4) ve şifreleme durumu gösterilir.
 - Adres bir **web sayfasıysa** sayfanın tamamı indirilip medya aranır: düz adresler, `src`/`href`/`content`/
   `data-*` nitelikleri, JSON içindeki kaçışlı adresler (`http:\/\/…`, `\u002F`) ve oynatıcı
@@ -55,7 +55,7 @@ Netlify üzerinde statik site olarak yayınlanır.
 - Resim dönüştürme ve PDF indirmeleri de çubukta görünür; onlar da paylaşılabilir.
 - **🌙 Arka planda indir** (varsayılan **kapalı**, isteğe bağlı) seçiliyken indirme service worker'a devredilir
   (Background Fetch): uygulamayı kapatsanız bile sürer ve Android'de sistem indirme çubuğunda görünür.
-  Kaynak siteye tarayıcıdan doğrudan erişilemiyorsa (CORS) arka plan isteği `/api/proxy` üzerinden yapılır.
+  Kaynak siteye tarayıcıdan doğrudan erişilemiyorsa (CORS) arka plan isteği kendi sunucun üzerinden yapılır.
   Bu yol her sitede çalışmaz; bu yüzden **otomatik yedeklemesi** var: arka plan başarısız olursa ya da 25
   saniye ilerleme olmazsa indirme kendiliğinden normal (uygulama açıkken) yola geçer, çubukta da
   **⚡ Normal indir** düğmesi çıkar. Yani arka plan denemesi indirmeyi asla yarıda bırakmaz. Bittiğinde uygulamaya döndüğünüzde
@@ -98,21 +98,19 @@ PiP penceresinde gösteriliyor. Android Chrome'da bu pencere uygulamadan çıkı
 - Çıktı: fMP4 (`#EXT-X-MAP` içeren) yayınlar `.mp4`, klasik TS yayınlar `.ts` olarak kaydedilir. `.ts` dosyaları VLC ve çoğu oynatıcıda doğrudan açılır; MP4'e çevirmek isterseniz `ffmpeg -i video.ts -c copy video.mp4` yeterlidir (tarayıcıda remux yapılmaz).
 - Video tamamen bellekte birleştirildiği için çok uzun yayınlarda tarayıcı belleği sınır olabilir.
 
-## CORS proxy'si
+## CORS ve gizlilik
 
-Tarayıcı, CORS izni vermeyen sitelerden dosya okuyamaz. Bunun için `netlify/functions/proxy.mjs`
-içinde bir yedek proxy var (`/api/proxy?url=...`):
+Tarayıcı, CORS izni vermeyen sitelerden dosya okuyamaz. Bu durumda indirme yalnızca **kendi
+sunucun** (aşağıda) üzerinden yapılır; başka bir aracı yok. Netlify yalnızca sitenin dosyalarını
+barındırır, indirmeler oradan geçmez.
 
-- Sadece `GET`/`HEAD` ve sadece `http`/`https`.
-- `localhost`, özel IP aralıkları (10/8, 172.16/12, 192.168/16, 127/8, CGNAT), `169.254.169.254` gibi
-  bulut metadata adresleri ve `.local`/`.internal` alan adları engellenir; alan adı özel bir IP'ye
-  çözülüyorsa da reddedilir. Yönlendirmeler adım adım aynı kontrolden geçer (en fazla 5 adım).
-- `Range` başlığı iletilir, `set-cookie` gibi başlıklar geri aktarılmaz, `content-length` 200 MB'ı aşarsa 413 döner.
-- Netlify fonksiyonlarının çalışma süresi sınırlı olduğundan proxy **yedek** yoldur; büyük videolarda
-  "doğrudan" modu tercih edin.
+- Kendi sunucun ayarlı değilse yalnızca doğrudan inebilen dosyalar iner; CORS'a kapalı sitede
+  "Kendi sunucum'u ayarla" uyarısı çıkar.
+- Sunucun ayarlı ama kapalıysa (bilgisayar uykuda vb.) bu tür indirmeler hata verir, başka bir
+  yere düşmez.
 
-Her indirme sekmesinde bağlantı yöntemi seçilebilir: *Otomatik* (önce doğrudan, hata olursa proxy),
-*Sadece doğrudan*, *Sadece proxy*.
+Her indirme sekmesinde bağlantı yöntemi seçilebilir: *Otomatik* (önce doğrudan, olmazsa kendi
+sunucum), *Sadece doğrudan*, *Sadece kendi sunucum*.
 
 ## Kendi sunucum (render sunucusu)
 
@@ -124,7 +122,7 @@ isteklerini toplar. Algıla → **🖥️ Kendi sunucum** bölümüne adresini v
 - Sayfa linkleri (paylaşılanlar dahil) bu sunucuda çalıştırılır; bulunan medya, statik taramanın
   buldukları ile birleştirilir. Tek medya bulunursa doğrudan o açılır.
 - Site dışarıdan çekilmeyi tamamen reddediyorsa da sayfa doğrudan sunucuda açılmayı dener.
-- Tüm "proxy" indirmeleri Netlify yerine bu sunucu üzerinden yapılır: süre sınırı yok, medyayı
+- CORS'a kapalı sitelerden indirmeler bu sunucu üzerinden yapılır: süre sınırı yok, medyayı
   açan sayfanın `Referer`'ı iletilir.
 
 Telefondan erişim için sunucunun https adresi olmalı (Tailscale önerilir); ayrıntılar
@@ -143,11 +141,6 @@ Android Chrome eklenti desteklemediği için masaüstü içindir.
 npx serve .            # veya python3 -m http.server
 ```
 
-Proxy fonksiyonunu da denemek için:
-
-```bash
-npx netlify dev
-```
 
 ## Dosya yapısı
 
@@ -167,7 +160,6 @@ assets/js/pdf.js              # resim -> PDF
 assets/js/image.js            # resim -> JPG/PNG/WEBP
 assets/js/video.js            # doğrudan dosya indirici
 assets/js/hls.js              # m3u8 ayrıştırma + parça birleştirme
-netlify/functions/proxy.mjs   # CORS proxy'si
 render-server/                # kendi cihazında çalışan render + indirme proxy sunucusu
 extension/                    # Chrome/Edge geliştirici uzantısı (ağ isteklerinden medya yakalama)
 ```

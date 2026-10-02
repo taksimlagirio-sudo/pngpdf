@@ -49,9 +49,9 @@
                 <div class="field">
                     <label class="field-label" for="detectMode">🌐 Bağlantı yöntemi</label>
                     <select class="select" id="detectMode">
-                        <option value="auto">Otomatik (önce doğrudan, olmazsa proxy)</option>
+                        <option value="auto">Otomatik (önce doğrudan, olmazsa kendi sunucum)</option>
                         <option value="direct">Sadece doğrudan</option>
-                        <option value="proxy">Sadece proxy</option>
+                        <option value="proxy">Sadece kendi sunucum</option>
                     </select>
                 </div>
                 <label class="checkbox-row" id="detectDiskRow">
@@ -146,7 +146,7 @@
                     <input type="url" class="input" id="imgUrlInput" placeholder="https://site.com/resim.png" style="flex: 2;">
                     <button class="btn btn-primary" id="imgUrlBtn" style="flex: 1;">Ekle</button>
                 </div>
-                <p class="hint">Site CORS izni vermiyorsa istek otomatik olarak sunucu proxy'sine düşer.</p>
+                <p class="hint">Site CORS izni vermiyorsa istek kendi sunucuna düşer (Algıla → Kendi sunucum).</p>
             </div>
 
             <div class="card hidden" id="imgSettings">
@@ -206,11 +206,11 @@
                 <div class="field">
                     <label class="field-label" for="mp4Mode">🌐 Bağlantı yöntemi</label>
                     <select class="select" id="mp4Mode">
-                        <option value="auto">Otomatik (önce doğrudan, olmazsa proxy)</option>
+                        <option value="auto">Otomatik (önce doğrudan, olmazsa kendi sunucum)</option>
                         <option value="direct">Sadece doğrudan</option>
-                        <option value="proxy">Sadece proxy</option>
+                        <option value="proxy">Sadece kendi sunucum</option>
                     </select>
-                    <p class="hint">Proxy, Netlify fonksiyonu üzerinden çalışır ve büyük dosyalarda zaman aşımına uğrayabilir; büyük videolar için "doğrudan" tercih edin.</p>
+                    <p class="hint">Site CORS izni vermiyorsa indirme kendi sunucun üzerinden yapılır (Algıla → Kendi sunucum). Sunucu ayarlı değilse yalnızca doğrudan inebilen dosyalar iner.</p>
                 </div>
                 <label class="checkbox-row">
                     <input type="checkbox" id="mp4ToDisk"> 💾 Doğrudan seçtiğim konuma kaydet
@@ -254,9 +254,9 @@
                 <div class="field">
                     <label class="field-label" for="hlsMode">🌐 Bağlantı yöntemi</label>
                     <select class="select" id="hlsMode">
-                        <option value="auto">Otomatik (önce doğrudan, olmazsa proxy)</option>
+                        <option value="auto">Otomatik (önce doğrudan, olmazsa kendi sunucum)</option>
                         <option value="direct">Sadece doğrudan</option>
-                        <option value="proxy">Sadece proxy</option>
+                        <option value="proxy">Sadece kendi sunucum</option>
                     </select>
                 </div>
                 <label class="checkbox-row">

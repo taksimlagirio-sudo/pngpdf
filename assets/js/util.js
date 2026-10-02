@@ -114,20 +114,20 @@ export function renderSniff(url, { signal, waitMs } = {}) {
     });
 }
 
-// CORS engelini aşmak için proxy adresi: kendi sunucun ayarlıysa onu (süre sınırı yok),
-// değilse Netlify fonksiyonunu kullanır. <video src> gibi başlık eklenemeyen yerlerde de
-// çalışsın diye token sorgu parametresiyle gönderilir.
+// CORS engelini aşmak için tek proxy kullanıcının kendi sunucusu; ayarlı değilse null.
+// (Netlify yalnızca siteyi barındırıyor, indirmeler oradan geçmiyor.) <video src> gibi başlık
+// eklenemeyen yerlerde de çalışsın diye token sorgu parametresiyle gönderilir.
 export function proxyUrl(target) {
     const server = getRenderServer();
-    if (server) {
-        return `${server.url}/fetch?url=${encodeURIComponent(target)}&token=${encodeURIComponent(server.token)}`;
-    }
-    return `/api/proxy?url=${encodeURIComponent(target)}`;
+    if (!server) return null;
+    return `${server.url}/fetch?url=${encodeURIComponent(target)}&token=${encodeURIComponent(server.token)}`;
 }
 
+const NO_SERVER_HINT = 'Bunu indirmek için Algıla → "Kendi sunucum" bölümünden sunucunu ayarla.';
+
 /**
- * Önce doğrudan, CORS hatası alırsa proxy üzerinden dener.
- * `mode` "direct" | "proxy" | "auto" olabilir.
+ * Önce doğrudan, CORS hatası alırsa kendi sunucun üzerinden dener.
+ * `mode` "direct" | "proxy" (yalnızca kendi sunucum) | "auto" olabilir.
  */
 export async function smartFetch(url, { mode = 'auto', init = {}, onFallback, onAccess } = {}) {
     if (mode !== 'proxy') {
@@ -137,16 +137,21 @@ export async function smartFetch(url, { mode = 'auto', init = {}, onFallback, on
                 if (onAccess) onAccess('direct');
                 return res;
             }
-            if (mode === 'direct') {
+            if (mode === 'direct' || !proxyUrl(url)) {
                 throw new Error(`Sunucu ${res.status} döndü`);
             }
         } catch (err) {
             if (mode === 'direct') throw err;
+            if (!proxyUrl(url)) {
+                throw new Error(`Site doğrudan indirmeye izin vermiyor. ${NO_SERVER_HINT}`);
+            }
             if (onFallback) onFallback(err);
         }
     }
 
-    const res = await fetch(proxyUrl(url), init);
+    const viaServer = proxyUrl(url);
+    if (!viaServer) throw new Error(`Kendi sunucun ayarlı değil. ${NO_SERVER_HINT}`);
+    const res = await fetch(viaServer, init);
     if (onAccess && (res.ok || res.status === 206)) onAccess('proxy');
     if (!res.ok && res.status !== 206) {
         let detail = '';
@@ -326,12 +331,14 @@ export function formatSpeed(bytes, startedAt) {
  * Arka plan indirmesinde hangi adresin (doğrudan mı proxy mi) verileceğini belirler.
  */
 export async function probeAccess(url, mode = 'auto') {
-    if (mode === 'proxy') return 'proxy';
+    const hasServer = Boolean(getRenderServer());
+    if (mode === 'proxy' && hasServer) return 'proxy';
     try {
         const res = await fetch(url, { headers: { Range: 'bytes=0-0' } });
         if (res.ok || res.status === 206) return 'direct';
     } catch (_) { /* CORS veya ağ hatası */ }
-    return mode === 'direct' ? 'direct' : 'proxy';
+    // Sunucu yoksa doğrudan dene; başarısız olursa normal indirmeye düşüp anlaşılır hata verir.
+    return mode !== 'direct' && hasServer ? 'proxy' : 'direct';
 }
 
 export function formatEta(received, total, startedAt) {

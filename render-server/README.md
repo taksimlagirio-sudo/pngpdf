@@ -6,7 +6,7 @@ cihazında** çalışır ve sayfayı gerçek (görünmez) bir Chromium'da açar,
 isteklerini toplar ve İndirici'ye listeler. Yani link paylaşmak, tarayıcı eklentisine yakın sonuç verir.
 
 Ek olarak süre sınırı olmayan bir indirme proxy'si sunar: İndirici, CORS'a kapalı dosyaları
-Netlify fonksiyonu yerine bunun üzerinden indirir (Netlify'ın 10–26 sn sınırı yok). Medyayı
+yalnızca bunun üzerinden indirir (başka bir aracı yok; Netlify sadece siteyi barındırır). Medyayı
 ilk açan sayfanın `Referer` başlığını hatırlayıp iletir; "başka siteden gelen isteği reddeden"
 CDN'ler de böylece çalışır.
 

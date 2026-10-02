@@ -19,7 +19,7 @@ export async function downloadFile({
     const fileName = name || fileNameFromUrl(url);
 
     if (background && canBackgroundFetch && !toDisk) {
-        // Arka plan indirmesi service worker'dan yapılır; CORS'a kapalı kaynaklar proxy üzerinden verilir.
+        // Arka plan indirmesi service worker'dan yapılır; CORS'a kapalı kaynaklar kendi sunucun üzerinden verilir.
         onStage('Kaynak yoklanıyor...');
         const access = await probeAccess(url, mode);
         const job = await startBackgroundDownload({
@@ -36,7 +36,7 @@ export async function downloadFile({
         });
         if (job) {
             if (access === 'proxy') {
-                job.setDetail('Arka planda (proxy üzerinden) indiriliyor — çok büyük dosyalarda zaman aşımı olabilir.');
+                job.setDetail('Arka planda (kendi sunucun üzerinden) indiriliyor.');
             }
             onStage('Arka planda indiriliyor — uygulamayı kapatabilirsiniz.');
             return { mode: 'background', access };
@@ -53,7 +53,7 @@ export async function downloadFile({
         const res = await smartFetch(url, {
             mode,
             init: { signal: controller.signal },
-            onFallback: () => onStage('Doğrudan erişilemedi (CORS), proxy deneniyor...')
+            onFallback: () => onStage('Doğrudan erişilemedi (CORS), kendi sunucun deneniyor...')
         });
 
         const received = await pumpToSink(res, sink, (got, total) => {
@@ -97,7 +97,7 @@ export function initVideoTab() {
             progress.setDetail('Geçerli bir http(s) adresi girin.', true);
             return;
         }
-        window.open(modeSelect.value === 'proxy' ? proxyUrl(url) : url, '_blank', 'noopener');
+        window.open((modeSelect.value === 'proxy' && proxyUrl(url)) || url, '_blank', 'noopener');
     });
 
     startBtn.addEventListener('click', () => start());

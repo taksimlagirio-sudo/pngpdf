@@ -129,7 +129,7 @@ export async function downloadHls({
     const listRes = await smartFetch(url, {
         mode,
         init: { signal: controller.signal },
-        onFallback: () => onStage('Doğrudan erişilemedi (CORS), proxy deneniyor...')
+        onFallback: () => onStage('Doğrudan erişilemedi (CORS), kendi sunucun deneniyor...')
     });
     const playlist = parsePlaylist(await listRes.text(), url);
 

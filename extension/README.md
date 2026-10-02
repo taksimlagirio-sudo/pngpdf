@@ -43,8 +43,8 @@ Ana `pngpdf` sitesinin çözemediği iki durumu hedefler:
 ## Neden CORS'a takılmıyor?
 
 `host_permissions` ile verilen izin sayesinde uzantının kendi `fetch()` çağrıları (popup/arka
-plan bağlamından) hedef sitenin CORS politikasına tabi değildir — bu yüzden ana siteye eklenen
-`/api/proxy` Netlify fonksiyonuna burada ihtiyaç yok.
+plan bağlamından) hedef sitenin CORS politikasına tabi değildir — bu yüzden uzantı, kendi
+sunucun kapalıyken bile CORS'a kapalı sitelerden indirebilir.
 
 ## Dosyalar
 

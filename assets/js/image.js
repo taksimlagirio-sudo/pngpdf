@@ -100,7 +100,7 @@ export function initImageTab() {
         try {
             const res = await smartFetch(url, {
                 mode: 'auto',
-                onFallback: () => progress.setDetail('Doğrudan erişilemedi, proxy deneniyor...')
+                onFallback: () => progress.setDetail('Doğrudan erişilemedi, kendi sunucun deneniyor...')
             });
             const blob = await res.blob();
             if (blob.type && !blob.type.startsWith('image/')) {
