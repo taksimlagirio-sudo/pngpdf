@@ -179,10 +179,41 @@ function rememberReferer(mediaUrl, referer) {
     } catch (_) { /* geçersiz adres */ }
 }
 
+// Bu Chromium derlemelerinde H.264/AAC yok. Oynatıcıların çoğu önce bunu sorup "desteklenmiyor"
+// deyince playlist'i hiç istemiyor; biz videoyu oynatmayıp yalnızca adresini aradığımızdan
+// bu türleri "destekleniyor" gösteriyoruz. Diğer sorular gerçek yanıtı alır.
+const CODEC_SPOOF = `(() => {
+    const wanted = /avc1|avc3|mp4a|hvc1|hev1|ec-3|ac-3|mpegurl|video\\/mp4|audio\\/mp4|audio\\/aac|video\\/mp2t/i;
+    for (const name of ['MediaSource', 'ManagedMediaSource', 'WebKitMediaSource']) {
+        const MS = window[name];
+        if (!MS || !MS.isTypeSupported) continue;
+        const original = MS.isTypeSupported.bind(MS);
+        MS.isTypeSupported = (type) => original(type) || (wanted.test(String(type)) && !/mpegurl/i.test(String(type)));
+    }
+    const canPlay = HTMLMediaElement.prototype.canPlayType;
+    HTMLMediaElement.prototype.canPlayType = function (type) {
+        const real = canPlay.call(this, type);
+        if (real || !wanted.test(String(type))) return real;
+        return /mpegurl/i.test(String(type)) ? 'maybe' : 'probably';
+    };
+})();`;
+
+// Medya gelmezse tıklanacak oynat düğmeleri (yaygın oynatıcılar + genel adlar).
+const PLAY_SELECTORS = [
+    '.vjs-big-play-button', '.plyr__control--overlaid', '.jw-display-icon-display', '.jw-icon-display',
+    '.fp-play', '.mejs__overlay-button', '.ytp-large-play-button', '[data-plyr="play"]',
+    'button[aria-label*="play" i]', 'button[aria-label*="oynat" i]', 'button[title*="play" i]',
+    '[class*="play-button" i]', '[class*="playbutton" i]', '[class*="play_button" i]', '[class*="btn-play" i]',
+    '[id*="play" i]:not(video):not(audio)', '[class*="play" i]:not(video):not(audio):not(body):not(html)'
+].join(', ');
+
 async function sniff(pageUrl, waitMs) {
     const browser = await getBrowser();
     const context = await browser.newContext({ userAgent: DESKTOP_UA, viewport: { width: 1280, height: 800 } });
+    await context.addInitScript(CODEC_SPOOF);
     const page = await context.newPage();
+    // Tıklamanın açtığı reklam pencereleri hemen kapatılsın.
+    context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
     const found = new Map();
     let firstMediaAt = 0;
 
@@ -234,12 +265,45 @@ async function sniff(pageUrl, waitMs) {
         };
         await tryPlay();
 
+        // Oynatıcı özel bir "oynat" düğmesi bekliyorsa: önce bilinen düğmelere, olmazsa en büyük
+        // video/oynatıcı alanının ortasına, o da olmazsa sayfanın ortasına bir kez tıkla.
+        const clickSteps = [
+            async () => {
+                for (const frame of page.frames()) {
+                    const button = await frame.$(PLAY_SELECTORS).catch(() => null);
+                    if (button && await button.isVisible().catch(() => false)) {
+                        await button.click({ timeout: 2000, force: true }).catch(() => {});
+                        return;
+                    }
+                }
+            },
+            async () => {
+                const box = await page.evaluate(() => {
+                    let best = null;
+                    document.querySelectorAll('video, iframe, [class*="player" i], [id*="player" i], .poster, [class*="poster" i]')
+                        .forEach((el) => {
+                            const r = el.getBoundingClientRect();
+                            if (r.width * r.height > (best ? best.width * best.height : 2000)) best = r;
+                        });
+                    return best && { x: best.x + best.width / 2, y: best.y + best.height / 2 };
+                }).catch(() => null);
+                if (box) await page.mouse.click(box.x, box.y).catch(() => {});
+            },
+            async () => page.mouse.click(640, 400).catch(() => {})
+        ];
+        let nextClickAt = started + 2500;
+
         // Medya bulununca biraz daha bekleyip (master → varyant gibi takip istekleri için) bitir;
         // bulunamazsa süre dolana kadar bekle.
         while (Date.now() - started < waitMs) {
             if (firstMediaAt && Date.now() - firstMediaAt > 2000) break;
             await page.waitForTimeout(400);
-            if (Date.now() - started > 2500 && !firstMediaAt) await tryPlay();
+            if (!firstMediaAt && Date.now() >= nextClickAt) {
+                await tryPlay();
+                const step = clickSteps.shift();
+                if (step) await step();
+                nextClickAt = Date.now() + 1500;
+            }
         }
         title = await page.title().catch(() => '');
     } finally {

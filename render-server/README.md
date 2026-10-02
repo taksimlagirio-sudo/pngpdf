@@ -102,8 +102,11 @@ Notlar:
 
 - Sayfa temiz bir tarayıcı profiliyle açılır: senin oturumun/çerezlerin yok, giriş gerektiren
   içerik görünmez. Bunun için tarayıcı eklentisi (`../extension`) daha uygun.
-- Oynatıcı mutlaka bir tıklama bekliyorsa medya isteği hiç gelmeyebilir; sunucu videoları sessiz
-  başlatmayı dener ama her oynatıcıda işe yaramaz.
+- Sunucu videoları sessiz başlatır; medya gelmezse oynat düğmesine, oynatıcının ortasına ve
+  sayfanın ortasına sırayla tıklar (açılan reklam pencerelerini kapatır). Bu Chromium'da H.264
+  olmadığından oynatıcılara H.264/AAC "destekleniyor" gösterilir; video oynatılmaz, yalnızca
+  adresi bulunur. Yine de birkaç adım tıklama, giriş ya da captcha isteyen sayfalarda bulamayabilir.
+- WebRTC ile gelen yayınlar (HTTP isteği olmadan) bulunamaz.
 - DRM (Widevine/FairPlay/SAMPLE-AES) korumalı yayınlar sunucu bulsa da İndirici tarafından
   yine indirilmez.
 

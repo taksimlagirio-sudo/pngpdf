@@ -280,8 +280,9 @@ async function sniffOnServer(result, url, signal, onStage) {
         result.details.renderImages = sniffed.items.filter((i) => i.kind === 'image').length;
 
         if (result.details.links.length === 0) {
-            result.warnings.push('Sayfa kendi sunucunda çalıştırıldı ama medya isteği görülmedi. ' +
-                'Oynatıcı bir tıklama bekliyor, giriş istiyor veya içerik DRM korumalı olabilir.');
+            result.warnings.push('Sayfa kendi sunucunda çalıştırıldı, oynat düğmesine de basıldı ama medya isteği ' +
+                'görülmedi. Yayın şu an kapalı olabilir, site giriş istiyor olabilir, yayın HTTP yerine WebRTC ile ' +
+                'geliyor olabilir ya da içerik DRM korumalı olabilir.');
         }
     } catch (err) {
         result.warnings.push(`Kendi sunucuna ulaşılamadı: ${err.message}`);
