@@ -398,6 +398,7 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
         const sniffed = await renderSniff(url, { signal });
         if (sniffed.title && !result.details.title) result.details.title = sniffed.title;
         if (sniffed.main) result.details.main = sniffed.main;
+        result.details.blockedAds = sniffed.blockedAds || 0;
 
         // Sunucunun gördükleri önce (gerçekten istenen adresler), statik taramadan gelenler sonra.
         const merged = new Map();
@@ -605,8 +606,11 @@ export async function verifyLinks(links, { mode = 'auto', signal } = {}) {
             }
         }
         if (link.kind !== 'hls') {
-            const tiny = link.kind === 'video' && link.size > 0 && link.size < TINY_VIDEO;
-            return { ...link, ok: link.kind === 'video', hidden: link.kind !== 'video' || tiny, tiny };
+            // Ses dosyası yalnızca büyükse (podcast, anlatım) gösterilir; sayfa sesleri, efektler gizli.
+            const tiny = link.size > 0 && link.size < TINY_VIDEO;
+            const audio = link.kind === 'audio' && (link.size || 0) >= 1024 * 1024;
+            const ok = link.kind === 'video' || audio;
+            return { ...link, ok, hidden: !ok || (link.kind === 'video' && tiny), tiny };
         }
         try {
             const playlist = manifestTexts.has(link.url)

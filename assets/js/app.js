@@ -77,17 +77,6 @@ initDownloads({ onNavigate: navigate });
 // Kendi sunucundan açıldıysa token'ı kendiliğinden al.
 await autoConfigureLocalServer();
 
-const imagesTab = initImagesTab({ toast });
-const detectTab = initDetectTab({
-    navigate,
-    toast,
-    photos: imagesTab,
-    openImages(pageUrl, urls, title) {
-        navigate('images');
-        imagesTab.open(pageUrl, urls, title);
-    }
-});
-
 /* ---- Ana ekrana ekleme ---- */
 let installPrompt = null;
 const installListeners = new Set();
@@ -103,22 +92,37 @@ window.addEventListener('appinstalled', () => {
 });
 const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
+const install = {
+    onAvailable(fn) {
+        installListeners.add(fn);
+        fn(Boolean(installPrompt));
+    },
+    available: () => Boolean(installPrompt),
+    async prompt() {
+        if (!installPrompt) return;
+        installPrompt.prompt();
+        await installPrompt.userChoice;
+        installPrompt = null;
+        setInstallable(false);
+    },
+    iosHint: !standalone && /iPhone|iPad|iPod/.test(navigator.userAgent)
+};
+
+const imagesTab = initImagesTab({ toast });
+const detectTab = initDetectTab({
+    navigate,
+    toast,
+    photos: imagesTab,
+    install,
+    openImages(pageUrl, urls, title) {
+        navigate('images');
+        imagesTab.open(pageUrl, urls, title);
+    }
+});
+
 /* ---- Ayarlar + kenar çubuğundaki sunucu kartı ---- */
 initSettings({
-    install: {
-        onAvailable(fn) {
-            installListeners.add(fn);
-            fn(Boolean(installPrompt));
-        },
-        async prompt() {
-            if (!installPrompt) return;
-            installPrompt.prompt();
-            await installPrompt.userChoice;
-            installPrompt = null;
-            setInstallable(false);
-        },
-        iosHint: !standalone && /iPhone|iPad|iPod/.test(navigator.userAgent)
-    },
+    install,
     onServerChange(server, version) {
         const card = $('sideServer');
         card.querySelector('.dot').classList.toggle('on', Boolean(server));
@@ -157,7 +161,7 @@ const shared = [params.get('url'), params.get('text'), params.get('title')]
 if (shared) {
     history.replaceState(null, '', location.pathname + '#detect');
     navigate('detect');
-    detectTab.prefill(shared, true);
+    detectTab.prefill(shared, true, { shared: true });
 } else {
     navigate(location.hash.slice(1) || 'detect');
 }

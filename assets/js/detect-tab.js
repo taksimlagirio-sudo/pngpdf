@@ -6,6 +6,7 @@ import { downloadFile } from './video.js';
 import { downloadMerged } from './merge.js';
 import { downloadHlsVod, recordHlsLive, loadPlaylist, audioFor, baseNameFor } from './hls.js';
 import { dashPlaylist } from './dash.js';
+import { recentList, addRecent, updateRecent, persistThumb } from './recent.js';
 import {
     addJob, createSink, effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch,
     askNotificationPermission
@@ -37,6 +38,21 @@ export function bigSiteOf(url) {
     return BIG_SITES.find(([d]) => host === d || host.endsWith('.' + d)) || null;
 }
 
+// "…'dan paylaşıldı": büyük platformların okunuşuna göre ek; diğerleri ses uyumuyla.
+const ABLATIVE = {
+    YouTube: "'dan", X: "'ten", Facebook: "'tan", Reddit: "'ten", Twitch: "'ten", Pinterest: "'ten", Threads: "'ten",
+    Snapchat: "'ten", LinkedIn: "'den", Vimeo: "'dan", Dailymotion: "'dan", Bilibili: "'den", VK: "'dan", OK: "'den",
+    Rumble: "'dan", Kick: "'ten", Bluesky: "'den", Tumblr: "'dan", Streamable: "'dan", Instagram: "'dan", TikTok: "'tan"
+};
+export function ablative(name) {
+    if (ABLATIVE[name]) return name + ABLATIVE[name];
+    const w = String(name).toLowerCase();
+    const vowels = [...w].filter((c) => 'aeıioöuü'.includes(c));
+    const back = 'aıou'.includes(vowels[vowels.length - 1] || 'a');
+    const hard = 'pçtkfhsş'.includes(w[w.length - 1]);
+    return `${name}'${hard ? 't' : 'd'}${back ? 'a' : 'e'}n`;
+}
+
 /** Yapıştırılan/paylaşılan metnin içindeki ilk bağlantı ("şuna bak https://…"). */
 export function firstUrl(text) {
     const m = String(text || '').match(/https?:\/\/[^\s<>"']+/i);
@@ -50,7 +66,7 @@ const KIND_LABEL = {
 };
 const REC_LIMITS = [['Sınırsız', 0], ['30 dk', 1800], ['1 sa', 3600], ['2 sa', 7200], ['Özel', -1]];
 
-export function initDetectTab({ navigate, toast, openImages, photos = null }) {
+export function initDetectTab({ navigate, toast, openImages, photos = null, install = null }) {
     const urlInput = $('detectUrl');
     const analyzeBtn = $('detectBtn');
     const statusBox = $('detectStatus');
@@ -64,7 +80,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
     let photosPage = null;
     let photosSnap = null;
     if (photos) photos.subscribe((snap) => { photosSnap = snap; paintPhotos(); });
-    let autoHops = 0;     // sayfadan medyaya otomatik geçişte sonsuz döngüyü engeller
+    let autoHops = 0;
+    let entryUrl = '';    // algılamanın başladığı adres (sayfadan videoya geçilse de)     // sayfadan medyaya otomatik geçişte sonsuz döngüyü engeller
     let remote = null;    // açık "kendim dokunayım" oturumu
     let preview = null;   // açık önizleme oynatıcısı
     let seq = 0;          // eski analizlerin sonucu yenisinin üstüne yazılmasın
@@ -81,7 +98,26 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
         return navigator.clipboard.readText();
     }
 
+    // Paylaş ile gelindiyse üstte "X'ten paylaşıldı" şeridi (yeni bir algılamaya kadar).
+    const sharedBox = document.createElement('div');
+    statusBox.insertAdjacentElement('beforebegin', sharedBox);
+    function showShared(link) {
+        if (!link) {
+            sharedBox.innerHTML = '';
+            return;
+        }
+        let from = '';
+        try {
+            const big = bigSiteOf(link);
+            from = big ? big[1] : new URL(link).hostname.replace(/^www\./, '');
+        } catch (_) { /* geçersiz adres */ }
+        sharedBox.innerHTML = `<div class="shared-banner"><span class="shared-icon">↗</span>
+            <span style="min-width:0"><span class="shared-title">${escapeHtml(from ? `${ablative(from)} paylaşıldı` : 'Paylaşıldı')}</span>
+            <span class="shared-url">${escapeHtml(link.replace(/^https?:\/\/(www\.)?/, ''))}</span></span></div>`;
+    }
+
     async function onAnalyzeClick() {
+        showShared('');
         let url = firstUrl(urlInput.value);
         if (!url) {
             try {
@@ -94,6 +130,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
 
     /** Panodaki bağlantıyı yapıştırıp hemen algılar. */
     async function pasteAndAnalyze() {
+        showShared('');
         let text;
         try {
             text = await readClipboard();
@@ -167,10 +204,156 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
     }
 
     function setBusy(text) {
+        stopProgress();
         statusBox.innerHTML = text ? `<div class="busy"><span class="spinner"></span><span>${escapeHtml(text)}</span></div>` : '';
     }
 
+    /* ---------------- Algılama ilerlemesi (4 adım) ---------------- */
+
+    const STEPS = ['Sayfa kaynağı okunuyor', 'Betikler taranıyor', 'Sunucunda açılıyor', 'Videolar yoklanıyor'];
+    const STEP_SEC = [4, 6, 14, 6]; // adımın tipik süresi: çubuk bu sürede adımın sonuna yaklaşır
+    let progress = null; // { idx, at, timer }
+    let controller = null;
+
+    function stepOf(text) {
+        if (/yoklan|Playlist|DASH|Önizleme|Resim okunuyor|ayrıştır/i.test(text)) return 3;
+        if (/sunucunda (açıl|çalıştır)|kendi sunucun/i.test(text)) return 2;
+        if (/script|betik|çözümleniyor|gelişmiş/i.test(text)) return 1;
+        return 0;
+    }
+
+    function showProgress(text) {
+        const idx = Math.max(progress ? progress.idx : 0, stepOf(text));
+        if (!progress || !statusBox.querySelector('.detect-progress')) {
+            statusBox.innerHTML = `
+                <div class="detect-progress">
+                    <div class="dp-head"><span class="dp-step"></span><span class="dp-idx mono"></span></div>
+                    <div class="dp-bar"><span></span></div>
+                    <div class="dp-steps">${STEPS.map((l) => `<span>${l}</span>`).join('')}</div>
+                    <div class="dp-foot"><span>Genelde 5–20 sn sürer</span><button class="link-btn" data-cancel>İptal</button></div>
+                </div>`;
+            statusBox.querySelector('[data-cancel]').addEventListener('click', cancelAnalyze);
+            progress = { idx, at: Date.now(), timer: setInterval(paintProgress, 500) };
+        }
+        if (idx !== progress.idx) progress = { ...progress, idx, at: Date.now() };
+        paintProgress();
+    }
+
+    function paintProgress() {
+        const box = statusBox.querySelector('.detect-progress');
+        if (!box || !progress) return;
+        const { idx, at } = progress;
+        // Adım içinde çubuk yavaşça ilerler, ama adım bitmeden sonuna varmaz.
+        const within = Math.min(0.9, (Date.now() - at) / 1000 / STEP_SEC[idx]);
+        box.querySelector('.dp-step').textContent = STEPS[idx];
+        box.querySelector('.dp-idx').textContent = `${idx + 1}/${STEPS.length}`;
+        box.querySelector('.dp-bar span').style.width = `${Math.round(((idx + within) / STEPS.length) * 100)}%`;
+        box.querySelectorAll('.dp-steps span').forEach((el, i) => {
+            el.classList.toggle('done', i < idx);
+            el.classList.toggle('on', i === idx);
+        });
+    }
+
+    function stopProgress() {
+        if (progress) clearInterval(progress.timer);
+        progress = null;
+    }
+
+    function cancelAnalyze() {
+        seq++;
+        if (controller) controller.abort();
+        controller = null;
+        stopProgress();
+        statusBox.innerHTML = '';
+        analyzeBtn.disabled = false;
+        info = null;
+        renderIdle();
+    }
+
+    /* ---------------- Boş ekran: ilk açılış ya da son algılananlar ---------------- */
+
+    function renderIdle() {
+        if (info) return;
+        const recent = recentList();
+        if (recent.length) {
+            resultBox.innerHTML = `
+                <div class="recent">
+                    <span class="sec-label">Son algılananlar</span>
+                    ${recent.map((r) => `
+                        <button class="recent-row" data-act="recent" data-url="${escapeHtml(r.url)}">
+                            <span class="thumb recent-thumb">${r.thumb ? `<img src="${escapeHtml(r.thumb)}" alt="">` : ''}${r.duration
+                                ? `<span class="thumb-badge">${escapeHtml(r.duration)}</span>` : ''}</span>
+                            <span class="recent-text"><span class="recent-title">${escapeHtml(r.title || shortUrl(r.url))}</span>
+                                <span class="recent-meta">${escapeHtml(r.meta || '')}</span></span>
+                            <span class="recent-act">İndir</span>
+                        </button>`).join('')}
+                </div>`;
+            return;
+        }
+        const canInstall = install && install.available && install.available();
+        resultBox.innerHTML = `
+            <div class="welcome">
+                <img src="assets/icons/icon.svg" alt="" class="welcome-icon">
+                <div class="welcome-title">Bir bağlantı yapıştırın, gerisini biz bulalım</div>
+                <div class="welcome-sub">Video, canlı yayın, sayfa ya da galeri.</div>
+            </div>
+            <div class="rows filled">
+                <button class="row" data-act="how-share"><span class="row-value" style="font-weight:600">Başka uygulamadan paylaş
+                    <span class="muted" style="display:block;font-size:12px;font-weight:400">Paylaş → İndirici, otomatik algılanır</span></span>
+                    <span class="row-chev">›</span></button>
+                ${canInstall || (install && install.iosHint) ? `<button class="row" data-act="install"><span class="row-value" style="font-weight:600">Ana ekrana ekle
+                    <span class="muted" style="display:block;font-size:12px;font-weight:400">Tam ekran, çevrimdışı açılır</span></span>
+                    <span class="row-chev">›</span></button>` : ''}
+            </div>
+            ${getRenderServer() ? '' : `
+            <button class="server-promo" data-act="setup">
+                <span class="server-promo-title">Daha çok site için kendi sunucun</span>
+                <span class="server-promo-sub">Kapalı siteler, giriş isteyenler ve kilitliyken kayıt. 5 dakikada kurulur.</span>
+                <span class="server-promo-act">Kurulumu başlat ›</span>
+            </button>`}`;
+    }
+
+    /** Algılanan sonucu "Son algılananlar"a yazar; küçük resim gelince günceller. */
+    function rememberResult(entryUrl) {
+        if (!info || !entryUrl) return;
+        const d = info.details || {};
+        let kind;
+        let meta;
+        if (info.target === 'page') {
+            const v = (d.links || []).length;
+            const p = (d.images || []).length;
+            kind = 'Sayfa';
+            meta = [`${v} video`, p ? `${p} resim` : ''].filter(Boolean).join(', ');
+        } else {
+            const v = currentVariant();
+            kind = info.unreachable ? 'Video' : (info.target === 'hls' || info.target === 'dash') ? (ui.media && ui.media.live ? 'Canlı yayın' : 'Yayın') : (KIND_LABEL[info.kind] || 'Dosya');
+            meta = [v && v.height ? `${v.height}p` : '', info.size ? formatSize(info.size) : ''].filter(Boolean).join(' · ');
+        }
+        const where = d.fromYtdlp ? 'gelişmiş bulma' : (d.fromRender || info.access === 'render') ? 'sunucunda bulundu' : '';
+        const seconds = (ui.media && !ui.media.live && ui.media.duration) || d.duration || 0;
+        addRecent({
+            url: entryUrl,
+            title: (info.target === 'page' ? d.title : ui.name) || d.title || shortUrl(info.url),
+            meta: [kind, meta, where].filter(Boolean).join(' · '),
+            duration: seconds ? shortDur(seconds) : ''
+        });
+        // Küçük resim: önizlemeden (video) ya da sayfanın ilk bağlantısının karesinden; kare
+        // hazır olana kadar birkaç kez denenir.
+        const shown = info;
+        const tryThumb = async (left) => {
+            if (info !== shown) return; // başka bir şey algılandı
+            const src = info.target === 'page'
+                ? ([...thumbs.values()].find((t) => t && t.thumb) || {}).thumb || d.thumbnail
+                : await currentThumb();
+            const thumb = await persistThumb(src);
+            if (thumb) updateRecent(entryUrl, { thumb });
+            else if (left > 0) setTimeout(() => tryThumb(left - 1), 5000);
+        };
+        setTimeout(() => tryThumb(4), 3000);
+    }
+
     function setError(text) {
+        stopProgress();
         statusBox.innerHTML = `<div class="notice error">${escapeHtml(text)}</div>`;
     }
 
@@ -191,21 +374,27 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
         }
         const mySeq = ++seq;
         photosPage = page || null;
+        if (!page) entryUrl = url; // "Son algılananlar"a yazılacak, kullanıcının verdiği adres
         analyzeBtn.disabled = true;
         if (remote) {
             remote.close();
             remote = null;
         }
         closePreview();
+        info = null;
         resultBox.innerHTML = '';
-        setBusy('Bağlanılıyor...');
+        if (controller) controller.abort();
+        controller = new AbortController();
+        const signal = controller.signal;
+        showProgress('Bağlanılıyor...');
 
         try {
             const result = await analyzeUrl(url, {
                 mode: getPrefs().conn,
+                signal,
                 // yt-dlp yalnızca Ayarlar'dan açıldıysa; varsayılan: sayfa doğrudan bizim sunucuda taranır.
                 noExtract: noExtract || !(useExtract || getPrefs().useYtdlp),
-                onStage: (text) => mySeq === seq && setBusy(text)
+                onStage: (text) => mySeq === seq && showProgress(text)
             });
             if (mySeq !== seq) return;
             info = result;
@@ -232,13 +421,14 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
             render();
             showPreview();
             if (result.target === 'page') probeLinks(mySeq);
+            rememberResult(entryUrl);
         } catch (err) {
             if (mySeq !== seq) return;
             console.error(err);
             autoHops = 0;
             // yt-dlp'nin verdiği bağlantı açılmadı: sayfa bizim yöntemle (sunucudaki tarayıcıda) taranır.
             if (fromYtdlp && page) {
-                toast('yt-dlp\'nin bağlantısı açılmadı; sayfa sunucunda taranıyor');
+                toast('Gelişmiş bulmanın bağlantısı açılmadı; sayfa sunucunda taranıyor');
                 return analyze(page, { noExtract: true, title });
             }
             // Video bağlantısı açılmıyor (403, oturum vb.): yine de kart gösterilir; İndir'e basınca
@@ -250,6 +440,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
                 ui.sourcePage = page;
                 if (title) ui.name = cleanTitle(title);
                 render();
+                rememberResult(entryUrl);
                 return;
             }
             setError(`Algılanamadı: ${err.message}`);
@@ -377,12 +568,16 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
         if (!info) return;
         if (info.target === 'page') renderPage();
         else if (info.target === 'hls' && ui.media && ui.media.live) renderLive();
-        else renderDownload();
+        else {
+            renderDownload();
+            if (ui.rangeOpen) {
+                paintRange();
+                refreshTexts();
+            }
+        }
         if (photosPage) {
-            // Sayfa listesinde videoların hemen altına; video kartında kartın altına.
-            const after = resultBox.querySelector('.media-table');
-            if (after) after.insertAdjacentHTML('afterend', '<div class="photos-slot"></div>');
-            else resultBox.insertAdjacentHTML('beforeend', '<div class="photos-slot"></div>');
+            // Sayfa sonucunda kendi yeri var; video kartında kartın altına eklenir.
+            if (!resultBox.querySelector('.photos-slot')) resultBox.insertAdjacentHTML('beforeend', '<div class="photos-slot"></div>');
             paintPhotos();
         }
     }
@@ -390,29 +585,32 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
     /** "Fotoğraflar" bölümü: videolardan ayrı; Resimler ekranının sonuçlarından. */
     function paintPhotos() {
         const slot = resultBox.querySelector('.photos-slot');
+        const bar = resultBox.querySelector('[data-bar-photos]');
         if (!slot || !photosPage) return;
         const snap = photosSnap && photosSnap.url === photosPage ? photosSnap : null;
         const list = snap ? snap.items : [];
         const busy = !snap || snap.busy;
-        const head = `<div class="settings-sec-head"><span class="sec-label">Fotoğraflar${list.length ? ` · ${list.length}` : ''}</span>
-            ${snap && snap.source ? `<span class="muted" style="font-size:12px">${escapeHtml(snap.source)}</span>` : ''}</div>`;
+        if (bar) {
+            bar.hidden = !list.length;
+            bar.textContent = `${list.length} fotoğrafı indir`;
+        }
+        const head = `<div class="pr-head"><span class="pr-head-title">Fotoğraflar${list.length ? ` · ${list.length}` : ''}</span>
+            ${list.length ? '<button class="link-btn pr-head-act" data-act="photos-open">Tümünü gör</button>' : ''}</div>`;
         if (!list.length) {
             slot.innerHTML = `<div class="photos">${head}<div class="${busy ? 'busy' : 'empty'}">${busy
                 ? '<span class="spinner"></span><span>Fotoğraflar aranıyor...</span>' : 'Bu sayfada fotoğraf bulunamadı.'}</div></div>`;
             return;
         }
-        const shown = list.slice(0, 9);
+        const max = 8;
+        const shown = list.slice(0, max);
         slot.innerHTML = `<div class="photos">${head}
             <div class="photo-strip">${shown.map((it, i) => `
                 <button class="photo-tile" data-act="photos-open" title="${escapeHtml(it.name)}">
                     <img src="${escapeHtml(it.src || it.url)}" alt="" loading="lazy" referrerpolicy="no-referrer">
-                    ${i === shown.length - 1 && list.length > shown.length ? `<span class="photo-more">+${list.length - shown.length}</span>` : ''}
+                    ${i === shown.length - 1 && list.length > shown.length ? `<span class="photo-more">+${list.length - shown.length + 1}</span>` : ''}
                 </button>`).join('')}</div>
             ${busy ? '<span class="sec-hint">Diğerleri aranıyor...</span>' : ''}
-            <div class="dl-actions">
-                <button class="btn-big" data-act="photos-all">${list.length} fotoğrafı indir</button>
-                <button class="btn-ghost" data-act="photos-open">Seç ›</button>
-            </div></div>`;
+            <button class="btn-ghost photos-dl" data-act="photos-all">${list.length} fotoğrafı indir</button></div>`;
     }
 
     function warningsHtml() {
@@ -481,23 +679,62 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
             </div>`;
     }
 
+    // Aralık çubuğunun süsü: dalga biçimi gibi görünen sabit çubuklar.
+    const RANGE_BARS = Array.from({ length: 40 }, (_, i) => Math.round(30 + Math.abs(Math.sin(i * 1.7)) * 70));
+
     function rangeHtml() {
         if (!['hls', 'dash'].includes(info.target) || !ui.media || ui.media.live || !ui.media.duration) return '';
         const total = ui.media.duration;
         if (!ui.rangeOpen) {
             return `<button class="row" style="border:1px solid var(--ln);border-radius:14px" data-act="range-open">
-                <span class="row-label">Aralık</span><span class="row-value">Tamamı · ${hms(total)}</span><span class="row-chev">›</span></button>`;
+                <span class="row-label">Aralık</span><span class="row-value">Tamamı · ${shortDur(total)}</span><span class="row-chev">›</span></button>`;
         }
-        const { start, end } = rangeSeconds();
-        const len = Math.max(0, (end || total) - start);
-        return `<div class="sec"><span class="sec-label">Aralık (başlangıç – bitiş)</span>
-            <div class="range-inputs">
-                <input data-input="rangeStart" value="${escapeHtml(ui.rangeStart)}" placeholder="00:00:00" inputmode="numeric">
-                <span class="muted">–</span>
-                <input data-input="rangeEnd" value="${escapeHtml(ui.rangeEnd)}" placeholder="${hms(total)}" inputmode="numeric">
-                <button class="btn-ghost" data-act="range-close" style="flex:none">Tamamı</button>
+        const presets = [['Tümü', 0, total], ['İlk 10 dk', 0, Math.min(600, total)], ['Son 5 dk', Math.max(0, total - 300), total]];
+        return `<div class="range-sec">
+            <div class="pr-head"><span class="sec-label">Aralık — çubuğa dokunarak ayarlayın</span>
+                <button class="link-btn pr-head-note" data-act="range-close">Kapat</button></div>
+            <div class="range-bar" data-range-bar>
+                <div class="range-waves">${RANGE_BARS.map((h) => `<span style="height:${h}%"></span>`).join('')}</div>
+                <div class="range-sel" data-range-sel></div>
             </div>
-            <span class="sec-hint" data-range-hint>${hms(len)} indirilecek · yayın ${hms(total)}</span></div>`;
+            <div class="range-ticks"><span>0:00</span><span>${shortDur(total / 2)}</span><span>${shortDur(total)}</span></div>
+            <div class="range-boxes">
+                <label class="range-box"><span>Başlangıç</span>
+                    <input data-input="rangeStart" value="${escapeHtml(ui.rangeStart || shortDur(0))}" inputmode="numeric" spellcheck="false"></label>
+                <label class="range-box"><span>Bitiş</span>
+                    <input data-input="rangeEnd" value="${escapeHtml(ui.rangeEnd || shortDur(total))}" inputmode="numeric" spellcheck="false"></label>
+            </div>
+            <div class="range-presets">${presets.map(([l, a, b]) =>
+                `<button data-act="range-preset" data-a="${a}" data-b="${b}">${l}</button>`).join('')}</div>
+            <span class="sec-hint" data-range-hint></span></div>`;
+    }
+
+    /** Seçili aralığı çubukta ve metinlerde gösterir (yeniden çizmeden). */
+    function paintRange() {
+        const sel = resultBox.querySelector('[data-range-sel]');
+        if (!sel || !ui.media) return;
+        const total = ui.media.duration;
+        const { start, end } = rangeSeconds();
+        const a = Math.max(0, Math.min(start, total));
+        const b = Math.max(a, Math.min(end || total, total));
+        sel.style.left = `${(a / total) * 100}%`;
+        sel.style.width = `${((b - a) / total) * 100}%`;
+    }
+
+    function setRange(a, b, { inputs = true } = {}) {
+        const total = ui.media.duration;
+        a = Math.max(0, Math.min(Math.round(a), total));
+        b = Math.max(a + 1, Math.min(Math.round(b), total));
+        ui.rangeStart = shortDur(a);
+        ui.rangeEnd = shortDur(b);
+        if (inputs) {
+            const s1 = resultBox.querySelector('[data-input="rangeStart"]');
+            const s2 = resultBox.querySelector('[data-input="rangeEnd"]');
+            if (s1) s1.value = ui.rangeStart;
+            if (s2) s2.value = ui.rangeEnd;
+        }
+        paintRange();
+        refreshTexts();
     }
 
     function metaLine() {
@@ -639,73 +876,111 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
             ${warningsHtml()}`;
     }
 
+    /** Bağlantı için okunur bir ad: dosya adı anlamlıysa o, değilse sayfanın başlığı. */
+    function linkTitle(l, i) {
+        const d = info.details;
+        const page = d.title || 'Video';
+        if (l.fromYtdlp) return page;
+        let last = '';
+        try {
+            last = decodeURIComponent(new URL(l.url).pathname.split('/').filter(Boolean).pop() || '');
+        } catch (_) { /* geçersiz adres */ }
+        const base = last.replace(/\.[a-z0-9]{2,5}$/i, '');
+        const generic = /^(index|master|playlist|manifest|videoplayback|chunklist.*|media|video|stream|hls|play|main|output|source|default|v\d*)$/i;
+        // Uzun, rakam karışık, kelime içermeyen adlar (kimlik/hash) anlamsız sayılır.
+        const hashy = base.length >= 16 && /\d/.test(base) && !/[a-zçğıöşü]{4,}[\s_-]+[a-zçğıöşü]{3,}/i.test(base);
+        if (base && !generic.test(base) && !hashy) return base.replace(/[-_.]+/g, ' ').trim().slice(0, 70);
+        return i === 0 ? page : `${page} · ${i + 1}`;
+    }
+
+    function linkMeta(l, t) {
+        const height = (t && t.height) || l.height;
+        const fmt = (l.url.split('?')[0].match(/\.([a-z0-9]{2,4})$/i) || [])[1];
+        const kind = l.kind === 'hls' || l.kind === 'dash' ? (l.live || (t && t.live) ? 'Canlı yayın' : 'Yayın')
+            : l.kind === 'audio' ? 'Ses' : 'Video';
+        const bits = [kind];
+        if (l.kind !== 'hls' && l.kind !== 'dash' && fmt) bits.push(fmt.toUpperCase());
+        if (height) bits.push(`${height}p${l.variants > 1 ? ` (${l.variants} kalite)` : ''}`);
+        else if (l.variants > 1) bits.push(`${l.variants} kalite`);
+        if (l.size) bits.push(formatSize(l.size));
+        if (l.audioUrl) bits.push('ses ayrı');
+        if (l.unreachable) bits.push('açılmıyor, kaydedilerek iner');
+        return bits.join(' · ');
+    }
+
     function renderPage() {
         const d = info.details;
         const links = d.links || [];
-        const images = d.images || [];
         const embeds = d.embeds || [];
         // Önizlemesi alınamayanlar (oynatılamayan) ayrı tutulur; istenirse gösterilir.
-        // yt-dlp'nin bulduğu videolar gizlenmez (önizleme bu tarayıcıda oynamasa da indirilebilir).
         const failed = links.filter((l) => !l.unreachable && !l.fromYtdlp && thumbs.has(l.url) && !thumbs.get(l.url).ok);
         const shown = links.filter((l) => !failed.includes(l) || ui.showHidden);
-        const counts = [];
-        if (links.length) counts.push(`${links.length - (ui.showHidden ? 0 : failed.length)} video`);
-        if (images.length && !photosPage) counts.push(`${images.length} resim`);
-        const source = d.fromYtdlp ? ` (yt-dlp${d.extractor ? ' · ' + d.extractor : ''})` : d.fromRender ? ' (sunucunda çalıştırılarak)' : d.fromScripts ? ' (script dosyalarında)' : '';
+        const found = d.fromYtdlp ? 'Gelişmiş bulma ile bulundu' : d.fromRender ? 'Sunucunda açılarak bulundu'
+            : d.fromScripts ? 'Betiklerde bulundu' : 'Sayfa kaynağında bulundu';
 
-        const rows = shown.map((l) => {
+        const rows = shown.map((l, i) => {
             const t = thumbs.get(l.url);
-            const thumbSrc = (t && t.thumb) || (l.fromYtdlp && d.thumbnail) || '';
-            const thumb = thumbSrc ? `<img src="${escapeHtml(thumbSrc)}" alt="" referrerpolicy="no-referrer">` : '';
+            const thumb = (t && t.thumb) || (l.fromYtdlp && d.thumbnail) || '';
             const pending = !t ? '<span class="thumb-icon"><span class="spinner"></span></span>' : '';
-            const dur = t && t.ok ? (t.live || l.live ? 'CANLI' : hms(t.duration || l.duration || 0)) : '';
-            const height = (t && t.height) || l.height;
-            const quality = height ? `${height}p${l.variants > 1 ? ` · ${l.variants} kalite` : ''}` : (l.variants ? `${l.variants} kalite` : '—');
+            const seconds = (t && t.ok && t.duration) || l.duration || 0;
+            const dur = (t && t.live) || l.live ? 'CANLI' : seconds ? shortDur(seconds) : '';
+            const ext = (l.url.split('?')[0].match(/\.([a-z0-9]{2,4})$/i) || [])[1];
             return `
-            <button class="media-row" data-act="analyze-link" data-url="${escapeHtml(l.url)}" data-pair="${escapeHtml(l.audioUrl || '')}" data-ytdlp="${l.fromYtdlp ? 1 : 0}">
-                <span class="thumb media-thumb">${thumb}${pending}${dur ? `<span class="thumb-badge">${dur}</span>` : ''}</span>
-                <span style="min-width:0"><span class="media-url">${escapeHtml(l.fromYtdlp ? (d.title || 'Video') : shortUrl(l.url))}</span>
-                    <span class="media-sub">${KIND_TAG[l.kind] || 'DOSYA'}${height ? ' · ' + height + 'p' : ''}${l.size ? ' · ' + formatSize(l.size) : ''}${l.audioUrl ? ' · ses ayrı, birleştirilir' : ''}${l.unreachable ? ' · bağlantı açılmıyor, kaydedilerek indirilir' : t && !t.ok ? ' · önizleme yok' : ''}</span></span>
-                <span class="media-col">${escapeHtml(quality)}</span>
-                <span class="media-act accent">Aç ›</span>
+            <button class="pr-row" data-act="analyze-link" data-url="${escapeHtml(l.url)}" data-pair="${escapeHtml(l.audioUrl || '')}" data-ytdlp="${l.fromYtdlp ? 1 : 0}">
+                <span class="thumb pr-thumb">${thumb ? `<img src="${escapeHtml(thumb)}" alt="" referrerpolicy="no-referrer">` : ''}${pending}${dur ? `<span class="thumb-badge">${dur}</span>` : ''}</span>
+                <span class="pr-text"><span class="pr-title">${escapeHtml(linkTitle(l, i))}</span>
+                    <span class="pr-meta">${escapeHtml(linkMeta(l, t))}</span></span>
+                <span class="pr-kind">${l.kind === 'video' || l.kind === 'audio' ? (ext || KIND_TAG[l.kind]).toUpperCase() : KIND_TAG[l.kind] || 'DOSYA'}</span>
+                <span class="pr-act">İndir</span>
             </button>`;
         }).join('');
 
-        const exts = [...new Set(images.map((u) => (u.split('?')[0].match(/\.([a-z0-9]{3,4})$/i) || [])[1]).filter(Boolean)
-            .map((e) => e.toLowerCase()))].slice(0, 4);
-        const imageRow = images.length && !photosPage ? `
-            <button class="media-row images" data-act="images">
-                <span class="img-peek">${images.slice(0, 1).map((u) =>
-                    `<span class="thumb media-thumb"><img src="${escapeHtml(u)}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>`).join('')}</span>
-                <span style="min-width:0"><span class="media-url">${images.length} resim</span>
-                    <span class="media-sub">${exts.join(', ')}</span></span>
-                <span class="media-col"></span>
-                <span class="media-act accent">Resimleri gör ›</span>
-            </button>` : '';
-
-        const hiddenNote = [];
-        if (d.hiddenLinks) hiddenNote.push(`${d.hiddenLinks} bağlantı gizlendi (kalite parçası, yalnızca ses, önizleme klibi ya da yarıda kalan istek)`);
-        if (failed.length && !ui.showHidden) hiddenNote.push(`<button data-act="show-hidden">${failed.length} oynatılamayanı göster</button>`);
-        const foot = embeds.map((e) => `<div class="media-foot">Gömülü oynatıcı: <button data-act="analyze-link" data-url="${escapeHtml(e.url)}">${escapeHtml(e.host)}</button> — içini taramak için dokunun</div>`).join('')
-            + (hiddenNote.length ? `<div class="media-foot">${hiddenNote.join(' · ')}</div>` : '');
-        const table = rows || imageRow || foot ? `
-            ${photosPage && rows ? '<span class="sec-label">Videolar</span>' : ''}
-            <div class="card media-table">
-                <div class="media-head"><span></span><span>Adres</span><span>Kalite</span><span></span></div>
-                ${rows}${imageRow}${foot}
-            </div>` : '';
+        const videosHead = `<div class="pr-head"><span class="pr-head-title">Videolar · ${shown.length}</span>${failed.length
+            ? `<button class="link-btn pr-head-note" data-act="${ui.showHidden ? 'hide-hidden' : 'show-hidden'}">${ui.showHidden
+                ? 'Oynamayanları gizle' : `Oynamayanlar gizli (${failed.length})`}</button>` : ''}</div>`;
+        const foot = [
+            ...embeds.map((e) => `<div class="media-foot">Gömülü oynatıcı: <button data-act="analyze-link" data-url="${escapeHtml(e.url)}">${escapeHtml(e.host)}</button> — içini taramak için dokunun</div>`),
+            d.hiddenLinks ? `<div class="media-foot">${d.hiddenLinks} bağlantı gizlendi (kalite parçası, yalnızca ses, önizleme klibi ya da yarıda kalan istek)</div>` : ''
+        ].join('');
+        const videos = rows || foot ? `<div class="pr-videos">${videosHead}<div class="pr-list">${rows}${foot}</div></div>` : '';
+        const first = shown.find((l) => !l.unreachable) || shown[0];
 
         resultBox.innerHTML = `
-            <div>
-                <div class="page-title">${escapeHtml(d.title || shortUrl(info.url))}</div>
-                <div class="res-meta">Web sayfası${counts.length ? ' · ' + counts.join(', ') : ''}${source}</div>
+            <div class="pr-top">
+                <button class="back-btn" data-act="back" aria-label="Geri">←</button>
+                <span class="pr-top-label">Sonuç</span>
             </div>
-            ${table}
-            ${d.fromYtdlp ? `<button class="btn-ghost" data-act="rescan" style="height:46px">Bulunanlar doğru değil mi? Sayfayı kendi yöntemimizle tara</button>` : ''}
+            <div class="pr-titlebox">
+                <div class="page-title">${escapeHtml(d.title || shortUrl(info.url))}</div>
+                <div class="chips-row">${links.length ? `<span class="chip-ok">✓ ${found}</span>` : ''}${d.blockedAds
+                    ? `<span class="chip-mt">${d.blockedAds} reklam engellendi</span>` : ''}</div>
+            </div>
+            <div class="pr-grid">
+                ${videos}
+                ${photosPage ? '<div class="photos-slot pr-photos"></div>' : ''}
+            </div>
+            ${d.fromYtdlp ? `<button class="btn-ghost" data-act="rescan" style="height:46px">Bulunanlar doğru değil mi? Sayfayı başka yöntemle tara</button>` : ''}
             ${warningsHtml()}
             ${captureHtml(!links.length)}
             ${canRemote() ? `<button class="btn-ghost" data-act="remote" style="height:46px">Sayfayı aç, kendim dokunayım</button>` : ''}
-            <div class="remote-slot"></div>`;
+            <div class="remote-slot"></div>
+            ${first || photosPage ? `<div class="result-bar">
+                <button class="btn-ghost" data-act="photos-all" data-bar-photos hidden></button>
+                ${first ? `<button class="btn-big" data-act="analyze-link" data-url="${escapeHtml(first.url)}" data-pair="${escapeHtml(first.audioUrl || '')}" data-ytdlp="${first.fromYtdlp ? 1 : 0}">${escapeHtml(shortTitle(linkTitle(first, 0)))} indir</button>` : ''}
+            </div>` : ''}`;
+    }
+
+    /** Rozet süresi: "0:38", "10:32", "1:02:14". */
+    function shortDur(sec) {
+        sec = Math.max(0, Math.round(sec || 0));
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor(sec / 60) % 60;
+        const ss = String(sec % 60).padStart(2, '0');
+        return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+    }
+
+    function shortTitle(text) {
+        return text.length > 26 ? text.slice(0, 24).trim() + '…' : text;
     }
 
     /** Sayfada indirilebilir video bulunamadıysa: sayfadaki videoyu oynatıp kaydet. */
@@ -726,6 +1001,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
         const key = e.target.dataset.input;
         if (!key || !ui) return;
         ui[key] = e.target.value;
+        if (key === 'rangeStart' || key === 'rangeEnd') paintRange();
         const title = resultBox.querySelector('.res-title, .live-title');
         if (title && key === 'name') title.textContent = ui.name;
         refreshTexts();
@@ -735,15 +1011,50 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
         const rangeHint = resultBox.querySelector('[data-range-hint]');
         if (rangeHint && ui.media) {
             const { start, end } = rangeSeconds();
-            rangeHint.textContent = `${hms(Math.max(0, (end || ui.media.duration) - start))} indirilecek · yayın ${hms(ui.media.duration)}`;
+            const v = currentVariant();
+            const size = downloadSize();
+            rangeHint.textContent = [`${shortDur(Math.max(0, (end || ui.media.duration) - start))} süre`,
+                v && v.height ? `${v.height}p` : '', size ? `~${formatSize(size)}` : ''].filter(Boolean).join(' · ');
         }
         const dlBtn = resultBox.querySelector('[data-act="download"]');
         if (dlBtn) {
             const size = downloadSize();
-            dlBtn.textContent = `İndir${size ? ' · ~' + formatSize(size) : ''}`;
+            dlBtn.textContent = `${ui.rangeOpen ? 'Bu bölümü indir' : 'İndir'}${size ? ' · ~' + formatSize(size) : ''}`;
         }
         const recHint = resultBox.querySelector('[data-rec-hint]');
         if (recHint) recHint.textContent = recHintText();
+    }
+
+    // Aralık çubuğu: dokununca ya da sürükleyince en yakın uç oraya gelir.
+    let rangeDrag = null;
+    resultBox.addEventListener('pointerdown', (e) => {
+        const bar = e.target.closest('[data-range-bar]');
+        if (!bar || !ui || !ui.media) return;
+        const total = ui.media.duration;
+        const at = (ev) => {
+            const r = bar.getBoundingClientRect();
+            return Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * total;
+        };
+        const { start, end } = rangeSeconds();
+        const v = at(e);
+        rangeDrag = { bar, at, edge: Math.abs(v - start) <= Math.abs(v - (end || total)) ? 'a' : 'b' };
+        bar.setPointerCapture(e.pointerId);
+        moveRange(v);
+        e.preventDefault();
+    });
+    resultBox.addEventListener('pointermove', (e) => {
+        if (rangeDrag) moveRange(rangeDrag.at(e));
+    });
+    const endDrag = () => { rangeDrag = null; };
+    resultBox.addEventListener('pointerup', endDrag);
+    resultBox.addEventListener('pointercancel', endDrag);
+    function moveRange(v) {
+        const total = ui.media.duration;
+        const { start, end } = rangeSeconds();
+        const a = start;
+        const b = end || total;
+        if (rangeDrag.edge === 'a') setRange(Math.min(v, b - 1), b);
+        else setRange(a, Math.max(v, a + 1));
     }
 
     resultBox.addEventListener('click', async (e) => {
@@ -760,6 +1071,20 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
             });
         }
         if (act === 'capture') return startCapture(btn.dataset.url || info.url);
+        if (act === 'recent') {
+            urlInput.value = btn.dataset.url;
+            return start(btn.dataset.url);
+        }
+        if (act === 'how-share') {
+            toast('Instagram, TikTok, YouTube gibi uygulamalarda Paylaş\'a dokunup İndirici\'yi seçin (önce ana ekrana ekleyin)');
+            return;
+        }
+        if (act === 'install') {
+            if (install && install.available && install.available()) install.prompt();
+            else toast('Safari\'de Paylaş → Ana Ekrana Ekle');
+            return;
+        }
+        if (act === 'setup') return navigate('settings');
         if (!info) return;
         if (act === 'rescan') return analyze(info.url, { noExtract: true });
         if (act === 'photos-all' && photos) {
@@ -777,7 +1102,20 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
         }
         if (act === 'variant') return pickVariant(Number(btn.dataset.i));
         if (act === 'show-hidden') ui.showHidden = true;
+        if (act === 'hide-hidden') ui.showHidden = false;
+        if (act === 'back') {
+            closePreview();
+            info = null;
+            photosPage = null;
+            showShared('');
+            renderIdle();
+            return;
+        }
         if (act === 'range-open') ui.rangeOpen = true;
+        if (act === 'range-preset') {
+            ui.rangeOpen = true;
+            return setRange(Number(btn.dataset.a), Number(btn.dataset.b));
+        }
         if (act === 'range-close') {
             ui.rangeOpen = false;
             ui.rangeStart = ui.rangeEnd = '';
@@ -1022,10 +1360,14 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
         return order[(order.indexOf(current) + 1) % order.length] || 'auto';
     }
 
+    renderIdle();
+
     return {
-        prefill(url, autoStart) {
-            urlInput.value = firstUrl(url);
-            if (autoStart) start(firstUrl(url));
+        prefill(url, autoStart, { shared = false } = {}) {
+            const link = firstUrl(url);
+            urlInput.value = link;
+            showShared(shared ? link : '');
+            if (autoStart) start(link);
         },
         analyze(url) {
             urlInput.value = firstUrl(url);
