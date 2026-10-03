@@ -711,7 +711,7 @@ async function prefetchHlsHeaders(url, headers) {
         const upstream = await fetchUpstream(target, { 'user-agent': DESKTOP_UA, accept: '*/*', ...headers },
             { signal: AbortSignal.timeout(8000) });
         const text = upstream.ok ? await upstream.text() : '';
-        if (!text.startsWith('#EXTM3U')) return [];
+        if (!text.startsWith('#EXTM3U')) return target === url ? null : [];
         rememberPlaylistHeaders(text, upstream.url || target, headers);
         // Alt listeler (kaliteler, ses): yalnızca ana listeden.
         return text.split(/\r?\n/).flatMap((line, i, lines) => {
@@ -720,19 +720,49 @@ async function prefetchHlsHeaders(url, headers) {
             return [];
         }).map((u) => new URL(u, upstream.url || target).href);
     };
+    let children;
     try {
-        const children = await read(url);
-        await Promise.all(children.slice(0, 8).map((child) => read(child).catch(() => [])));
-    } catch (_) { /* okunamadı: uygulama yine dener */ }
+        children = await read(url);
+    } catch (_) {
+        return false;
+    }
+    if (children === null) return false;
+    await Promise.all(children.slice(0, 8).map((child) => read(child).catch(() => [])));
+    return true;
+}
+
+/** yt-dlp'nin verdiği tek dosya/DASH akışı gerçekten açılıyor mu (ilk bayt)? */
+async function streamWorks(entry) {
+    const url = entry.fragments && entry.fragments.length ? entry.fragments[0] : entry.url;
+    try {
+        const upstream = await fetchUpstream(url, { 'user-agent': DESKTOP_UA, accept: '*/*', ...entry.headers, range: 'bytes=0-0' },
+            { signal: AbortSignal.timeout(10000) });
+        upstream.body?.cancel().catch(() => {});
+        return upstream.ok || upstream.status === 206;
+    } catch (_) {
+        return false;
+    }
 }
 
 async function extractWithYtdlp(url) {
     const result = await extractInfo(url, { cookies: logins.storageState()?.cookies || [] });
     if (!result.ok) return { available: !result.missing, ok: false, reason: result.reason, unsupported: Boolean(result.unsupported) };
     const page = normalizeInfo(result.info, registerStream);
-    await Promise.all(page.items.filter((i) => i.kind === 'hls')
-        .map((i) => prefetchHlsHeaders(i.url, requestHeadersByUrl.get(i.url) || {})));
-    return { available: true, ok: true, ...page };
+    // Kullanmadan önce dene: yt-dlp'nin bulduğu bağlantı açılmıyorsa (403 vb.) atılır; hiçbiri
+    // açılmıyorsa uygulama sayfayı kendi yöntemiyle (sunucudaki tarayıcıda) tarar.
+    const checks = await Promise.all(page.items.map((item) => {
+        if (item.kind === 'hls') return prefetchHlsHeaders(item.url, requestHeadersByUrl.get(item.url) || {});
+        const id = (item.url.match(/^\/stream\/([0-9a-f]{24})$/) || [])[1];
+        const entry = id && streams.get(id);
+        const audioId = item.audioUrl && (item.audioUrl.match(/^\/stream\/([0-9a-f]{24})$/) || [])[1];
+        return Promise.all([entry ? streamWorks(entry) : false, audioId ? streamWorks(streams.get(audioId)) : true])
+            .then(([v, a]) => v && a);
+    }));
+    const working = page.items.filter((_, i) => checks[i]);
+    if (!working.length) {
+        return { available: true, ok: false, reason: 'yt-dlp\'nin bulduğu bağlantılar açılmıyor (ör. HTTP 403)', blocked: true };
+    }
+    return { available: true, ok: true, ...page, items: working };
 }
 
 async function serveStream(req, res, entry) {

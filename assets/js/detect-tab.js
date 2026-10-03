@@ -71,7 +71,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
      * `pair`: sayfada ayrı bulunan ses playlist'i (görüntüyle birleştirilecek).
      * `page`: bağlantının bulunduğu sayfa — bağlantı inmezse video o sayfayla açılıp kaydedilir.
      */
-    async function analyze(url, { pair = null, page = null, title = '', noExtract = false } = {}) {
+    async function analyze(url, { pair = null, page = null, title = '', noExtract = false, fromYtdlp = false } = {}) {
         if (!isHttpUrl(url)) {
             setError('Geçerli bir http(s) adresi girin.');
             return;
@@ -104,7 +104,9 @@ export function initDetectTab({ navigate, toast, openImages }) {
             const links = result.details.links || [];
             if (result.target === 'page' && links.length === 1 && autoHops < 2) {
                 autoHops++;
-                return analyze(links[0].url, { pair: links[0].audioUrl || null, page: result.url, title: result.details.title || '' });
+                return analyze(links[0].url, {
+                    pair: links[0].audioUrl || null, page: result.url, title: result.details.title || '', fromYtdlp: Boolean(links[0].fromYtdlp)
+                });
             }
             autoHops = 0;
             render();
@@ -114,6 +116,11 @@ export function initDetectTab({ navigate, toast, openImages }) {
             if (mySeq !== seq) return;
             console.error(err);
             autoHops = 0;
+            // yt-dlp'nin verdiği bağlantı açılmadı: sayfa bizim yöntemle (sunucudaki tarayıcıda) taranır.
+            if (fromYtdlp && page) {
+                toast('yt-dlp\'nin bağlantısı açılmadı; sayfa sunucunda taranıyor');
+                return analyze(page, { noExtract: true, title });
+            }
             // Video bağlantısı açılmıyor (403, oturum vb.): yine de kart gösterilir; İndir'e basınca
             // video açılıp kaydedilir.
             if (page || err.mediaLike || /\.(m3u8|mp4|m4v|webm|mov|mkv|ts)(\?|$)/i.test(url)) {
@@ -499,7 +506,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
             const height = (t && t.height) || l.height;
             const quality = height ? `${height}p${l.variants > 1 ? ` · ${l.variants} kalite` : ''}` : (l.variants ? `${l.variants} kalite` : '—');
             return `
-            <button class="media-row" data-act="analyze-link" data-url="${escapeHtml(l.url)}" data-pair="${escapeHtml(l.audioUrl || '')}">
+            <button class="media-row" data-act="analyze-link" data-url="${escapeHtml(l.url)}" data-pair="${escapeHtml(l.audioUrl || '')}" data-ytdlp="${l.fromYtdlp ? 1 : 0}">
                 <span class="thumb media-thumb">${thumb}${pending}${dur ? `<span class="thumb-badge">${dur}</span>` : ''}</span>
                 <span style="min-width:0"><span class="media-url">${escapeHtml(l.fromYtdlp ? (d.title || 'Video') : shortUrl(l.url))}</span>
                     <span class="media-sub">${KIND_TAG[l.kind] || 'DOSYA'}${height ? ' · ' + height + 'p' : ''}${l.size ? ' · ' + formatSize(l.size) : ''}${l.audioUrl ? ' · ses ayrı, birleştirilir' : ''}${l.unreachable ? ' · bağlantı açılmıyor, kaydedilerek indirilir' : t && !t.ok ? ' · önizleme yok' : ''}</span></span>
@@ -591,7 +598,8 @@ export function initDetectTab({ navigate, toast, openImages }) {
         if (act === 'analyze-link') {
             const fromPage = info && info.target === 'page';
             return analyze(btn.dataset.url, {
-                pair: btn.dataset.pair || null, page: fromPage ? info.url : null, title: fromPage ? info.details.title || '' : ''
+                pair: btn.dataset.pair || null, page: fromPage ? info.url : null, title: fromPage ? info.details.title || '' : '',
+                fromYtdlp: btn.dataset.ytdlp === '1'
             });
         }
         if (act === 'capture') return startCapture(btn.dataset.url || info.url);
