@@ -58,6 +58,7 @@ token girmek, Tailscale veya Netlify gerekmez.
    sh start-termux.sh
    ```
    `termux-autostart.sh`, Termux her açıldığında sunucuyu başlatacak satırı `~/.bashrc`'ye ekler.
+   İsteğe bağlı ama önerilir: `pkg install python && pip install yt-dlp` (aşağıda "yt-dlp").
    `start-termux.sh` Chromium'u bulur, bağımlılıkları kurar, telefonun uyutmasını engeller
    (`termux-wake-lock`), sunucuyu başlatır ve İndirici'yi Chrome'da açar.
 3. Bundan sonra: **Termux'u aç → İndirici kendiliğinden açılır.** Algıla → 🖥️ Kendi sunucum
@@ -211,3 +212,31 @@ hepsinden) çıkış yapar.
 
 Video bağlantısı reddedildiğinde (403) istek sunucunun kendi makinesinden geliyorsa (sunucu telefonda)
 hata açıklamasında "cihaza (IP) bağlı" ihtimali söylenmez; giriş/oturum ve süreli bağlantı öne çıkar.
+
+## yt-dlp (veri katmanı)
+
+Kuruluysa sunucu, bir sayfa adresi gelince önce yt-dlp'ye sorar (`yt-dlp -J`): YouTube, Vimeo,
+Instagram, X gibi bilinen ~1800 sitede videonun gerçek adresleri ve kalite listesi gelir. yt-dlp
+**yalnızca bilgi verir**; dosya indirmez. Liste, kalite seçimi, önizleme, indirme ve birleştirme
+İndirici'nin kendisinde yapılır:
+
+- HLS (.m3u8): uygulamanın HLS indiricisi (kalite seçimi, ayrı ses birleştirme, canlı kayıt).
+- Tek dosya: `/stream/<kimlik>` adresinden, yt-dlp'nin verdiği başlık/çerezlerle, 10 MB'lık
+  parçalar halinde (YouTube tek büyük isteği yavaşlatır).
+- Ayrı görüntü + ses (DASH, YouTube): ikisi ayrı akış olarak verilir, telefonda tek MP4'te birleştirilir.
+
+yt-dlp kurulu değilse ya da siteyi tanımıyorsa sayfa eskisi gibi sunucudaki tarayıcıda açılır.
+
+```bash
+pkg install python && pip install yt-dlp    # Termux
+yt-dlp -U                                     # güncelleme (siteler değiştikçe ara ara)
+```
+
+| Değişken | Anlamı |
+|---|---|
+| `YTDLP=0` | yt-dlp kullanılmaz |
+| `YTDLP_PATH` | yt-dlp başka bir yerdeyse yolu |
+
+Gizlilik: yt-dlp yalnızca videosunu istediğin siteye bağlanır; telemetri yok, kendiliğinden güncelleme
+denetimi yok, uzaktan bileşen indirmesi kapalı. Kayıtlı girişler (çerezler) geçici, yalnızca sahibinin
+okuyabildiği bir dosyayla verilir ve iş bitince silinir.
