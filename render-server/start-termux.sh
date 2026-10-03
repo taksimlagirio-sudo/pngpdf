@@ -18,6 +18,10 @@ if ! command -v yt-dlp >/dev/null 2>&1; then
     echo 'İpucu: yt-dlp kurulu değil. Kurmak için: pkg install python && pip install "yt-dlp[default]"'
 fi
 
+if ! command -v gallery-dl >/dev/null 2>&1; then
+    echo 'İpucu: gallery-dl kurulu değil (resimler için). Kurmak için: pip install gallery-dl'
+fi
+
 # Telefon ekranı kapanınca Termux'un uyutulmasını engelle (Termux:API gerekmez).
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
 

@@ -58,7 +58,8 @@ token girmek, Tailscale veya Netlify gerekmez.
    sh start-termux.sh
    ```
    `termux-autostart.sh`, Termux her açıldığında sunucuyu başlatacak satırı `~/.bashrc`'ye ekler.
-   İsteğe bağlı ama önerilir: `pkg install python && pip install "yt-dlp[default]"` (aşağıda "yt-dlp").
+   İsteğe bağlı ama önerilir: `pkg install python && pip install "yt-dlp[default]" gallery-dl`
+   (aşağıda "yt-dlp" ve "gallery-dl").
    `start-termux.sh` Chromium'u bulur, bağımlılıkları kurar, telefonun uyutmasını engeller
    (`termux-wake-lock`), sunucuyu başlatır ve İndirici'yi Chrome'da açar.
 3. Bundan sonra: **Termux'u aç → İndirici kendiliğinden açılır.** Algıla → 🖥️ Kendi sunucum
@@ -243,3 +244,26 @@ YouTube'un imza çözümü için yt-dlp'ye sunucunun kendi Node.js'i verilir (`-
 Gizlilik: yt-dlp yalnızca videosunu istediğin siteye bağlanır; telemetri yok, kendiliğinden güncelleme
 denetimi yok, uzaktan bileşen indirmesi kapalı. Kayıtlı girişler (çerezler) geçici, yalnızca sahibinin
 okuyabildiği bir dosyayla verilir ve iş bitince silinir.
+
+## gallery-dl (resimler için veri katmanı)
+
+Kuruluysa Resimler ekranı bir sayfa adresi gelince önce gallery-dl'e sorar (`gallery-dl -J`):
+Instagram, X, Pinterest, Reddit, Tumblr, DeviantArt, Imgur gibi ~300 sitede küçültülmüş önizlemeler
+yerine **tam boyutlu** resimler ve kaydırmalı galerinin tamamı gelir (en fazla 500 resim). gallery-dl
+**yalnızca adresleri verir**, dosya indirmez; göstermek, seçmek ve (ZIP) indirmek Resimler ekranındadır.
+Resim sunucuları çoğu zaman sayfanın Referer'ını istediğinden önizleme ve indirme gerekirse `/fetch`
+üzerinden o Referer'la yapılır. Site tanınmazsa eski yol (sayfa taraması + sunucudaki tarayıcı) sürer.
+
+```bash
+pip install gallery-dl        # Termux (python kuruluysa)
+pip install -U gallery-dl     # güncelleme
+```
+
+| Değişken | Anlamı |
+|---|---|
+| `GALLERYDL=0` | gallery-dl kullanılmaz |
+| `GALLERYDL_PATH` | gallery-dl başka bir yerdeyse yolu |
+
+Gizlilik: yalnızca resimlerini istediğin siteye bağlanır; telemetri yok, güncelleme denetimi yalnızca
+elle `-U` ile. Kayıtlı girişler yt-dlp'deki gibi geçici bir çerez dosyasıyla verilir. Lisansı GPL-2.0;
+kodu kopyalanmadan ayrı bir program olarak çalıştırılır.

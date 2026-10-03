@@ -37,6 +37,7 @@ import { createRecorder } from './recorder.mjs';
 import { createCapturer } from './capture.mjs';
 import { createLoginStore } from './logins.mjs';
 import { findYtdlp, extractInfo, normalizeInfo } from './ytdlp.mjs';
+import { findGalleryDl, extractImages } from './gallerydl.mjs';
 import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -928,7 +929,8 @@ const server = http.createServer(async (req, res) => {
     try {
         if (url.pathname === '/health' && req.method === 'GET') {
             return sendJson(res, 200, { ok: true, name: 'indirici-render-server', version: VERSION, adblock: adblockStatus(), logins: { enabled: logins.enabled, sites: logins.sites().length },
-                ytdlp: await findYtdlp().then((t) => (t ? { version: t.version } : null)) });
+                ytdlp: await findYtdlp().then((t) => (t ? { version: t.version } : null)),
+                gallerydl: await findGalleryDl().then((t) => (t ? { version: t.version } : null)) });
         }
 
         if (url.pathname === '/extract' && req.method === 'POST') {
@@ -941,6 +943,21 @@ const server = http.createServer(async (req, res) => {
             }
             await assertPublicTarget(target);
             return sendJson(res, 200, await extractWithYtdlp(target.href));
+        }
+
+        if (url.pathname === '/images' && req.method === 'POST') {
+            const body = await readJson(req);
+            let target;
+            try {
+                target = new URL(body.url);
+            } catch (_) {
+                return sendJson(res, 400, { error: 'Geçerli bir url gönderin' });
+            }
+            await assertPublicTarget(target);
+            const result = await extractImages(target.href, { cookies: logins.storageState()?.cookies || [] });
+            // Resim sunucuları çoğu zaman sayfanın Referer'ını ister (/fetch bunu kullanır).
+            for (const item of result.items || []) rememberReferer(item.url, target.href);
+            return sendJson(res, 200, result);
         }
 
         const streamMatch = url.pathname.match(/^\/stream\/([0-9a-f]{24})$/);

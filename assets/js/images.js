@@ -1,6 +1,6 @@
 // "Resimler" ekranı: bir sayfadaki görselleri bulur, boyutlarını okur, seçtiklerini indirir
 // (tek tek ya da tek ZIP olarak).
-import { $, escapeHtml, isHttpUrl, smartFetch, formatSize, fileNameFromUrl, getRenderServer, renderSniff, saveBlob, proxyUrl } from './util.js';
+import { $, escapeHtml, isHttpUrl, smartFetch, formatSize, fileNameFromUrl, getRenderServer, renderSniff, renderImages, saveBlob, proxyUrl } from './util.js';
 import { findImages, mergeImages } from './detect.js';
 import { addJob, effectiveSaveMode, createSink } from './downloads.js';
 import { getPrefs } from './prefs.js';
@@ -22,6 +22,7 @@ export function initImagesTab({ toast }) {
     let showSmall = false;
     let asZip = true;
     let pageTitle = '';
+    let source = '';         // resimleri kim buldu (gallery-dl ise site adıyla)
     let seq = 0;
 
     scanBtn.addEventListener('click', () => scan(urlInput.value.trim()));
@@ -44,9 +45,24 @@ export function initImagesTab({ toast }) {
         selected = new Set();
         typeFilter = 'all';
         pageTitle = title;
+        source = '';
         resultBox.innerHTML = '';
         try {
-            let urls = known;
+            let urls = null;
+            const names = new Map();
+            // Önce gallery-dl (sunucuda kuruluysa): bilinen sitelerde tam boyutlu resimler ve galerinin tamamı.
+            if (getRenderServer()) {
+                setBusy('Resimler aranıyor (gallery-dl)...');
+                const found = await renderImages(url).catch(() => null);
+                if (mySeq !== seq) return;
+                if (found && found.ok && found.items.length) {
+                    urls = found.items.map((i) => i.url);
+                    for (const i of found.items) if (i.name) names.set(i.url, i.name);
+                    if (found.title && !pageTitle) pageTitle = found.title;
+                    source = `gallery-dl${found.site ? ' · ' + found.site : ''}`;
+                }
+            }
+            if (!urls) urls = known;
             if (!urls) {
                 setBusy('Sayfa okunuyor...');
                 urls = await collect(url, (text) => mySeq === seq && setBusy(text));
@@ -57,7 +73,11 @@ export function initImagesTab({ toast }) {
                 resultBox.innerHTML = '<div class="empty">Bu sayfada resim bulunamadı.</div>';
                 return;
             }
-            items = urls.map((u) => ({ url: u, page: url, name: fileNameFromUrl(u), type: typeOf(u), w: 0, h: 0, size: 0, loaded: false }));
+            items = urls.map((u) => {
+                const name = names.get(u) || fileNameFromUrl(u);
+                const type = typeOf(u);
+                return { url: u, page: url, name, type: type === 'IMG' ? typeOf(name) : type, w: 0, h: 0, size: 0, loaded: false };
+            });
             setBusy(`${items.length} resim inceleniyor...`);
             render();
             await probeAll(items, url, () => mySeq === seq && renderSoon());
@@ -147,7 +167,7 @@ export function initImagesTab({ toast }) {
         const broken = pool.filter((it) => it.failed).length;
 
         resultBox.innerHTML = `
-            ${pageTitle ? `<div class="res-meta" style="margin-top:-4px">${escapeHtml(pageTitle)}</div>` : ''}
+            ${pageTitle || source ? `<div class="res-meta" style="margin-top:-4px">${escapeHtml([pageTitle, source && `(${source})`].filter(Boolean).join(' '))}</div>` : ''}
             <div class="img-count-row"><span class="img-count">${pool.length} resim bulundu</span>
                 <button class="link-btn" data-act="small" style="color:var(--mt);font-weight:500">${showSmall
                     ? 'Simgeler gösteriliyor'
