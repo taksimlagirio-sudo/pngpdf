@@ -98,7 +98,13 @@ export function grabFrame(video, maxWidth = 480) {
         canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
         canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
         canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-        return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob ? URL.createObjectURL(blob) : null), 'image/jpeg', 0.75));
+        return new Promise((resolve) => {
+            try {
+                canvas.toBlob((blob) => resolve(blob ? URL.createObjectURL(blob) : null), 'image/jpeg', 0.75);
+            } catch (_) {
+                resolve(null); // tuval CORS nedeniyle okunamıyor (toBlob burada fırlatır)
+            }
+        });
     } catch (_) {
         return Promise.resolve(null); // tuval CORS nedeniyle okunamıyor
     }

@@ -70,7 +70,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
      * `pair`: sayfada ayrı bulunan ses playlist'i (görüntüyle birleştirilecek).
      * `page`: bağlantının bulunduğu sayfa — bağlantı inmezse video o sayfayla açılıp kaydedilir.
      */
-    async function analyze(url, { pair = null, page = null, title = '' } = {}) {
+    async function analyze(url, { pair = null, page = null, title = '', noExtract = false } = {}) {
         if (!isHttpUrl(url)) {
             setError('Geçerli bir http(s) adresi girin.');
             return;
@@ -88,6 +88,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
         try {
             const result = await analyzeUrl(url, {
                 mode: getPrefs().conn,
+                noExtract,
                 onStage: (text) => mySeq === seq && setBusy(text)
             });
             if (mySeq !== seq) return;
@@ -520,6 +521,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
                 <div class="res-meta">Web sayfası${counts.length ? ' · ' + counts.join(', ') : ''}${source}</div>
             </div>
             ${table}
+            ${d.fromYtdlp ? `<button class="btn-ghost" data-act="rescan" style="height:46px">Bulunanlar doğru değil mi? Sayfayı kendi yöntemimizle tara</button>` : ''}
             ${warningsHtml()}
             ${captureHtml(!links.length)}
             ${canRemote() ? `<button class="btn-ghost" data-act="remote" style="height:46px">Sayfayı aç, kendim dokunayım</button>` : ''}
@@ -578,6 +580,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
         }
         if (act === 'capture') return startCapture(btn.dataset.url || info.url);
         if (!info) return;
+        if (act === 'rescan') return analyze(info.url, { noExtract: true });
         if (act === 'images') return openImages(info.url, info.details.images || [], info.details.title);
         if (act === 'remote') {
             btn.classList.add('hidden');

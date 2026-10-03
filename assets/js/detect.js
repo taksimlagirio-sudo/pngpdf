@@ -174,7 +174,7 @@ export function mergeImages(a, b) {
  * Adresi analiz eder. Küçük bir parça indirip başlıklar + magic number ile karar verir.
  * HLS ise playlist ayrıştırılır, resim/video ise boyut ve süre okunmaya çalışılır.
  */
-export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {} } = {}) {
+export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {}, noExtract = false } = {}) {
     onStage('Bağlanılıyor...');
 
     let access = 'direct';
@@ -198,7 +198,7 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
         if (!getRenderServer() || err.mediaLike) throw err;
         onStage('Bağlantı doğrudan okunamadı, kendi sunucunda açılıyor...');
         const result = basePageResult(url);
-        await sniffOnServer(result, url, signal, onStage);
+        await sniffOnServer(result, url, signal, onStage, { noExtract });
         // Uzantısız video bağlantıları (…/videoplayback?…) ve erişimi kapalı bağlantılar: sunucudaki
         // tarayıcıya göre video ya da hata döndüyse sayfa değil, açılmayan video bağlantısı sayılır.
         const main = result.details.main;
@@ -252,7 +252,7 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
         result.downloadable = false;
         result.target = 'page';
         onStage('Sayfadaki medya aranıyor...');
-        await scanPage(result, url, mode, signal, onStage);
+        await scanPage(result, url, mode, signal, onStage, { noExtract });
     } else if (info.kind === 'dash') {
         result.downloadable = false;
         result.warnings.push('DASH (.mpd) yayınları bu araçta desteklenmiyor; HLS (.m3u8) adresi varsa onu kullanın.');
@@ -268,7 +268,7 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
 }
 
 /** Sayfayı (ve gerekirse script dosyalarını) tarayıp medya adreslerini bulur. */
-async function scanPage(result, url, mode, signal, onStage) {
+async function scanPage(result, url, mode, signal, onStage, { noExtract = false } = {}) {
     const res = await smartFetch(url, { mode, init: { signal } });
     const html = await res.text();
 
@@ -284,7 +284,7 @@ async function scanPage(result, url, mode, signal, onStage) {
     // adresleri ancak böyle görebiliriz. Statik taramanın bulduklarıyla birleştirilir.
     if (getRenderServer()) {
         result.details.links = links;
-        await sniffOnServer(result, url, signal, onStage);
+        await sniffOnServer(result, url, signal, onStage, { noExtract });
         return;
     }
 
@@ -337,9 +337,22 @@ function basePageResult(url) {
     };
 }
 
-async function sniffOnServer(result, url, signal, onStage) {
+// yt-dlp'nin siteye özel olmayan çıkarıcıları: sayfayı yalnızca okurlar, oynatıcıyı çalıştırmazlar.
+// Böyle sayfalarda bizim yöntem (sayfayı tarayıcıda açıp oynatıcının isteklerini dinlemek) daha
+// doğrudur; yt-dlp'nin sonucu yalnızca bizimki bir şey bulamazsa kullanılır.
+const GENERIC_EXTRACTOR = /^(generic|html5mediaembed)$/i;
+
+async function sniffOnServer(result, url, signal, onStage, { noExtract = false } = {}) {
     // Önce yt-dlp (sunucuda kuruluysa): bilinen sitelerde gerçek kalite listesini verir.
-    if (await extractOnServer(result, url, signal, onStage)) return;
+    let backup = null;
+    if (!noExtract) {
+        const extracted = await extractOnServer(url, signal, onStage);
+        if (extracted && !GENERIC_EXTRACTOR.test(extracted.extractor || '')) {
+            applyExtracted(result, extracted);
+            return;
+        }
+        backup = extracted;
+    }
     onStage('Sayfa kendi sunucunda çalıştırılıyor (oynatıcının istekleri bekleniyor)...');
     try {
         const sniffed = await renderSniff(url, { signal });
@@ -361,36 +374,58 @@ async function sniffOnServer(result, url, signal, onStage) {
         result.details.fromRender = sniffed.items.length > 0;
         result.details.images = mergeImages(result.details.images || [], sniffed.items.filter((i) => i.kind === 'image').map((i) => i.url));
 
+        if (backup) {
+            // Bizim bulduklarımız önce; yt-dlp'nin bulup bizim bulamadıkları ardından. Uygulamanın
+            // desteklemediği DASH (.mpd) adresleri, yt-dlp onları zaten indirilebilir akışlara ayırdığı için düşer.
+            const ours = result.details.links.filter((l) => l.kind !== 'dash');
+            // Aynı video iki kez çıkmasın: yt-dlp akışının asıl adresi (source) bizimkiyle karşılaştırılır.
+            const extra = extractedLinks(backup).filter((l) => !ours.some((o) => o.url === l.url || (l.source && o.url === l.source)));
+            result.details.links = [...ours, ...extra];
+            if (!result.details.title && backup.title) result.details.title = backup.title;
+            if (!ours.length) {
+                result.details.fromYtdlp = true;
+                result.details.extractor = backup.extractor || '';
+                result.details.thumbnail = backup.thumbnail || '';
+            }
+            if (result.details.links.length) return;
+        }
         if (result.details.links.length === 0) {
             result.warnings.push('Sayfa kendi sunucunda çalıştırıldı, oynat düğmesine de basıldı ama medya isteği ' +
                 'görülmedi. Sayfa birkaç tıklama ya da onay istiyorsa aşağıdaki "👆 Sayfayı aç, kendim dokunayım" ' +
                 'ile kendin geç. Yayın kapalıysa, giriş gerekiyorsa, WebRTC ile geliyorsa veya DRM korumalıysa bulunamaz.');
         }
     } catch (err) {
+        if (backup) return applyExtracted(result, backup);
         result.warnings.push(`Kendi sunucuna ulaşılamadı: ${err.message}`);
     }
 }
 
-/** yt-dlp ile çözümleme; video bulunduysa true (sayfa ayrıca açılmaz). */
-async function extractOnServer(result, url, signal, onStage) {
+/** yt-dlp ile çözümleme; video bulunduysa sonucu döner, yoksa null. */
+async function extractOnServer(url, signal, onStage) {
     onStage('Sayfa çözümleniyor (yt-dlp)...');
     let extracted;
     try {
         extracted = await renderExtract(url, { signal });
     } catch (err) {
         if (err.name === 'AbortError') throw err;
-        return false; // eski sunucu ya da hata: tarayıcıyla açma yolu sürer
+        return null; // eski sunucu ya da hata: tarayıcıyla açma yolu sürer
     }
-    if (!extracted || !extracted.ok || !extracted.items.length) return false;
+    return extracted && extracted.ok && extracted.items.length ? extracted : null;
+}
+
+function extractedLinks(extracted) {
+    return extracted.items.map((item) => ({
+        url: item.url, source: item.source || '', kind: item.kind, size: item.size || 0, height: item.height || 0, audioUrl: item.audioUrl || null,
+        variants: item.variants || 0, live: Boolean(item.live), duration: extracted.duration || 0, fromYtdlp: true
+    }));
+}
+
+function applyExtracted(result, extracted) {
     if (extracted.title) result.details.title = extracted.title;
     result.details.thumbnail = extracted.thumbnail || '';
     result.details.extractor = extracted.extractor || '';
     result.details.fromYtdlp = true;
-    result.details.links = extracted.items.map((item) => ({
-        url: item.url, kind: item.kind, size: item.size || 0, height: item.height || 0, audioUrl: item.audioUrl || null,
-        variants: item.variants || 0, live: Boolean(item.live), duration: extracted.duration || 0, fromYtdlp: true
-    }));
-    return true;
+    result.details.links = extractedLinks(extracted);
 }
 
 const MAX_SCRIPTS = 4;

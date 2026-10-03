@@ -2,7 +2,7 @@
 // (tek tek ya da tek ZIP olarak).
 import { $, escapeHtml, isHttpUrl, smartFetch, formatSize, fileNameFromUrl, getRenderServer, renderSniff, renderImages, saveBlob, proxyUrl } from './util.js';
 import { findImages, mergeImages } from './detect.js';
-import { addJob, effectiveSaveMode, createSink } from './downloads.js';
+import { addJob, effectiveSaveMode, createSink, canShareFiles } from './downloads.js';
 import { getPrefs } from './prefs.js';
 import { createZip } from './zip.js';
 
@@ -20,7 +20,7 @@ export function initImagesTab({ toast }) {
     let selected = new Set();
     let typeFilter = 'all';
     let showSmall = false;
-    let asZip = true;
+    let asZip = false;       // toplu indirme varsayılan olarak her resim ayrı dosya
     let pageTitle = '';
     let source = '';         // resimleri kim buldu (gallery-dl ise site adıyla)
     let seq = 0;
@@ -191,7 +191,7 @@ export function initImagesTab({ toast }) {
             <div class="selbar">
                 <div class="selbar-text">${sel.length} seçili${selBytes ? ' · ' + formatSize(selBytes) : ''}<br>
                     <button class="link-btn" data-act="all">${allVisSel ? 'Seçimi kaldır' : 'Tümünü seç'}</button>
-                    ${sel.length > 1 ? ` · <button class="link-btn" data-act="zip" style="color:var(--mt)">${asZip ? 'ZIP olarak' : 'Tek tek'} ›</button>` : ''}</div>
+                    ${sel.length > 1 ? ` · <button class="link-btn" data-act="zip" style="color:var(--mt)">${asZip ? 'Tek ZIP dosyası' : 'Ayrı ayrı dosyalar'} ›</button>` : ''}</div>
                 <button class="btn-ac" data-act="download" ${sel.length ? '' : 'disabled'}>${sel.length
                     ? `${sel.length} resmi indir${sel.length > 1 && asZip ? ' (ZIP)' : ''}` : 'Resim seçin'}</button>
             </div>`;
@@ -224,8 +224,45 @@ export function initImagesTab({ toast }) {
         const zip = chosen.length > 1 && asZip;
         const base = (pageTitle || 'resimler').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 60).trim() || 'resimler';
 
+        const saveMode0 = effectiveSaveMode(getPrefs().save);
+        if (!zip && chosen.length > 1 && saveMode0 === 'gallery' && canShareFiles) {
+            // Galeri: her resim için ayrı "Galeriye" dokunuşu yerine hepsi tek işte, tek dokunuşla.
+            addJob({
+                name: `${chosen.length} resim`,
+                kind: 'image',
+                thumb: chosen[0].src || chosen[0].url,
+                saveMode: 'gallery',
+                run: async (job) => {
+                    const files = [];
+                    const names = new Set();
+                    let failed = 0;
+                    for (let i = 0; i < chosen.length; i++) {
+                        if (job.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+                        job.progress(i, chosen.length);
+                        job.detail = `${i}/${chosen.length} resim`;
+                        try {
+                            const data = await fetchImage(job, chosen[i], mode, false);
+                            const name = uniqueName(chosen[i].name, names);
+                            files.push({ name, blob: new Blob([data], { type: mimeOf(name) }) });
+                        } catch (err) {
+                            if (err.name === 'AbortError') throw err;
+                            failed++;
+                        }
+                    }
+                    if (!files.length) throw new Error('Resimler indirilemedi (site izin vermiyor olabilir; Ayarlar → Kendi sunucum)');
+                    job.files = files;
+                    job.attachResult(files[0].blob);
+                    job.progress(chosen.length, chosen.length);
+                    const bytes = files.reduce((n, f) => n + f.blob.size, 0);
+                    job.done(`${files.length} resim · ${formatSize(bytes)}${failed ? ` · ${failed} indirilemedi` : ''} · "Galeriye" ile hepsi birden`);
+                }
+            });
+            toast(`${chosen.length} resim hazırlanıyor · İndirmeler`);
+            return;
+        }
+
         if (!zip) {
-            // Her resim ayrı bir iş; kuyruk aynı anda kaç tanesinin ineceğini sınırlar.
+            // Her resim ayrı bir iş (ayrı dosya); kuyruk aynı anda kaç tanesinin ineceğini sınırlar.
             for (const it of chosen) {
                 addJob({
                     name: it.name,
@@ -315,6 +352,12 @@ async function fetchImage(job, it, mode, save) {
     job.attachResult(blob);
     job.done(formatSize(blob.size));
     return null;
+}
+
+function mimeOf(name) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    return { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
+        svg: 'image/svg+xml', avif: 'image/avif', bmp: 'image/bmp' }[ext] || 'image/jpeg';
 }
 
 function uniqueName(name, used) {
