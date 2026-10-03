@@ -42,8 +42,18 @@ let engineKind = process.env.ADBLOCK === '0' ? 'off' : 'loading';
 let enginePromise = null;
 
 /** Uygulamada gösterilecek durum: kapalı / hazır listeler / yerleşik liste. */
+// Sunucu açıldığından beri sayaçlar (Ayarlar'da gösterilir).
+const stats = { blocked: 0, videoAds: 0, since: Date.now() };
+const VIDEO_AD = /\.(mp4|webm|m3u8|mpd)(\?|$)|vast|vmap|ima3|imasdk|preroll|videoad/i;
+
 export function adblockStatus() {
-    return { enabled: engineKind !== 'off', engine: engineKind, builtinHosts: AD_HOSTS.length };
+    return { enabled: engineKind !== 'off', engine: engineKind, builtinHosts: AD_HOSTS.length,
+        blocked: stats.blocked, videoAds: stats.videoAds, since: stats.since };
+}
+
+/** Sayfadan ayıklanan (reklam olduğu anlaşılan) video sayılır. */
+export function countVideoAd(n = 1) {
+    stats.videoAds += n;
 }
 /** Ghostery motoru (kuruluysa); listeler sunucu açılışında bir kez indirilir. */
 function getEngine() {
@@ -113,6 +123,8 @@ export async function installRouting(context, { onBlocked = () => {}, needsCors 
         // bir reklam adresine gitmeye çalışırsa (tıklama ele geçirme) engellenir.
         const pageAlreadyOpen = isTopDocument && /^https?:/i.test(frameUrl);
         if ((!isTopDocument || pageAlreadyOpen) && await isAdRequest(url, frameUrl, isTopDocument ? 'document' : request.resourceType())) {
+            stats.blocked++;
+            if (request.resourceType() === 'media' || VIDEO_AD.test(url)) stats.videoAds++;
             onBlocked(url, isTopDocument);
             return route.abort('blockedbyclient').catch(() => {});
         }

@@ -184,12 +184,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         resultBox.innerHTML = `
             <div class="card card-pad method-choice">
                 <div><div class="toggle-row-title">Bu bir ${escapeHtml(name)} bağlantısı. Nasıl bakalım?</div>
-                <div class="toggle-row-sub">yt-dlp ${escapeHtml(name)} için özel yazılmış yöntemle videoyu ve kaliteleri bulur.
-                    Kendi yöntemimiz sayfayı sunucundaki tarayıcıda açıp oynatıcının isteklerini dinler.
-                    yt-dlp alamazsa kendiliğinden bizim yönteme geçilir.</div></div>
+                <div class="toggle-row-sub">Gelişmiş bulma ${escapeHtml(name)} için özel yazılmış yöntemle videoyu ve tüm kaliteleri bulur.
+                    Sayfayı aç ise sayfayı sunucundaki tarayıcıda açıp oynatıcının isteklerini dinler.
+                    Gelişmiş bulma alamazsa kendiliğinden sayfa açılır.</div></div>
                 <div class="btn-row">
-                    <button class="btn-ac" data-method="ytdlp">yt-dlp ile</button>
-                    <button class="btn-ghost" data-method="ours" style="height:46px">Kendi yöntemimiz</button>
+                    <button class="btn-ac" data-method="ytdlp">Gelişmiş bulma</button>
+                    <button class="btn-ghost" data-method="ours" style="height:46px">Sayfayı aç</button>
                 </div>
                 <label class="remember-row"><input type="checkbox" data-remember>
                     <span>${escapeHtml(name)} için seçimimi hatırla</span></label>
@@ -805,7 +805,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                     <div style="flex:1;min-width:0">
                         <div class="res-title">${escapeHtml(ui.name || info.suggestedName)}</div>
                         <div class="res-meta">${escapeHtml(metaLine())}</div>
-                        <div class="res-url">${escapeHtml(isServerStream(info.url) ? (ui.sourcePage || 'yt-dlp') : info.url)}</div>
+                        <div class="res-url">${escapeHtml(isServerStream(info.url) ? (ui.sourcePage || 'gelişmiş bulma') : info.url)}</div>
                     </div>
                 </div>
                 ${body}

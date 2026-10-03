@@ -2641,3 +2641,17 @@ html.remote-open, html.remote-open body { overflow: hidden; }
     .rv-side { position: sticky; top: 0; }
     .rv-item { flex-wrap: wrap; }
 }
+
+/* Ayarlar: reklam sayaçları, "neyi görür" */
+.ad-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ad-stats > div { display: flex; flex-direction: column; gap: 4px; padding: 12px; border-radius: 14px; background: var(--sf2); }
+.ad-stats b { font: 600 22px/1 var(--mono); letter-spacing: -.02em; }
+.ad-stats span { font-size: 12px; color: var(--mt); }
+.what-box { border-top: 1px solid var(--ln); padding-top: 10px; }
+.what-box summary { cursor: pointer; font-size: 13.5px; font-weight: 500; list-style: none; display: flex; justify-content: space-between; }
+.what-box summary::-webkit-details-marker { display: none; }
+.what-box summary::after { content: '+'; color: var(--mt); }
+.what-box[open] summary::after { content: '−'; }
+.row-sub { display: block; font-size: 12px; white-space: normal; line-height: 1.35; margin-top: 2px; }
+.row .row-value:has(.row-sub) { white-space: normal; min-width: 0; flex: 1; }
+.row:has(.row-sub) { height: auto; min-height: 56px; padding-top: 12px; padding-bottom: 12px; gap: 12px; }

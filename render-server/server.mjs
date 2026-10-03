@@ -39,7 +39,7 @@ import { createLoginStore } from './logins.mjs';
 import { findYtdlp, extractInfo, normalizeInfo } from './ytdlp.mjs';
 import { findGalleryDl, extractImages } from './gallerydl.mjs';
 import { createCookieJar } from './cookiejar.mjs';
-import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus } from './adblock.mjs';
+import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '0.4.0';
@@ -463,6 +463,7 @@ async function sniff(pageUrl, waitMs) {
     const items = [];
     for (const item of foundItems(state)) {
         if (!(await isAdRequest(item.url, pageUrl, 'media'))) items.push(item);
+        else countVideoAd();
     }
     return { title, finalUrl, items, main, blockedAds: state.blockedAds, elapsedMs: Date.now() - started };
 }

@@ -417,7 +417,7 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
         result.details.fromRender = sniffed.items.length > 0;
         result.details.images = mergeImages(result.details.images || [], sniffed.items.filter((i) => i.kind === 'image').map((i) => i.url));
 
-        if (result.details.links.length === 0 && ytdlpReason) result.warnings.push(`yt-dlp alamadı: ${ytdlpReason}`);
+        if (result.details.links.length === 0 && ytdlpReason) result.warnings.push(`Gelişmiş bulma alamadı: ${ytdlpReason}`);
         if (result.details.links.length === 0) {
             result.warnings.push('Sayfa kendi sunucunda çalıştırıldı, oynat düğmesine de basıldı ama medya isteği ' +
                 'görülmedi. Sayfa birkaç tıklama ya da onay istiyorsa aşağıdaki "👆 Sayfayı aç, kendim dokunayım" ' +
@@ -430,7 +430,7 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
 
 /** yt-dlp ile çözümleme: sunucunun yanıtı (ok/items ya da ok:false + reason); yt-dlp yoksa null. */
 async function extractOnServer(url, signal, onStage) {
-    onStage('Sayfa çözümleniyor (yt-dlp)...');
+    onStage('Gelişmiş bulma ile çözümleniyor...');
     let extracted;
     try {
         extracted = await renderExtract(url, { signal });

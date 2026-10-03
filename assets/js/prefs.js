@@ -10,6 +10,7 @@ const DEFAULTS = {
     keepAwake: true,      // kayıt/indirme sürerken ekranı açık tut (wake lock)
     recWhere: 'server',   // canlı kayıt: 'server' (kendi sunucum) | 'device'
     useYtdlp: false,      // büyük platformlar dışındaki sitelerde de önce yt-dlp'ye sor (sunucuda kuruluysa)
+    fullGalleries: true,  // Resimler: bilinen sitelerde galerinin tamamı ve tam boyut (sunucuda gallery-dl)
     bigSites: 'ask',      // TikTok, Instagram, YouTube…: 'ask' (sor) | 'ytdlp' | 'ours' (kendi yöntemimiz)
     siteMethods: {}       // "bu site için hatırla": { 'tiktok.com': 'ytdlp' | 'ours' }
 };

@@ -3,7 +3,7 @@ import { $, isHttpUrl, getRenderServer, setRenderServer, checkRenderServer, rend
 import { getPrefs, setPref, onPrefs, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch } from './downloads.js';
 
-const BIG_LABELS = { ask: 'Sor', ytdlp: 'yt-dlp', ours: 'Kendi yöntemimiz' };
+const BIG_LABELS = { ask: 'Sor', ytdlp: 'Açık', ours: 'Kapalı' };
 
 export function initSettings({ onServerChange, install }) {
     const root = $('settingsView');
@@ -13,6 +13,9 @@ export function initSettings({ onServerChange, install }) {
 
         <div class="settings-sec"><span class="sec-label">Varsayılan indirme</span>
             <div class="rows filled" data-part="defaults"></div></div>
+
+        <div class="settings-sec"><span class="sec-label">Bulma</span>
+            <div class="rows filled" data-part="finding"></div></div>
 
         <div class="settings-sec">
             <div class="settings-sec-head"><span class="sec-label">Kendi sunucum</span>
@@ -39,14 +42,15 @@ export function initSettings({ onServerChange, install }) {
             <div class="server-panel">
                 <span class="hint" id="adblockText">Kendi sunucun ayarlanınca, sunucunun açtığı sayfalarda reklamlar,
                     açılır pencereler ve reklama yönlendirmeler engellenir.</span>
-                <details>
-                    <summary class="link-btn" style="cursor:pointer">Engelleyici neyi görür, neyi görmez?</summary>
+                <div class="ad-stats hidden" id="adStats">
+                    <div><b id="adBlocked">0</b><span>engellenen istek</span></div>
+                    <div><b id="adVideo">0</b><span>atlanan video reklamı</span></div>
+                </div>
+                <details class="what-box">
+                    <summary>Neyi görür, neyi görmez?</summary>
+                    <p class="hint" style="margin:8px 0 0"><strong>Görür:</strong> yalnızca sunucunun açtığı sayfaların istekleri.
+                        <strong>Görmez:</strong> telefonundaki tarayıcı, dosyaların, şifrelerin.</p>
                     <ul class="hint" style="margin:8px 0 0 18px;display:flex;flex-direction:column;gap:6px">
-                        <li><strong>Görür:</strong> yalnızca kendi sunucundaki tarayıcının açtığı sayfaların istek
-                            adresleri — yani indirmek için açtırdığın sayfalar. "Bu adres reklam mı?" kontrolü sunucunun
-                            içinde yapılır; adresler Ghostery'ye ya da başka bir yere gönderilmez.</li>
-                        <li><strong>Görmez:</strong> telefonundaki tarayıcı, gezdiğin siteler, dosyaların, şifrelerin ve bu
-                            uygulamadaki ayarların. Telefon uygulamasında engelleyici hiç çalışmaz.</li>
                         <li><strong>Bağlandığı tek yer:</strong> sunucu açılırken reklam listelerini GitHub'dan
                             (ghostery/adblocker) indirir; bu sırada GitHub yalnızca sunucunun IP adresini görür.</li>
                         <li>Açık kaynak (MPL-2.0). Tamamen kapatmak için sunucuyu <code>ADBLOCK=0</code> ile başlat.</li>
@@ -62,8 +66,8 @@ export function initSettings({ onServerChange, install }) {
                 <span class="hint" id="loginsText">Bir siteye "Kendim dokunayım" ekranında bir kez giriş yaparsan giriş
                     kendi sunucunda saklanır; o sitenin videoları sonra girişli açılır ve kaydedilir.</span>
                 <div class="rows filled hidden" id="loginsList"></div>
-                <span class="hint">Girişler (çerezler) yalnızca kendi sunucundaki <code>.logins.json</code> dosyasında durur,
-                    başka yere gönderilmez. Saklamayı kapatmak için sunucuyu <code>SAVE_LOGINS=0</code> ile başlat.</span>
+                <span class="hint">Yalnızca kendi sunucunda saklanır (<code>.logins.json</code>), başka yere gönderilmez.
+                    Saklamayı kapatmak için sunucuyu <code>SAVE_LOGINS=0</code> ile başlat.</span>
             </div>
         </div>
 
@@ -79,6 +83,8 @@ export function initSettings({ onServerChange, install }) {
     const themeBox = root.querySelector('[data-part="theme"]');
     const defaultsBox = root.querySelector('[data-part="defaults"]');
     const chip = root.querySelector('[data-part="chip"]');
+    const findingBox = root.querySelector('[data-part="finding"]');
+    const sub = (text) => `<span class="muted row-sub">${text}</span>`;
 
     function renderPrefs() {
         const prefs = getPrefs();
@@ -97,15 +103,20 @@ export function initSettings({ onServerChange, install }) {
                 <span class="toggle${prefs.background && bgOk ? ' on' : ''}"></span></button>
             <button class="row" data-set="keepAwake"><span class="row-value" style="font-weight:400">İndirirken ekranı açık tut</span>
                 <span class="toggle${prefs.keepAwake ? ' on' : ''}"></span></button>
-            <button class="row" data-set="bigSites"><span class="row-value" style="font-weight:400">Büyük platformlar
-                <span class="muted" style="display:block;font-size:12px">TikTok, Instagram, YouTube, X… (sunucuda yt-dlp kuruluysa)</span></span>
+`;
+        findingBox.innerHTML = `
+            <button class="row" data-set="bigSites"><span class="row-value" style="font-weight:400">Bilinen sitelerde gelişmiş bulma
+                ${sub('YouTube, Instagram, TikTok, X… kalite listesiyle')}</span>
                 <span class="muted">${BIG_LABELS[prefs.bigSites] || BIG_LABELS.ask} ›</span></button>
             ${remembered.length ? `<button class="row" data-set="resetSites"><span class="row-value" style="font-weight:400">Hatırlanan seçimler
-                <span class="muted" style="display:block;font-size:12px">${remembered.map(([d, m]) => `${d}: ${m === 'ytdlp' ? 'yt-dlp' : 'kendi yöntemimiz'}`).join(', ')}</span></span>
+                ${sub(escapeHtml(remembered.map(([d, m]) => `${d}: ${m === 'ytdlp' ? 'gelişmiş bulma' : 'sayfayı aç'}`).join(', ')))}</span>
                 <span class="muted">Sıfırla</span></button>` : ''}
-            <button class="row" data-set="useYtdlp"><span class="row-value" style="font-weight:400">Diğer sitelerde de yt-dlp dene
-                <span class="muted" style="display:block;font-size:12px">Kapalıyken diğer sayfalar doğrudan sunucunda taranır</span></span>
-                <span class="toggle${prefs.useYtdlp ? ' on' : ''}"></span></button>`;
+            <button class="row" data-set="useYtdlp"><span class="row-value" style="font-weight:400">Diğer sitelerde de gelişmiş bulma
+                ${sub('Kapalıyken diğer sayfalar doğrudan sunucunda açılıp taranır')}</span>
+                <span class="toggle${prefs.useYtdlp ? ' on' : ''}"></span></button>
+            <button class="row" data-set="fullGalleries"><span class="row-value" style="font-weight:400">Galerilerin tamamı
+                ${sub('Resimlerde tam boyut ve tüm sayfalar')}</span>
+                <span class="toggle${prefs.fullGalleries !== false ? ' on' : ''}"></span></button>`;
     }
 
     root.addEventListener('click', (e) => {
@@ -126,6 +137,7 @@ export function initSettings({ onServerChange, install }) {
         if (key === 'background') setPref('background', !prefs.background);
         if (key === 'keepAwake') setPref('keepAwake', !prefs.keepAwake);
         if (key === 'useYtdlp') setPref('useYtdlp', !prefs.useYtdlp);
+        if (key === 'fullGalleries') setPref('fullGalleries', prefs.fullGalleries === false);
         if (key === 'bigSites') {
             const order = ['ask', 'ytdlp', 'ours'];
             setPref('bigSites', order[(order.indexOf(prefs.bigSites) + 1) % order.length]);
@@ -144,6 +156,12 @@ export function initSettings({ onServerChange, install }) {
     const adText = $('adblockText');
     const showAdblock = (health) => {
         const ab = health && health.adblock;
+        const hasStats = Boolean(ab && ab.enabled && typeof ab.blocked === 'number');
+        $('adStats').classList.toggle('hidden', !hasStats);
+        if (hasStats) {
+            $('adBlocked').textContent = ab.blocked.toLocaleString('tr-TR');
+            $('adVideo').textContent = ab.videoAds.toLocaleString('tr-TR');
+        }
         if (!health) {
             adChip.textContent = 'Sunucu yok';
             adChip.classList.remove('on');
@@ -250,9 +268,20 @@ export function initSettings({ onServerChange, install }) {
         loadLogins(null);
     });
 
+    /** Ayarlar açılınca sayaçlar ve girişler tazelenir. */
+    function refresh() {
+        const server = getRenderServer();
+        if (!server) return;
+        checkRenderServer(server).then((health) => {
+            showAdblock(health);
+            loadLogins(health);
+        }).catch(() => {});
+    }
+
     /* ---- Ana ekrana ekle ---- */
     const installRow = $('installRow');
     install.onAvailable((available) => installRow.classList.toggle('hidden', !available));
     installRow.addEventListener('click', () => install.prompt());
     if (install.iosHint) $('iosInstallHint').classList.remove('hidden');
+    return { refresh };
 }
