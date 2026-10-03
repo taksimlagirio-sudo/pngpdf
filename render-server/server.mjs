@@ -39,6 +39,7 @@ import { createLoginStore } from './logins.mjs';
 import { findYtdlp, extractInfo, normalizeInfo } from './ytdlp.mjs';
 import { findGalleryDl, extractImages } from './gallerydl.mjs';
 import { createCookieJar } from './cookiejar.mjs';
+import { pairPage, redeemCode } from './pairing.mjs';
 import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -930,6 +931,13 @@ function serveStatic(req, res, file) {
 // Token yalnızca bu cihazın kendisinden açılan, aynı kökenli sayfaya verilir. Host başlığı
 // kontrolü, kötü niyetli bir sitenin alan adını 127.0.0.1'e çözdürüp (DNS rebinding) token'ı
 // okumasını engeller; tarayıcıdaki başka sitelerin istekleri de Sec-Fetch-Site ile ayıklanır.
+function pairPageAllowed(req) {
+    const host = (req.headers.host || '').toLowerCase();
+    const loopback = [`127.0.0.1:${PORT}`, `localhost:${PORT}`, `[::1]:${PORT}`].includes(host);
+    const site = req.headers['sec-fetch-site'];
+    return loopback && (!site || site === 'none' || site === 'same-origin');
+}
+
 function localConfigAllowed(req) {
     const host = (req.headers.host || '').toLowerCase();
     const loopback = [`127.0.0.1:${PORT}`, `localhost:${PORT}`, `[::1]:${PORT}`].includes(host);
@@ -1073,12 +1081,36 @@ const server = http.createServer(async (req, res) => {
         const file = staticFile(url.pathname);
         if (file) return serveStatic(req, res, file);
 
+        if (url.pathname === '/baglan') {
+            // Token'ı gösteren sayfa: yalnızca sunucunun çalıştığı cihazdan açılır.
+            if (!pairPageAllowed(req)) {
+                res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+                return res.end('Bu sayfa yalnızca sunucunun çalıştığı cihazda açılır: http://127.0.0.1:' + PORT + '/baglan');
+            }
+            const html = await pairPage({
+                host: HOST, port: PORT, token: TOKEN, version: VERSION,
+                stats: [
+                    `Reklam engeli: ${adblockStatus().enabled ? 'açık' : 'kapalı'}`,
+                    `Girişler: ${logins.sites().length} site`
+                ]
+            });
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY' });
+            return res.end(html);
+        }
+
         if (url.pathname === '/local-config') {
             // Bilerek CORS başlığı YOK: başka bir site bu yanıtı okuyamasın.
             const ok = localConfigAllowed(req);
             res.writeHead(ok ? 200 : 403, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
             return res.end(JSON.stringify(ok ? { token: TOKEN } : { error: 'Yalnızca bu cihazdan açılan uygulamaya verilir' }));
         }
+    }
+
+    if (url.pathname === '/pair' && req.method === 'POST') {
+        // QR'daki tek kullanımlık kod karşılığında token verilir.
+        const body = await readJson(req, 4096).catch(() => ({}));
+        if (!redeemCode(body && body.code)) return sendJson(res, 403, { error: 'Kod geçersiz ya da süresi doldu; sunucudaki sayfayı yenileyip yeniden okut' });
+        return sendJson(res, 200, { token: TOKEN, version: VERSION });
     }
 
     if (!authorized(req, url)) {
@@ -1240,6 +1272,7 @@ server.listen(PORT, HOST, () => {
     console.log(`İndirici render sunucusu çalışıyor: http://${HOST}:${PORT}`);
     console.log(`Uygulama: ${APP_URL}  (bu adresten açınca token gerekmez)`);
     console.log(`Token (başka cihaz/adresten bağlanırken): ${TOKEN}`);
+    console.log(`Telefonu QR ile bağlamak için bu cihazda aç: http://127.0.0.1:${PORT}/baglan`);
     if (ALLOW_PRIVATE) console.log('UYARI: ALLOW_PRIVATE=1 — yerel ağ adreslerine erişim açık.');
     openApp();
 });

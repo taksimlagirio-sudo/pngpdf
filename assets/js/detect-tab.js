@@ -66,7 +66,7 @@ const KIND_LABEL = {
 };
 const REC_LIMITS = [['Sınırsız', 0], ['30 dk', 1800], ['1 sa', 3600], ['2 sa', 7200], ['Özel', -1]];
 
-export function initDetectTab({ navigate, toast, openImages, photos = null, install = null }) {
+export function initDetectTab({ navigate, toast, openImages, photos = null, install = null, openSetup = null }) {
     const urlInput = $('detectUrl');
     const analyzeBtn = $('detectBtn');
     const statusBox = $('detectStatus');
@@ -1083,7 +1083,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             else toast('Safari\'de Paylaş → Ana Ekrana Ekle');
             return;
         }
-        if (act === 'setup') return navigate('settings');
+        if (act === 'setup') return openSetup ? openSetup(1) : navigate('settings');
         if (!info) return;
         if (act === 'rescan') return analyze(info.url, { noExtract: true });
         if (act === 'photos-all' && photos) {

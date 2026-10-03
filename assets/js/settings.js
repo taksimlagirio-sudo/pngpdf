@@ -5,7 +5,7 @@ import { effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch } f
 
 const BIG_LABELS = { ask: 'Sor', ytdlp: 'Açık', ours: 'Kapalı' };
 
-export function initSettings({ onServerChange, install }) {
+export function initSettings({ onServerChange, install, openSetup = () => {} }) {
     const root = $('settingsView');
     root.innerHTML = `
         <div class="settings-sec"><span class="sec-label">Görünüm</span>
@@ -28,6 +28,10 @@ export function initSettings({ onServerChange, install }) {
                     <input class="input" type="url" id="serverUrl" placeholder="https://bilgisayarim.tailXXXX.ts.net" autocomplete="off"></label>
                 <label class="field"><span class="field-label">Token</span>
                     <input class="input" type="password" id="serverToken" placeholder="Sunucu açılışta yazdırır" autocomplete="off" style="letter-spacing:.1em"></label>
+                <div class="btn-row">
+                    <button class="btn-ghost" id="serverWizardBtn">Kurulum</button>
+                    <button class="btn-ghost" id="serverQrBtn">QR ile bağlan</button>
+                </div>
                 <div class="btn-row">
                     <button class="btn-ghost" id="serverClearBtn">Kapat</button>
                     <button class="btn-ac" id="serverSaveBtn">Kaydet ve test et</button>
@@ -242,6 +246,18 @@ export function initSettings({ onServerChange, install }) {
         showState(false);
     }
 
+    /** Sunucuyu dener; olursa kaydeder ve ekranı günceller (sihirbaz ve QR da bunu kullanır). */
+    async function connect(config) {
+        const health = await checkRenderServer(config);
+        setRenderServer(config);
+        urlInput.value = config.url;
+        tokenInput.value = config.token;
+        showState(true, `Bağlandı (sürüm ${health.version}). Sayfa adresleri artık bu sunucuda açılacak.`, health.version);
+        showAdblock(health);
+        loadLogins(health);
+        return health;
+    }
+
     $('serverSaveBtn').addEventListener('click', async () => {
         const config = { url: urlInput.value.trim().replace(/\/+$/, ''), token: tokenInput.value.trim() };
         if (!isHttpUrl(config.url) || !config.token) {
@@ -250,15 +266,13 @@ export function initSettings({ onServerChange, install }) {
         }
         status.textContent = 'Bağlanılıyor... (Chrome yerel ağ izni isterse "İzin ver"e bas)';
         try {
-            const health = await checkRenderServer(config);
-            setRenderServer(config);
-            showState(true, `Bağlandı (sürüm ${health.version}). Sayfa adresleri artık bu sunucuda açılacak.`, health.version);
-            showAdblock(health);
-            loadLogins(health);
+            await connect(config);
         } catch (err) {
             showState(Boolean(getRenderServer()), `Bağlanılamadı: ${err.message}. Sunucu açık mı, adres https mi (veya 127.0.0.1), token doğru mu?`);
         }
     });
+    $('serverWizardBtn').addEventListener('click', () => openSetup(1));
+    $('serverQrBtn').addEventListener('click', () => openSetup(3));
 
     $('serverClearBtn').addEventListener('click', () => {
         setRenderServer(null);
@@ -283,5 +297,5 @@ export function initSettings({ onServerChange, install }) {
     install.onAvailable((available) => installRow.classList.toggle('hidden', !available));
     installRow.addEventListener('click', () => install.prompt());
     if (install.iosHint) $('iosInstallHint').classList.remove('hidden');
-    return { refresh };
+    return { refresh, connect };
 }

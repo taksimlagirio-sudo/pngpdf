@@ -5,6 +5,7 @@ import { initDownloads, setCurrentView, setFloatOpen, getJobs } from './download
 import { initDetectTab } from './detect-tab.js';
 import { initImagesTab } from './images.js';
 import { initSettings } from './settings.js';
+import { openSetup, parsePairLink, redeemPair } from './setup.js';
 import { restoreServerRecordings } from './serverrec.js';
 import { canFloat, toggleFloatingBar, onFloatStateChange } from './floatbar.js';
 
@@ -117,9 +118,15 @@ const install = {
 };
 
 const imagesTab = initImagesTab({ toast });
+function showSetup(step = 1) {
+    if (!settingsTab) return;
+    openSetup({ connect: (config) => settingsTab.connect(config), toast, step });
+}
+
 const detectTab = initDetectTab({
     navigate,
     toast,
+    openSetup: showSetup,
     photos: imagesTab,
     install,
     openImages(pageUrl, urls, title) {
@@ -131,6 +138,7 @@ const detectTab = initDetectTab({
 /* ---- Ayarlar + kenar çubuğundaki sunucu kartı ---- */
 settingsTab = initSettings({
     install,
+    openSetup: showSetup,
     onServerChange(server, version) {
         const card = $('sideServer');
         card.querySelector('.dot').classList.toggle('on', Boolean(server));
@@ -166,7 +174,16 @@ const shared = [params.get('url'), params.get('text'), params.get('title')]
     .map((value) => (value.match(/https?:\/\/\S+/) || [])[0])
     .find(Boolean);
 
-if (shared) {
+// QR ile bağlanma: sunucunun "/baglan" QR'ı telefon kamerasıyla okutulunca …/?pair=KOD açılır.
+const pairLink = params.get('pair') ? parsePairLink(location.href) : null;
+if (pairLink) {
+    history.replaceState(null, '', location.pathname + '#settings');
+    navigate('settings');
+    redeemPair(pairLink)
+        .then((config) => settingsTab.connect(config))
+        .then(() => toast('Sunucuna bağlandı'))
+        .catch((err) => toast(`Bağlanılamadı: ${err.message}`));
+} else if (shared) {
     history.replaceState(null, '', location.pathname + '#detect');
     navigate('detect');
     detectTab.prefill(shared, true, { shared: true });

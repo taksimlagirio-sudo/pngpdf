@@ -41,6 +41,12 @@ Sunucu yalnızca Tailscale ağındaki cihazlarından erişilebilir olur; interne
 **Cloudflare Tunnel (alternatif):** `cloudflared tunnel --url http://127.0.0.1:8787` geçici bir
 https adresi verir. Bu adres internete açıktır; koruma yalnızca token'dır.
 
+**QR ile bağlanma:** sunucuyu `HOST=0.0.0.0` ile başlat ve sunucunun çalıştığı cihazda
+`http://127.0.0.1:8787/baglan` sayfasını aç. Sayfa adresleri, token'ı ve 10 dakika geçerli, tek kullanımlık
+bir kod içeren QR gösterir (token QR'a yazılmaz). Telefonda İndirici → Ayarlar → **QR ile bağlan** ile ya da
+telefon kamerasıyla okut. Sunucuya https ile ulaşıyorsan (ör. `tailscale serve`) adresi `PUBLIC_URL=https://…`
+olarak ver; QR o adresi de gösterir. `/baglan` sayfası yalnızca 127.0.0.1'den açılır.
+
 ## Kurulum (telefonun kendisi: Android + Termux) — önerilen
 
 Sunucu telefonda çalışınca İndirici'nin kendisi de ondan açılır (`http://127.0.0.1:8787/`):
