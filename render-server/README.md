@@ -216,7 +216,8 @@ hata açıklamasında "cihaza (IP) bağlı" ihtimali söylenmez; giriş/oturum v
 
 ## yt-dlp (veri katmanı)
 
-Kuruluysa sunucu, bir sayfa adresi gelince önce yt-dlp'ye sorar (`yt-dlp -J`): YouTube, Vimeo,
+Varsayılan olarak **kapalıdır**: uygulamada Ayarlar → "Bilinen sitelerde yt-dlp kullan" açılırsa ve yt-dlp
+kuruluysa, sunucu bir sayfa adresi gelince önce yt-dlp'ye sorar (`yt-dlp -J`): YouTube, Vimeo,
 Instagram, X gibi bilinen ~1800 sitede videonun gerçek adresleri ve kalite listesi gelir. yt-dlp
 **yalnızca bilgi verir**; dosya indirmez. Liste, kalite seçimi, önizleme, indirme ve birleştirme
 İndirici'nin kendisinde yapılır:
@@ -237,6 +238,7 @@ HLS'te yt-dlp'nin verdiği Referer/çerez, listenin (ve alt listelerinin) içind
 ```bash
 pkg install python && pip install "yt-dlp[default]"    # Termux
 pip install -U "yt-dlp[default]"            # güncelleme (siteler değiştikçe ara ara)
+pip install "yt-dlp[default,curl-cffi]"      # TikTok gibi "tarayıcı taklidi" isteyen siteler için (kurulabilirse)
 ```
 
 | Değişken | Anlamı |
@@ -273,3 +275,11 @@ pip install -U gallery-dl     # güncelleme
 Gizlilik: yalnızca resimlerini istediğin siteye bağlanır; telemetri yok, güncelleme denetimi yalnızca
 elle `-U` ile. Kayıtlı girişler yt-dlp'deki gibi geçici bir çerez dosyasıyla verilir. Lisansı GPL-2.0;
 kodu kopyalanmadan ayrı bir program olarak çalıştırılır.
+
+## İndirmede çerezler
+
+Sunucu, indirme isteklerinde (/fetch, /stream) tarayıcı gibi çerez gönderir: sayfayı açan sunucu
+tarayıcısının çerezleri (koklama ve "Kendim dokunayım" sonunda), yt-dlp'nin verdiği çerezler ve kayıtlı
+girişler bir kutuda tutulur; her istek (yönlendirmeler dahil) yalnızca alan adı/yolu uyan çerezlerle gider.
+TikTok gibi video dosyasını sayfanın verdiği çerez olmadan vermeyen siteler böylece doğrudan iner.
+Oturum çerezleri 2 saat tutulur; kutu yalnızca bellektedir (sunucu kapanınca silinir).

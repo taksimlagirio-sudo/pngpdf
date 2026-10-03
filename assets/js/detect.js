@@ -176,8 +176,46 @@ export function mergeImages(a, b) {
  * Adresi analiz eder. Küçük bir parça indirip başlıklar + magic number ile karar verir.
  * HLS ise playlist ayrıştırılır, resim/video ise boyut ve süre okunmaya çalışılır.
  */
+// Sunucudaki tarayıcının aldığı liste içerikleri (adres → metin). Ana listenin adresi çoğu zaman tek
+// kullanımlık anahtar taşır; yeniden istemek 403 verir. İçerik buradan okunur, kaliteler kaybolmaz.
+const manifestTexts = new Map();
+
+/** Sunucunun saklayıp gönderdiği liste içeriklerini önbelleğe alır ("Kendim dokunayım" vb.). */
+export function rememberManifests(items) {
+    for (const item of items || []) if (item && item.text && item.url) manifestTexts.set(item.url, item.text);
+}
+
+/** Saklanan liste içeriği (yoksa null). */
+export function cachedManifest(url) {
+    return manifestTexts.has(url) ? manifestTexts.get(url) : null;
+}
+
+/** Önbellekteki liste içeriği varsa onu, yoksa ağdan metni döner. */
+async function manifestText(url, mode, signal) {
+    if (manifestTexts.has(url)) return manifestTexts.get(url);
+    const res = await smartFetch(url, { mode, init: { signal } });
+    return res.text();
+}
+
 export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {}, noExtract = false } = {}) {
     onStage('Bağlanılıyor...');
+
+    // Sayfada görülen ve içeriği saklanan liste: yeniden istenmeden açılır.
+    if (manifestTexts.has(url)) {
+        const text = manifestTexts.get(url);
+        const isDash = /<MPD[\s>]/.test(text);
+        const result = {
+            url, kind: isDash ? 'dash' : 'hls', format: isDash ? 'mpd' : 'm3u8',
+            mime: isDash ? 'application/dash+xml' : 'application/vnd.apple.mpegurl', ext: isDash ? 'mpd' : 'm3u8',
+            size: 0, sizeText: 'bilinmiyor', resumable: false, headerType: '', suggestedName: fileNameFromUrl(url),
+            // Sayfada sunucu üzerinden bulundu: alt listeler/parçalar da (CORS'a takılmasın diye) sunucudan.
+            access: getRenderServer() ? 'proxy' : 'direct', downloadable: true, target: 'file', warnings: [], details: {}
+        };
+        onStage(isDash ? 'DASH bildirimi ayrıştırılıyor...' : 'Playlist ayrıştırılıyor...');
+        if (isDash) await describeDash(result, url, mode, signal);
+        else await describeHls(result, url, mode, signal);
+        return result;
+    }
 
     let access = 'direct';
     let res;
@@ -345,12 +383,15 @@ const GENERIC_EXTRACTOR = /^(generic|html5mediaembed)$/i;
 
 async function sniffOnServer(result, url, signal, onStage, { noExtract = false } = {}) {
     // Önce yt-dlp (sunucuda kuruluysa): bilinen sitelerde gerçek kalite listesini verir.
+    let ytdlpReason = '';
     if (!noExtract) {
         const extracted = await extractOnServer(url, signal, onStage);
-        if (extracted && !GENERIC_EXTRACTOR.test(extracted.extractor || '')) {
+        if (extracted && extracted.ok && extracted.items.length && !GENERIC_EXTRACTOR.test(extracted.extractor || '')) {
             applyExtracted(result, extracted);
             return;
         }
+        // Site tanındı ama yt-dlp alamadı: neden, bizim tarama da bulamazsa gösterilir.
+        if (extracted && !extracted.ok && !extracted.unsupported) ytdlpReason = extracted.reason || '';
     }
     onStage('Sayfa kendi sunucunda çalıştırılıyor (oynatıcının istekleri bekleniyor)...');
     try {
@@ -362,7 +403,9 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
         const merged = new Map();
         for (const item of sniffed.items) {
             if (item.kind === 'image') continue; // sayfa ikonları/görselleri listeyi boğmasın
-            merged.set(item.url, { url: item.url, kind: item.kind, size: item.size || 0, fromRender: true });
+            if (item.text) manifestTexts.set(item.url, item.text);
+            merged.set(item.url, { url: item.url, kind: item.kind, size: item.size || 0, fromRender: true,
+                master: Boolean(item.master), failed: Boolean(item.failed) });
         }
         for (const item of result.details.links || []) {
             if (!merged.has(item.url)) merged.set(item.url, item);
@@ -373,6 +416,7 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
         result.details.fromRender = sniffed.items.length > 0;
         result.details.images = mergeImages(result.details.images || [], sniffed.items.filter((i) => i.kind === 'image').map((i) => i.url));
 
+        if (result.details.links.length === 0 && ytdlpReason) result.warnings.push(`yt-dlp alamadı: ${ytdlpReason}`);
         if (result.details.links.length === 0) {
             result.warnings.push('Sayfa kendi sunucunda çalıştırıldı, oynat düğmesine de basıldı ama medya isteği ' +
                 'görülmedi. Sayfa birkaç tıklama ya da onay istiyorsa aşağıdaki "👆 Sayfayı aç, kendim dokunayım" ' +
@@ -383,7 +427,7 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
     }
 }
 
-/** yt-dlp ile çözümleme; video bulunduysa sonucu döner, yoksa null. */
+/** yt-dlp ile çözümleme: sunucunun yanıtı (ok/items ya da ok:false + reason); yt-dlp yoksa null. */
 async function extractOnServer(url, signal, onStage) {
     onStage('Sayfa çözümleniyor (yt-dlp)...');
     let extracted;
@@ -393,7 +437,7 @@ async function extractOnServer(url, signal, onStage) {
         if (err.name === 'AbortError') throw err;
         return null; // eski sunucu ya da hata: tarayıcıyla açma yolu sürer
     }
-    return extracted && extracted.ok && extracted.items.length ? extracted : null;
+    return extracted || null;
 }
 
 function extractedLinks(extracted) {
@@ -480,8 +524,7 @@ function fromExtension(url) {
 }
 
 async function describeDash(result, url, mode, signal) {
-    const res = await smartFetch(url, { mode, init: { signal } });
-    const mpd = parseMpd(await res.text(), res.url && !res.url.includes('/fetch?') ? res.url : url);
+    const mpd = parseMpd(await manifestText(url, mode, signal), url);
     result.target = 'dash';
     result.suggestedName = fileNameFromUrl(url).replace(/\.mpd$/i, '');
     Object.assign(result.details, {
@@ -503,8 +546,7 @@ async function describeDash(result, url, mode, signal) {
 }
 
 async function describeHls(result, url, mode, signal) {
-    const res = await smartFetch(url, { mode, init: { signal } });
-    let playlist = parsePlaylist(await res.text(), url);
+    let playlist = parsePlaylist(await manifestText(url, mode, signal), url);
     result.target = 'hls';
     result.suggestedName = fileNameFromUrl(url).replace(/\.m3u8$/i, '');
 
@@ -538,6 +580,9 @@ async function describeHls(result, url, mode, signal) {
  * ayrıca listelenmez, yalnızca ses olan playlist'ler ve ses dosyaları, DASH gizlenir. Master'sız
  * ayrı görüntü + ses playlist'leri bulunduysa ses, görüntü bağlantısına eşlenir (birleştirilir).
  */
+// Bu boyuttan küçük video dosyaları (biliniyorsa) önizleme/reklam klibi sayılıp gizlenir.
+const TINY_VIDEO = 300 * 1024;
+
 export async function verifyLinks(links, { mode = 'auto', signal } = {}) {
     const pathKey = (u) => {
         try {
@@ -547,11 +592,11 @@ export async function verifyLinks(links, { mode = 'auto', signal } = {}) {
             return u;
         }
     };
+    const timeout = (ms) => new Promise((_, reject) => setTimeout(() => reject(new Error('zaman aşımı')), ms));
     const checked = await Promise.all(links.map(async (link) => {
         if (link.kind === 'dash') {
             try {
-                const res = await smartFetch(link.url, { mode, init: { signal } });
-                const mpd = parseMpd(await res.text(), link.url);
+                const mpd = parseMpd(await Promise.race([manifestText(link.url, mode, signal), timeout(10000)]), link.url);
                 const usable = mpd.variants.length > 0 && !mpd.drm;
                 return { ...link, ok: usable, hidden: !usable, variants: mpd.variants.length, live: mpd.live,
                     duration: mpd.duration, height: mpd.variants[0] ? mpd.variants[0].height : 0 };
@@ -559,16 +604,18 @@ export async function verifyLinks(links, { mode = 'auto', signal } = {}) {
                 return { ...link, ok: false, unreachable: true, hidden: false };
             }
         }
-        if (link.kind !== 'hls') return { ...link, ok: link.kind === 'video', hidden: link.kind !== 'video' };
+        if (link.kind !== 'hls') {
+            const tiny = link.kind === 'video' && link.size > 0 && link.size < TINY_VIDEO;
+            return { ...link, ok: link.kind === 'video', hidden: link.kind !== 'video' || tiny, tiny };
+        }
         try {
-            const playlist = await Promise.race([
-                loadPlaylist(link.url, { mode, signal }),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('zaman aşımı')), 10000))
-            ]);
+            const playlist = manifestTexts.has(link.url)
+                ? parsePlaylist(manifestTexts.get(link.url), link.url)
+                : await Promise.race([loadPlaylist(link.url, { mode, signal }), timeout(10000)]);
             if (playlist.type === 'master') {
                 const children = [...playlist.variants.map((v) => v.url),
                     ...Object.values(playlist.audio).flat().map((a) => a.url).filter(Boolean)];
-                return { ...link, ok: !playlist.audioOnly, master: true, children: children.map(pathKey),
+                return { ...link, ok: !playlist.audioOnly, master: true, children,
                     variants: playlist.variants.length, hidden: playlist.audioOnly };
             }
             if (findDrm(playlist.segments)) return { ...link, ok: false, hidden: true, reason: 'DRM' };
@@ -581,11 +628,22 @@ export async function verifyLinks(links, { mode = 'auto', signal } = {}) {
         }
     }));
 
-    const childKeys = new Set(checked.filter((l) => l.master).flatMap((l) => l.children));
+    // Ana listelerin alt listeleri (kaliteler, ayrı ses) ayrıca gösterilmez. Adresler tam ya da
+    // (sorgu dizesi farklıysa) yol olarak eşleşir; ana listenin kendisi asla gizlenmez.
+    const masters = checked.filter((l) => l.master);
+    const childUrls = new Set(masters.flatMap((l) => l.children));
+    const childPaths = new Set(masters.flatMap((l) => l.children.map(pathKey)));
+    const masterPaths = new Set(masters.map((l) => pathKey(l.url)));
+    const isChild = (l) => !l.master && (childUrls.has(l.url) || (childPaths.has(pathKey(l.url)) && !masterPaths.has(pathKey(l.url))) ||
+        // Ana liste açıldıysa aynı yayının (aynı klasördeki) başka alt listeleri de gizlenir.
+        (l.kind === 'hls' && masters.some((m) => m.ok && dirKey(m.url) === dirKey(l.url))));
+    const hasGood = checked.some((l) => l.ok && !l.hidden && !l.failed && !isChild(l));
     const audios = checked.filter((l) => l.audioOnly);
     const visible = [];
     for (const link of checked) {
-        if (link.hidden || childKeys.has(pathKey(link.url))) continue;
+        if (link.hidden || isChild(link)) continue;
+        // Sayfanın başarısız/yarıda kalan istekleri (iptal edilen önizleme vb.): çalışan bağlantı varsa gizlenir.
+        if (link.failed && hasGood) continue;
         if (link.kind === 'hls' && !link.master && audios.length) {
             // Aynı sunucudaki ayrı ses playlist'i bu görüntüyle birleştirilsin.
             const host = (() => { try { return new URL(link.url).host; } catch (_) { return ''; } })();
@@ -594,7 +652,18 @@ export async function verifyLinks(links, { mode = 'auto', signal } = {}) {
         }
         visible.push(link);
     }
+    // Çalışan bağlantılar önce, açılmayanlar sonra.
+    visible.sort((a, b) => (b.ok - a.ok) || ((b.variants || 0) - (a.variants || 0)));
     return { links: visible, hidden: checked.length - visible.length };
+}
+
+function dirKey(url) {
+    try {
+        const u = new URL(url);
+        return u.origin + u.pathname.slice(0, u.pathname.lastIndexOf('/') + 1);
+    } catch (_) {
+        return url;
+    }
 }
 
 /** Media playlist'ten kartta gösterilecek bilgiler. */

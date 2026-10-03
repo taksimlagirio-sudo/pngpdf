@@ -93,7 +93,10 @@ export function initSettings({ onServerChange, install }) {
                 <span class="row-value" style="font-weight:400">Arka planda indir${canBackgroundFetch ? '' : ' (bu tarayıcıda yok)'}</span>
                 <span class="toggle${prefs.background && bgOk ? ' on' : ''}"></span></button>
             <button class="row" data-set="keepAwake"><span class="row-value" style="font-weight:400">İndirirken ekranı açık tut</span>
-                <span class="toggle${prefs.keepAwake ? ' on' : ''}"></span></button>`;
+                <span class="toggle${prefs.keepAwake ? ' on' : ''}"></span></button>
+            <button class="row" data-set="useYtdlp"><span class="row-value" style="font-weight:400">Bilinen sitelerde yt-dlp kullan
+                <span class="muted" style="display:block;font-size:12px">Sunucuda kuruluysa; kapalıyken sayfa doğrudan sunucunda taranır</span></span>
+                <span class="toggle${prefs.useYtdlp ? ' on' : ''}"></span></button>`;
     }
 
     root.addEventListener('click', (e) => {
@@ -113,6 +116,7 @@ export function initSettings({ onServerChange, install }) {
         }
         if (key === 'background') setPref('background', !prefs.background);
         if (key === 'keepAwake') setPref('keepAwake', !prefs.keepAwake);
+        if (key === 'useYtdlp') setPref('useYtdlp', !prefs.useYtdlp);
     });
     onPrefs(renderPrefs);
     renderPrefs();

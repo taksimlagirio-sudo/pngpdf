@@ -2,6 +2,7 @@
 // dokunuşlar sunucudaki sayfaya iletilir. Çerez onayı, yaş onayı, birden çok "oynat" gibi
 // otomatik geçilemeyen adımlar böyle elle geçilir; bu sırada gelen medya canlı listelenir.
 import { escapeHtml, renderApi, renderBlob, getRenderServer } from './util.js';
+import { rememberManifests } from './detect.js';
 
 const ICONS = { hls: '📡', video: '🎬', audio: '🎵', dash: '📺', image: '🖼️' };
 const FRAME_DELAY_MS = 500;
@@ -62,6 +63,7 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
     };
 
     function renderFound(items) {
+        rememberManifests(items); // ana listelerin içeriği: seçilince kaliteler yeniden istenmeden açılır
         const media = items.filter((i) => i.kind !== 'image');
         const key = media.map((i) => i.url).join('\n');
         if (key === foundKey) return;

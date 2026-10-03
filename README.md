@@ -196,7 +196,7 @@ göremez. [`render-server/`](render-server/README.md) kendi bilgisayarında (vey
 telefonda) çalışan küçük bir sunucudur: sayfayı gerçek bir Chromium'da açıp attığı medya
 isteklerini toplar. **Ayarlar → Kendi sunucum** bölümüne adresini ve token'ını girince:
 
-- Sunucuda **yt-dlp** kuruluysa sayfa önce ona sorulur: bilinen sitelerde (YouTube, Vimeo, Instagram…)
+- **Ayarlar → "Bilinen sitelerde yt-dlp kullan"** açıksa (varsayılan kapalı) ve sunucuda yt-dlp kuruluysa sayfa önce ona sorulur: bilinen sitelerde (YouTube, Vimeo, Instagram…)
   videonun kalite listesi gelir; ayrı gelen görüntü ve ses telefonda tek MP4'te birleştirilir. yt-dlp
   yalnızca adresleri bulur, indirme ve ekranlar İndirici'nindir (ayrıntı: render-server/README.md).
 - Sayfa linkleri (paylaşılanlar dahil) bu sunucuda çalıştırılır; bulunan medya, statik taramanın
