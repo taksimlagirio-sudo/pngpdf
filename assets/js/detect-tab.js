@@ -1208,6 +1208,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         };
     }
 
+    /** İşin nereden geldiği: hata olursa "Yeniden algıla" buradan başlar. */
+    function jobSource() {
+        const page = isHttpUrl(ui.sourcePage || '') ? ui.sourcePage : (entryUrl && entryUrl !== info.url ? entryUrl : '');
+        return { page, media: isServerStream(info.url) ? '' : info.url };
+    }
+
     async function startDownload(queueOnly) {
         const prefs = getPrefs();
         const isHls = info.target === 'hls' || (info.unreachable && info.kind === 'hls');
@@ -1225,6 +1231,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                     kind: 'hls',
                     thumb: null,
                     saveMode,
+                    source: jobSource(),
                     run: withCaptureFallback(async (job) => {
                         job.setDetail('Parça listesi hazırlanıyor...');
                         const [videoPlaylist, audioPlaylist] = await Promise.all([
@@ -1252,6 +1259,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                     kind: 'hls',
                     thumb,
                     saveMode,
+                    source: jobSource(),
                     run: withCaptureFallback((job) => downloadHlsVod({
                         job, videoUrl, videoPlaylist, audioUrl, name, range, mode: prefs.conn, createSinkFor
                     }), { mediaUrl: info.url, kind: 'hls', name, saveMode, createSinkFor })
@@ -1270,6 +1278,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                         kind: 'video',
                         thumb,
                         saveMode,
+                        source: jobSource(),
                         run: withCaptureFallback((job) => downloadMerged({
                             job, videoUrl: url, audioUrl, name, mode: prefs.conn, size: info.size, createSinkFor
                         }), { mediaUrl, kind: 'video', name, saveMode, createSinkFor })
@@ -1282,6 +1291,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                     kind: ['video', 'audio', 'image'].includes(info.kind) ? info.kind : 'file',
                     thumb,
                     saveMode,
+                    source: jobSource(),
                     run: withCaptureFallback((job) => downloadFile({
                         job, url, name: fileName, mode: prefs.conn, background: prefs.background,
                         mime: info.mime, size: info.size, createSinkFor
@@ -1344,6 +1354,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             kind: 'rec',
             now: true,
             saveMode,
+            source: { page: url, media: '' },
             run: (job) => captureIntoJob(job, { pageUrl: url, name, createSinkFor })
         });
         navigate('downloads');

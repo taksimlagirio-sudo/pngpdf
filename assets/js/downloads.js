@@ -144,7 +144,7 @@ export async function createSink(name, { mode = effectiveSaveMode(), mime = 'app
  * Yeni bir iş kaydeder. `run(job)` verilirse iş kuyruğa girer ve sırası gelince çalışır;
  * `now: true` sınırı beklemeden hemen başlatır. `run` olmadan çağrılırsa iş hemen "aktif" sayılır.
  */
-export function addJob({ name, kind = 'file', thumb = null, run = null, now = false, saveMode = null } = {}) {
+export function addJob({ name, kind = 'file', thumb = null, run = null, now = false, saveMode = null, source = null } = {}) {
     const id = 'j' + Math.random().toString(36).slice(2, 10);
     const controller = new AbortController();
     const job = {
@@ -154,6 +154,8 @@ export function addJob({ name, kind = 'file', thumb = null, run = null, now = fa
         thumb,
         run,
         now,
+        source, // { media, page }: hata kartında "Yeniden algıla" / "Dene" için
+        pageInput: '',
         saveMode: saveMode || effectiveSaveMode(),
         status: run ? 'queued' : 'active',
         detail: '',
@@ -284,7 +286,7 @@ function startNow(job) {
 function retry(job) {
     if (!job.run || !['error', 'cancelled'].includes(job.status)) return;
     jobs.delete(job.id);
-    addJob({ name: job.name, kind: job.kind, thumb: job.thumb, run: job.run, now: true, saveMode: job.saveMode });
+    addJob({ name: job.name, kind: job.kind, thumb: job.thumb, run: job.run, now: true, saveMode: job.saveMode, source: job.source });
 }
 
 function removeJob(job) {
@@ -505,9 +507,21 @@ async function savePending(job) {
 /* ---------------- Arayüz ---------------- */
 
 let navigate = () => {};
+let detect = () => {};
 
-export function initDownloads({ onNavigate } = {}) {
+export function initDownloads({ onNavigate, onDetect } = {}) {
     navigate = onNavigate || navigate;
+    detect = onDetect || detect;
+
+    // Hata kartındaki sayfa adresi: yazılanı iş üzerinde tut (yeniden çizimde kaybolmasın).
+    document.addEventListener('input', (e) => {
+        const el = e.target.closest('[data-job-input]');
+        const job = el && jobs.get(el.dataset.jobInput);
+        if (job) job.pageInput = el.value;
+    });
+    document.addEventListener('focusout', (e) => {
+        if (e.target.closest('[data-job-input]')) render();
+    });
 
     document.addEventListener('click', (e) => {
         const btn = e.target.closest('[data-job-act]');
@@ -533,6 +547,23 @@ export function initDownloads({ onNavigate } = {}) {
         if (act === 'dismiss') removeJob(job);
         if (act === 'touch' && job.captureId) openTouch(job);
         if (act === 'open' && job.openUrl) window.open(job.openUrl, '_blank', 'noopener');
+        if (act === 'redetect') {
+            const url = (job.source && (job.source.page || job.source.media)) || job.openUrl;
+            if (url) {
+                removeJob(job);
+                detect(url);
+            }
+        }
+        if (act === 'try-page') {
+            const url = (job.pageInput || '').trim();
+            if (!/^https?:\/\//i.test(url)) {
+                const input = document.querySelector(`[data-job-input="${job.id}"]`);
+                if (input) input.focus();
+                return;
+            }
+            removeJob(job);
+            detect(url);
+        }
     });
 
     if ('serviceWorker' in navigator) {
@@ -610,7 +641,8 @@ function renderNow() {
     });
 
     const view = $('downloadsView');
-    if (view && currentView === 'downloads') setHtml(view, renderFull(list));
+    const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('[data-job-input]');
+    if (view && currentView === 'downloads' && !typing) setHtml(view, renderFull(list));
     const aside = $('downloadsAside');
     if (aside && getComputedStyle(aside).display !== 'none') setHtml(aside, renderAside(list));
     renderStrip(active, queued);
@@ -718,9 +750,15 @@ function renderFull(list) {
         html += queued.map((job, i) => renderQueuedJob(job, active.length + i + 1)).join('');
         if (filter === 'running' && !active.length && !queued.length) html += '<div class="empty">Süren indirme yok.</div>';
     }
-    if (filter !== 'running' && finished.length) {
+    const failed = finished.filter((j) => j.status === 'error');
+    const history = finished.filter((j) => j.status !== 'error');
+    if (filter !== 'running' && failed.length) {
+        html += `<div class="dl-group">İnmeyenler · ${failed.length}</div>`;
+        html += failed.map(renderFailed).join('');
+    }
+    if (filter !== 'running' && history.length) {
         html += `<div class="dl-group">Geçmiş</div>`;
-        html += finished.map(renderFinished).join('');
+        html += history.map(renderFinished).join('');
     }
     if (filter === 'done' && !finished.length) html += '<div class="empty">Biten indirme yok.</div>';
     html += `</div>${concRow(conc)}`;
@@ -732,37 +770,117 @@ function concRow(conc) {
         `<button class="${conc === n ? 'on' : ''}" data-job-act="conc" data-value="${n}">${n}</button>`).join('')}</div></div>`;
 }
 
+/** "Açıp kaydet"in hangi aşamada olduğu: rozet, renk ve açıklama. */
+function captureStage(job) {
+    const rec = job.rec;
+    if (job.needsUser) return { key: 'wait', badge: 'BAŞLATMANI BEKLİYOR' };
+    if (!rec.mediaSec && job.total > 0) return { key: 'file', badge: 'DOSYA ALINIYOR' };
+    if (rec.mediaSec > 0 || rec.speed > 0.5) {
+        const x = rec.speed > 1.5 ? `${Math.round(rec.speed)}× ` : '';
+        return { key: 'play', badge: `${x}OYNATILIYOR` };
+    }
+    return { key: 'open', badge: 'SUNUCUDA AÇILIYOR' };
+}
+
+function stageHead(job, stage, right = '') {
+    return `<div class="stage-head"><span class="stage-badge">${stage}</span>
+        <span class="dl-name">${escapeHtml(job.name)}</span>${right}</div>`;
+}
+
 function renderCapture(job) {
     const rec = job.rec;
-    // Düz dosya oturumla indiriliyorsa ilerleme bayttan, oynatılarak kaydediliyorsa video süresinden.
-    const byBytes = !rec.mediaSec && job.total > 0;
-    let done = null;
-    if (byBytes) done = Math.min(1, job.received / job.total);
-    else if (rec.duration > 0) done = Math.min(1, rec.mediaSec / rec.duration);
-    const speed = !byBytes && rec.speed > 0.5 ? `×${rec.speed.toLocaleString('tr-TR', { maximumFractionDigits: 0 })} hız` : speedText(job.speed);
-    const left = !byBytes && done !== null && rec.speed > 0.5 ? formatLeft((rec.duration - rec.mediaSec) / rec.speed) + ' kaldı' : '';
+    const stage = captureStage(job);
     const stopping = job.stopRequested;
-    const notes = [rec.phase || 'Hazırlanıyor'];
-    if (rec.blockedAds) notes.push(`${rec.blockedAds} reklam engellendi`);
-    const waiting = job.needsUser ? `
-            <div class="notice">${escapeHtml(job.detail || 'Video kendiliğinden başlamadı.')}<br>
-                "Videoyu başlat"a dokun, açılan sayfada oynata bas; video başladığı an kayıt kendiliğinden başlar.</div>
-            <button class="btn-big" data-job="${job.id}" data-job-act="touch">Videoyu başlat</button>` : '';
-    return `
-        <div class="rec-card">
-            <div class="rec-head"><span class="rec-tag"><span class="rec-dot"></span>KAYIT</span>
-                <span class="dl-name">${escapeHtml(job.name)}</span></div>
-            ${rec.why ? `<div class="hint">${escapeHtml(rec.why)} · video açılıp kaydediliyor</div>` : ''}
-            <div class="rec-time-row"><span class="rec-time">${byBytes ? Math.round(done * 100) + '%' : hms(rec.mediaSec)}</span><span class="rec-size">${formatSize(job.bytes)}</span></div>
-            <div class="sec">
-                <div class="progress rec${done === null ? ' indeterminate' : ''}"><div style="width:${done === null ? 35 : done * 100}%"></div></div>
-                <div class="dl-sub"><span>${byBytes ? formatSize(job.total) : rec.duration ? 'Video ' + hms(rec.duration) : ''}</span><span>${[speed, left].filter(Boolean).join(' · ')}</span></div>
-            </div>
-            ${waiting}
-            ${!job.needsUser && job.detail && (stopping || rec.warning) ? `<div class="hint">${escapeHtml(job.detail)}</div>` : ''}
-            <div class="rec-foot"><span>${escapeHtml(notes.join(' · '))}</span>
-                <div class="dl-btns">${stopping ? '' : btn(job, 'cancel', 'İptal', 'text') + (job.needsUser ? '' : btn(job, 'stop', 'Durdur ve kaydet', 'danger'))}</div></div>
-        </div>`;
+    const why = rec.why ? `<div class="stage-why">${escapeHtml(rec.why)} — video sunucunda açılıp kaydediliyor</div>` : '';
+    const note = !job.needsUser && job.detail && (stopping || rec.warning) ? `<div class="hint">${escapeHtml(job.detail)}</div>` : '';
+    let body = '';
+    if (stage.key === 'wait') {
+        body = `<div class="stage-text">Video kendiliğinden başlamadı. Sayfanın görüntüsünde oynat'a dokun; başladığı an kayıt başlar.</div>
+            <div class="stage-btns">${btn(job, 'touch', 'Videoyu başlat', 'primary')}${btn(job, 'cancel', 'İptal')}</div>`;
+    } else if (stage.key === 'file') {
+        const done = Math.min(1, job.received / job.total);
+        return `<div class="stage-card stage-file">${why}
+            ${stageHead(job, stage.badge, `<span class="stage-pct">${Math.round(done * 100)}%</span>`)}
+            <div class="stage-bar"><div style="width:${done * 100}%"></div></div>
+            <div class="stage-sub"><span>${formatSize(job.received)} / ${formatSize(job.total)}</span><span>${speedText(job.speed)}</span></div>
+            ${note}<div class="stage-btns">${stopping ? '' : btn(job, 'cancel', 'İptal', 'text')}</div></div>`;
+    } else if (stage.key === 'play') {
+        const done = rec.duration > 0 ? Math.min(1, rec.mediaSec / rec.duration) : null;
+        const left = done !== null && rec.speed > 0.5 ? formatLeft((rec.duration - rec.mediaSec) / rec.speed) + ' kaldı' : '';
+        body = `<div class="stage-time"><span>${hms(rec.mediaSec)}</span>${rec.duration ? `<small>/ ${hms(rec.duration)}</small>` : ''}</div>
+            <div class="stage-bar${done === null ? ' indeterminate' : ''}"><div style="width:${done === null ? 35 : done * 100}%"></div></div>
+            <div class="stage-sub"><span>${[left, formatSize(job.bytes)].filter(Boolean).join(' · ')}</span><span>orijinal kalite · sesli</span></div>
+            ${note}
+            <div class="stage-foot"><span>${rec.blockedAds ? `${rec.blockedAds} reklam atlandı` : escapeHtml(rec.phase || '')}</span>
+                <div class="dl-btns">${stopping ? '' : btn(job, 'cancel', 'İptal', 'text') + btn(job, 'stop', 'Durdur ve kaydet', 'danger')}</div></div>`;
+    } else {
+        body = `<div class="stage-bar idle"><div style="width:22%"></div></div>
+            <div class="stage-text">${escapeHtml(rec.phase && !/hazırlan/i.test(rec.phase) ? rec.phase : 'Önce sayfa açılıyor ki giriş/çerez otursun')}</div>
+            ${note}<div class="stage-btns">${stopping ? '' : btn(job, 'cancel', 'İptal', 'text')}</div>`;
+    }
+    return `<div class="stage-card stage-${stage.key}">${why}${stageHead(job, stage.badge)}${body}</div>`;
+}
+
+/** Sunucuda kaydedilen dosya telefona aktarılırken. */
+function renderTransfer(job) {
+    const ratio = ratioOf(job);
+    const pct = ratio === null ? '' : Math.round(ratio * 100) + '%';
+    const saved = job.transfer.mediaSec ? `Kaydedildi ${hms(job.transfer.mediaSec)} · ` : '';
+    return `<div class="stage-card stage-file">
+        ${stageHead(job, 'DOSYA ALINIYOR', `<span class="stage-pct">${pct}</span>`)}
+        <div class="stage-bar${ratio === null ? ' indeterminate' : ''}"><div style="width:${ratio === null ? 35 : ratio * 100}%"></div></div>
+        <div class="stage-sub"><span>${saved}telefona aktarılıyor</span><span>${speedText(job.speed)}</span></div>
+        <div class="stage-btns">${btn(job, 'cancel', 'İptal', 'text')}</div></div>`;
+}
+
+/** Hatanın türü: kullanıcıya neden ve ne yapılacağı buna göre söylenir. */
+function failureOf(job) {
+    const text = job.detail || '';
+    if (/DRM|Widevine|şifreli|korumalı/i.test(text)) {
+        return { key: 'drm', title: 'Korumalı yayın', code: 'DRM',
+            text: 'Widevine ile şifreli. Bu içerik indirilemez; başka bir şey denemenin anlamı yok.' };
+    }
+    if (/\b(404|410)\b|süresi dol|expired|bulunamadı/i.test(text)) {
+        return { key: 'expired', title: 'Bağlantının süresi doldu', code: (text.match(/\b(404|410)\b/) || ['404'])[0],
+            text: 'Süreli/imzalı bağlantı. Sayfayı yeniden algılamak yeni bir bağlantı alır.' };
+    }
+    if (/\b(401|403)\b|reddet|erişim|yetki|oturum/i.test(text)) {
+        return { key: 'denied', title: 'Site erişimi reddetti', code: (text.match(/\b(401|403)\b/) || ['403'])[0],
+            text: 'Bağlantı oturuma ya da IP’ye bağlı. Videonun bulunduğu sayfayı verirsen o sayfanın çerezleriyle yeniden denenir.' };
+    }
+    return { key: 'other', title: 'İnmedi', code: '', text };
+}
+
+function renderFailed(job) {
+    const f = failureOf(job);
+    const canRedetect = Boolean((job.source && (job.source.page || job.source.media)) || job.openUrl);
+    let actions = '';
+    if (f.key === 'denied') {
+        actions = `<div class="fail-input"><input class="input" type="url" placeholder="Bulunduğu sayfa adresi"
+                data-job-input="${job.id}" value="${escapeHtml(job.pageInput || (job.source && job.source.page) || '')}">
+                ${btn(job, 'try-page', 'Dene', 'primary')}</div>
+            <div class="fail-alt"><span>Olmazsa kendi oturumunla aç</span>${job.openUrl ? btn(job, 'open', 'Telefonda aç ›', 'text') : ''}</div>
+            <div class="fail-btns">${btn(job, 'dismiss', 'Kapat', 'text')}</div>`;
+    } else if (f.key === 'expired') {
+        actions = `<div class="fail-btns">${canRedetect ? btn(job, 'redetect', 'Yeniden algıla', 'primary') : ''}${btn(job, 'dismiss', 'Kapat')}</div>`;
+    } else if (f.key === 'drm') {
+        actions = `<div class="fail-btns">${btn(job, 'dismiss', 'Kapat')}</div>`;
+    } else {
+        const btns = [];
+        if (job.openUrl) btns.push(btn(job, 'open', 'Telefonda aç', 'primary'));
+        if (job.fallback && !job.fallbackUsed) btns.push(btn(job, 'fallback', 'Normal indir', 'primary'));
+        else if (job.run) btns.push(btn(job, 'retry', 'Tekrar dene'));
+        if (canRedetect) btns.push(btn(job, 'redetect', 'Yeniden algıla'));
+        btns.push(btn(job, 'dismiss', 'Kapat', 'text'));
+        actions = `<div class="fail-btns">${btns.join('')}</div>`;
+    }
+    return `<div class="fail-card fail-${f.key}">
+        <div class="fail-top"><span class="fail-ic">!</span><div class="fail-main">
+            <div class="fail-title"><span>${escapeHtml(f.title)}</span>${f.code ? `<span class="fail-code">${f.code}</span>` : ''}</div>
+            <span class="dl-name fail-name">${escapeHtml(job.name)}</span>
+            ${f.key === 'other' ? `<span class="fail-text">${escapeHtml(f.text || 'Başarısız')}</span>`
+                : `<span class="fail-text">${escapeHtml(f.text)}</span>`}
+        </div></div>${actions}</div>`;
 }
 
 /* "Videoyu başlat": kaydın beklediği sayfanın görüntüsü açılır, kullanıcı oynata dokunur. */
@@ -816,6 +934,7 @@ function renderRec(job) {
 
 function renderActive(job) {
     if (job.rec) return renderRec(job);
+    if (job.transfer) return renderTransfer(job);
     const ratio = ratioOf(job);
     const pct = ratio === null ? '' : Math.round(ratio * 100) + '%';
     const speed = job.speed;

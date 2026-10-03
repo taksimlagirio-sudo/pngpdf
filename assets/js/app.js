@@ -72,7 +72,13 @@ document.addEventListener('click', (e) => {
 });
 window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
 
-initDownloads({ onNavigate: navigate });
+initDownloads({
+    onNavigate: navigate,
+    onDetect: (url) => {
+        navigate('detect');
+        detectTab.prefill(url, true);
+    }
+});
 
 // Kendi sunucundan açıldıysa token'ı kendiliğinden al.
 await autoConfigureLocalServer();
