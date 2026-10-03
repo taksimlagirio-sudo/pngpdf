@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { parseYtdlpCookies } from './cookiejar.mjs';
 
 const EXTRACT_TIMEOUT_MS = 45000;
 const MAX_OUTPUT = 64 * 1024 * 1024;
@@ -94,7 +95,7 @@ export async function extractInfo(url, { cookies = [] } = {}) {
     const cookieFile = writeCookieFile(cookies);
     try {
         const args = [
-            ...tool.args, '-J', '--no-playlist', '--ignore-config', '--no-warnings',
+            ...tool.args, '-J', '--no-playlist', '--ignore-config',
             '--socket-timeout', '20', '--no-cache-dir',
             // Yalnızca siteye özel çıkarıcılar: tanınmayan (genel) sitede yt-dlp ağa hiç çıkmaz,
             // sayfa doğrudan bizim sunucudaki tarayıcıda açılır.
@@ -108,9 +109,12 @@ export async function extractInfo(url, { cookies = [] } = {}) {
         const r = await run(tool.cmd, args, { timeoutMs: EXTRACT_TIMEOUT_MS, maxOutput: MAX_OUTPUT });
         if (r.code !== 0 || !r.out.trim()) {
             const line = (r.err.match(/ERROR:[^\n]*/) || [r.err.trim().split('\n').pop() || 'bilinmeyen hata'])[0];
+            // TikTok gibi siteler "tarayıcı taklidi" (curl_cffi) ister; yoksa yt-dlp uyarır.
+            const hint = /no impersonate target is available|impersonat/i.test(r.err)
+                ? ' — bu site için tarayıcı taklidi gerekiyor: pip install "yt-dlp[default,curl-cffi]"' : '';
             return {
                 ok: false,
-                reason: line.replace(/^ERROR:\s*/, '').slice(0, 300),
+                reason: line.replace(/^ERROR:\s*/, '').replace(/;?\s*please report this issue.*$/i, '').slice(0, 300) + hint,
                 unsupported: /Unsupported URL|No video formats found|no suitable/i.test(r.err)
             };
         }
@@ -136,15 +140,6 @@ const AUDIO_EXT = /^(m4a|mp3|aac|opus|ogg|oga|wav|flac|weba)$/i;
 const hasVideo = (f) => (f.vcodec == null ? !AUDIO_EXT.test(f.ext || '') : f.vcodec !== 'none');
 const hasAudio = (f) => (f.acodec == null ? true : f.acodec !== 'none');
 
-/** yt-dlp'nin `cookies` alanı ("ad=değer; Domain=…; Path=…; …") → Cookie başlığı. */
-function cookieHeader(field) {
-    if (!field) return '';
-    const attrs = /^(domain|path|secure|expires|version|httponly|max-age|samesite)$/i;
-    return field.split(/;\s*/)
-        .filter((part) => part.includes('=') && !attrs.test(part.split('=')[0].trim()))
-        .join('; ');
-}
-
 /** Formatın isteği: yt-dlp'nin verdiği başlıklar + çerezler. */
 function requestOf(f) {
     const headers = {};
@@ -152,12 +147,16 @@ function requestOf(f) {
         // yt-dlp'nin her isteğe koyduğu genel "sayfa gezintisi" başlıkları medya isteğinde 403'e yol açabilir.
         if (typeof v === 'string' && v && !/^(cookie|host|content-length|accept|accept-language|sec-fetch-[a-z]+)$/i.test(k)) headers[k.toLowerCase()] = v;
     }
-    const cookie = cookieHeader(f.cookies);
-    if (cookie) headers.cookie = cookie;
+    // Çerezler başlığa değil sunucunun çerez kutusuna (alan adıyla) gider: yönlendirmede de doğru gönderilir.
+    let host = '';
+    try {
+        host = new URL(f.url || f.fragment_base_url || '').hostname;
+    } catch (_) { /* adres yok */ }
     return {
         protocol: f.protocol || 'https',
         url: f.url || '',
         headers,
+        cookies: parseYtdlpCookies(f.cookies, host),
         fragments: Array.isArray(f.fragments) ? f.fragments.map((x) => x.url || (x.path ? new URL(x.path, f.fragment_base_url || f.url).href : '')).filter(Boolean) : null,
         chunk: (f.downloader_options && f.downloader_options.http_chunk_size) || 0,
         size: f.filesize || f.filesize_approx || 0

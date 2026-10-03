@@ -38,6 +38,7 @@ import { createCapturer } from './capture.mjs';
 import { createLoginStore } from './logins.mjs';
 import { findYtdlp, extractInfo, normalizeInfo } from './ytdlp.mjs';
 import { findGalleryDl, extractImages } from './gallerydl.mjs';
+import { createCookieJar } from './cookiejar.mjs';
 import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -46,6 +47,8 @@ const PORT = Number(process.env.PORT) || 8787;
 // Sunucu tarayıcısında yapılan girişler saklanır (SAVE_LOGINS=0 ile kapatılır).
 const logins = createLoginStore(process.env.LOGIN_FILE || path.join(HERE, '.logins.json'),
     { enabled: process.env.SAVE_LOGINS !== '0' });
+// İndirme isteklerinin çerezleri: sayfayı açan tarayıcının ve yt-dlp'nin çerezleri + kayıtlı girişler.
+const cookieJar = createCookieJar({ extra: () => logins.storageState()?.cookies || [] });
 // Varsayılan yalnızca bu cihazdan erişim; Tailscale/tünel localhost'a yönlendirir.
 const HOST = process.env.HOST || '127.0.0.1';
 const ALLOW_PRIVATE = process.env.ALLOW_PRIVATE === '1';
@@ -450,6 +453,8 @@ async function sniff(pageUrl, waitMs) {
         title = await page.title().catch(() => '');
         // Saklanan liste içerikleri okunsun (sayfa kapanmadan).
         await Promise.race([Promise.allSettled(state.pending), new Promise((r) => setTimeout(r, 3000))]);
+        // Sayfanın verdiği çerezler (ör. TikTok'un video için istediği) indirmede kullanılsın.
+        cookieJar.add(await context.cookies().catch(() => []));
     } finally {
         await context.close().catch(() => {});
     }
@@ -477,6 +482,7 @@ async function closeSession(id) {
     const session = sessions.get(id);
     if (!session) return;
     sessions.delete(id);
+    cookieJar.add(await session.context.cookies().catch(() => []));
     await logins.save(session.context);
     await session.context.close().catch(() => {});
 }
@@ -581,10 +587,21 @@ function dirOf(url) {
 async function fetchUpstream(target, headers, { method = 'GET', signal } = {}) {
     let current = new URL(target);
     const startHost = current.host;
+    const explicit = headers.cookie || '';
     const sent = { ...headers };
     for (let hop = 0; ; hop++) {
         await assertPublicTarget(current);
-        if (current.host !== startHost) delete sent.cookie;
+        // Tarayıcı gibi: her adımda yalnızca o adresin alan adına/yoluna uyan çerezler.
+        const names = new Set();
+        const parts = [];
+        for (const part of [current.host === startHost ? explicit : '', cookieJar.header(current.href)].join('; ').split(/;\s*/)) {
+            const name = part.split('=')[0];
+            if (!part || names.has(name)) continue;
+            names.add(name);
+            parts.push(part);
+        }
+        if (parts.length) sent.cookie = parts.join('; ');
+        else delete sent.cookie;
         const upstream = await fetch(current, { method, headers: sent, redirect: 'manual', signal });
         const location = upstream.headers.get('location');
         if (!location || upstream.status < 300 || upstream.status >= 400) return upstream;
@@ -683,6 +700,7 @@ const STREAM_TTL_MS = 6 * 60 * 60 * 1000;
 const STREAM_CHUNK = 10 * 1024 * 1024;
 
 function registerStream(request, { hls = false } = {}) {
+    if (request.cookies && request.cookies.length) cookieJar.add(request.cookies);
     if (hls) {
         if (requestHeadersByUrl.size > 2000) requestHeadersByUrl.clear();
         requestHeadersByUrl.set(request.url, request.headers);

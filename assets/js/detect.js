@@ -383,12 +383,15 @@ const GENERIC_EXTRACTOR = /^(generic|html5mediaembed)$/i;
 
 async function sniffOnServer(result, url, signal, onStage, { noExtract = false } = {}) {
     // Önce yt-dlp (sunucuda kuruluysa): bilinen sitelerde gerçek kalite listesini verir.
+    let ytdlpReason = '';
     if (!noExtract) {
         const extracted = await extractOnServer(url, signal, onStage);
-        if (extracted && !GENERIC_EXTRACTOR.test(extracted.extractor || '')) {
+        if (extracted && extracted.ok && extracted.items.length && !GENERIC_EXTRACTOR.test(extracted.extractor || '')) {
             applyExtracted(result, extracted);
             return;
         }
+        // Site tanındı ama yt-dlp alamadı: neden, bizim tarama da bulamazsa gösterilir.
+        if (extracted && !extracted.ok && !extracted.unsupported) ytdlpReason = extracted.reason || '';
     }
     onStage('Sayfa kendi sunucunda çalıştırılıyor (oynatıcının istekleri bekleniyor)...');
     try {
@@ -413,6 +416,7 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
         result.details.fromRender = sniffed.items.length > 0;
         result.details.images = mergeImages(result.details.images || [], sniffed.items.filter((i) => i.kind === 'image').map((i) => i.url));
 
+        if (result.details.links.length === 0 && ytdlpReason) result.warnings.push(`yt-dlp alamadı: ${ytdlpReason}`);
         if (result.details.links.length === 0) {
             result.warnings.push('Sayfa kendi sunucunda çalıştırıldı, oynat düğmesine de basıldı ama medya isteği ' +
                 'görülmedi. Sayfa birkaç tıklama ya da onay istiyorsa aşağıdaki "👆 Sayfayı aç, kendim dokunayım" ' +
@@ -423,7 +427,7 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
     }
 }
 
-/** yt-dlp ile çözümleme; video bulunduysa sonucu döner, yoksa null. */
+/** yt-dlp ile çözümleme: sunucunun yanıtı (ok/items ya da ok:false + reason); yt-dlp yoksa null. */
 async function extractOnServer(url, signal, onStage) {
     onStage('Sayfa çözümleniyor (yt-dlp)...');
     let extracted;
@@ -433,7 +437,7 @@ async function extractOnServer(url, signal, onStage) {
         if (err.name === 'AbortError') throw err;
         return null; // eski sunucu ya da hata: tarayıcıyla açma yolu sürer
     }
-    return extracted && extracted.ok && extracted.items.length ? extracted : null;
+    return extracted || null;
 }
 
 function extractedLinks(extracted) {
