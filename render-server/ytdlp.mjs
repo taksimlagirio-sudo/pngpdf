@@ -2,7 +2,7 @@
 // hangi başlık/çerezlerle istenir" sorusunu yanıtlar (`yt-dlp -J`). İndirme, birleştirme ve ekranlar
 // tamamen bizim sistemimizde kalır; yt-dlp hiçbir dosya indirmez.
 //
-// Kurulum (isteğe bağlı): Termux'ta `pkg install python && pip install yt-dlp`. Kurulu değilse
+// Kurulum (isteğe bağlı): Termux'ta `pkg install python && pip install "yt-dlp[default]"`. Kurulu değilse
 // sunucu eskisi gibi çalışır. Başka bir konum için YTDLP_PATH, kapatmak için YTDLP=0.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -98,6 +98,9 @@ export async function extractInfo(url, { cookies = [] } = {}) {
             '--socket-timeout', '20', '--no-cache-dir'
         ];
         if (cookieFile) args.push('--cookies', cookieFile);
+        // YouTube'un imza/hız sınırı çözümü bir JS çalıştırıcısı ister; sunucunun kendi Node.js'i verilir
+        // (ayrıca deno kurmak gerekmez). Seçenek 2025.11'den eski sürümlerde yok.
+        if (tool.version >= '2025.11') args.push('--js-runtimes', `node:${process.execPath}`);
         args.push('--', url);
         const r = await run(tool.cmd, args, { timeoutMs: EXTRACT_TIMEOUT_MS, maxOutput: MAX_OUTPUT });
         if (r.code !== 0 || !r.out.trim()) {

@@ -58,7 +58,7 @@ token girmek, Tailscale veya Netlify gerekmez.
    sh start-termux.sh
    ```
    `termux-autostart.sh`, Termux her açıldığında sunucuyu başlatacak satırı `~/.bashrc`'ye ekler.
-   İsteğe bağlı ama önerilir: `pkg install python && pip install yt-dlp` (aşağıda "yt-dlp").
+   İsteğe bağlı ama önerilir: `pkg install python && pip install "yt-dlp[default]"` (aşağıda "yt-dlp").
    `start-termux.sh` Chromium'u bulur, bağımlılıkları kurar, telefonun uyutmasını engeller
    (`termux-wake-lock`), sunucuyu başlatır ve İndirici'yi Chrome'da açar.
 3. Bundan sonra: **Termux'u aç → İndirici kendiliğinden açılır.** Algıla → 🖥️ Kendi sunucum
@@ -228,14 +228,17 @@ Instagram, X gibi bilinen ~1800 sitede videonun gerçek adresleri ve kalite list
 yt-dlp kurulu değilse ya da siteyi tanımıyorsa sayfa eskisi gibi sunucudaki tarayıcıda açılır.
 
 ```bash
-pkg install python && pip install yt-dlp    # Termux
-yt-dlp -U                                     # güncelleme (siteler değiştikçe ara ara)
+pkg install python && pip install "yt-dlp[default]"    # Termux
+pip install -U "yt-dlp[default]"            # güncelleme (siteler değiştikçe ara ara)
 ```
 
 | Değişken | Anlamı |
 |---|---|
 | `YTDLP=0` | yt-dlp kullanılmaz |
 | `YTDLP_PATH` | yt-dlp başka bir yerdeyse yolu |
+
+YouTube'un imza çözümü için yt-dlp'ye sunucunun kendi Node.js'i verilir (`--js-runtimes node`);
+`[default]` paketi gereken çözücüyü (yt-dlp-ejs) de kurar, deno gerekmez.
 
 Gizlilik: yt-dlp yalnızca videosunu istediğin siteye bağlanır; telemetri yok, kendiliğinden güncelleme
 denetimi yok, uzaktan bileşen indirmesi kapalı. Kayıtlı girişler (çerezler) geçici, yalnızca sahibinin
