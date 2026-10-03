@@ -322,13 +322,16 @@ function recElapsed(job) {
 async function shareJob(job) {
     if (!job.blob) return;
     try {
-        const file = new File([job.blob], job.name, { type: job.blob.type || 'application/octet-stream' });
-        if (!navigator.canShare({ files: [file] })) {
+        // Toplu resim işi: hepsi tek seferde paylaşılır (galeriye tek dokunuşla).
+        const files = job.files
+            ? job.files.map((f) => new File([f.blob], f.name, { type: f.blob.type || 'application/octet-stream' }))
+            : [new File([job.blob], job.name, { type: job.blob.type || 'application/octet-stream' })];
+        if (!navigator.canShare({ files })) {
             job.detail = 'Bu dosya türü paylaşılamıyor; "Kaydet" ile İndirilenler\'e alın.';
             render();
             return;
         }
-        await navigator.share({ files: [file], title: job.name });
+        await navigator.share({ files, title: job.name });
         job.saved = true;
         job.detail = 'Paylaşıldı';
     } catch (err) {
@@ -340,7 +343,11 @@ async function shareJob(job) {
 function saveJob(job) {
     if (job.hooks.save) return job.hooks.save();
     if (job.status === 'pending-save') return savePending(job);
-    if (job.blob) {
+    if (job.files) {
+        job.files.forEach((f) => saveBlob(f.blob, f.name));
+        job.saved = true;
+        render();
+    } else if (job.blob) {
         saveBlob(job.blob, job.name);
         job.saved = true;
         render();

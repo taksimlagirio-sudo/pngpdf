@@ -11,7 +11,7 @@ Koyu (varsayılan) ve açık tema; renk: sıcak grafit nötrler + lime.
 | Bölüm | Ne yapar |
 | --- | --- |
 | **Algıla** | Yapıştırdığınız adresin ardında ne olduğunu bulur. Video/ses dosyası, HLS yayını (kalite, format, aralık seçimi), canlı yayın (süre sınırlı kayıt) ya da web sayfası (içindeki medya ve resimler). |
-| **Resimler** | Bir sayfadaki görselleri bulur; türe göre süzer, simgeleri gizler, seçtiklerinizi tek tek ya da ZIP olarak indirir. Sunucuda gallery-dl kuruluysa bilinen sitelerde (Instagram, X, Pinterest, Reddit…) tam boyutlu resimleri ve galerinin tamamını o bulur. |
+| **Resimler** | Bir sayfadaki görselleri bulur; türe göre süzer, simgeleri gizler, seçtiklerinizi ayrı ayrı dosyalar olarak (istenirse tek ZIP) indirir. Sunucuda gallery-dl kuruluysa bilinen sitelerde (Instagram, X, Pinterest, Reddit…) tam boyutlu resimleri ve galerinin tamamını o bulur. |
 | **İndirmeler** | Süren kayıtlar, indirmeler, sıradakiler ve geçmiş. Aynı anda en fazla 1/2/3/5 iş; sıradakini "Şimdi başlat". |
 | **Ayarlar** | Tema, varsayılan kaydetme yöntemi (İndirilenler / Galeri / Konum seç), bağlantı yöntemi, arka planda indirme, kendi sunucum. |
 
