@@ -1,6 +1,7 @@
 // Bir adresin arkasında ne olduğunu anlar: tür, format, boyut, çözünürlük/süre.
 import { smartFetch, formatSize, fileNameFromUrl, proxyUrl, getRenderServer, renderSniff, renderExtract } from './util.js';
 import { parsePlaylist, loadPlaylist, findDrm, audioFor, playlistHasVideo } from './hls.js';
+import { parseMpd } from './dash.js';
 
 const SNIFF_BYTES = 65536;
 
@@ -29,10 +30,11 @@ export function sniffFormat(bytes) {
     if (b[0] === 0x47 && b[188] === 0x47) return { kind: 'video', format: 'mpeg-ts', mime: 'video/mp2t', ext: 'ts' };
     if (b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04) return { kind: 'archive', format: 'zip', mime: 'application/zip', ext: 'zip' };
 
-    const head = text(b, 0, Math.min(b.length, 1024)).trim();
+    const head = text(b, 0, Math.min(b.length, 4096)).trim();
     if (head.startsWith('#EXTM3U')) return { kind: 'hls', format: 'm3u8', mime: 'application/vnd.apple.mpegurl', ext: 'm3u8' };
+    // DASH bildirimi de "<?xml" ile başlar: sayfa sanılmasın diye önce bakılır.
+    if (/<MPD[\s>]/.test(head)) return { kind: 'dash', format: 'mpd', mime: 'application/dash+xml', ext: 'mpd' };
     if (/^<(!doctype html|html|\?xml)/i.test(head)) return { kind: 'page', format: 'html', mime: 'text/html', ext: 'html' };
-    if (head.startsWith('<MPD') || head.includes('<MPD ')) return { kind: 'dash', format: 'mpd', mime: 'application/dash+xml', ext: 'mpd' };
     return null;
 }
 
@@ -254,8 +256,8 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
         onStage('Sayfadaki medya aranıyor...');
         await scanPage(result, url, mode, signal, onStage, { noExtract });
     } else if (info.kind === 'dash') {
-        result.downloadable = false;
-        result.warnings.push('DASH (.mpd) yayınları bu araçta desteklenmiyor; HLS (.m3u8) adresi varsa onu kullanın.');
+        onStage('DASH bildirimi ayrıştırılıyor...');
+        await describeDash(result, url, mode, signal);
     } else if (info.kind === 'image') {
         onStage('Resim okunuyor...');
         await describeImage(result, url, mode, signal);
@@ -477,6 +479,29 @@ function fromExtension(url) {
     return hit ? { ...hit, ext: ext.toLowerCase() } : null;
 }
 
+async function describeDash(result, url, mode, signal) {
+    const res = await smartFetch(url, { mode, init: { signal } });
+    const mpd = parseMpd(await res.text(), res.url && !res.url.includes('/fetch?') ? res.url : url);
+    result.target = 'dash';
+    result.suggestedName = fileNameFromUrl(url).replace(/\.mpd$/i, '');
+    Object.assign(result.details, {
+        mpd, variants: mpd.variants, duration: mpd.duration, live: mpd.live, drm: mpd.drm,
+        hasAudio: mpd.audios.length > 0
+    });
+    if (mpd.drm) {
+        result.downloadable = false;
+        result.warnings.push(`Yayın DRM korumalı (${mpd.drm}); indirilemez.`);
+    } else if (mpd.live) {
+        result.downloadable = false;
+        result.warnings.push('Canlı DASH yayınlarının kaydı henüz desteklenmiyor; yayının HLS (.m3u8) adresi varsa onu kullanın.');
+    } else if (!mpd.variants.length) {
+        result.downloadable = false;
+        result.warnings.push(mpd.webmOnly
+            ? 'Bu DASH yayını yalnızca WebM biçiminde; şimdilik yalnızca MP4 biçimli DASH indirilebiliyor.'
+            : 'DASH bildiriminde video bulunamadı.');
+    }
+}
+
 async function describeHls(result, url, mode, signal) {
     const res = await smartFetch(url, { mode, init: { signal } });
     let playlist = parsePlaylist(await res.text(), url);
@@ -523,6 +548,17 @@ export async function verifyLinks(links, { mode = 'auto', signal } = {}) {
         }
     };
     const checked = await Promise.all(links.map(async (link) => {
+        if (link.kind === 'dash') {
+            try {
+                const res = await smartFetch(link.url, { mode, init: { signal } });
+                const mpd = parseMpd(await res.text(), link.url);
+                const usable = mpd.variants.length > 0 && !mpd.drm;
+                return { ...link, ok: usable, hidden: !usable, variants: mpd.variants.length, live: mpd.live,
+                    duration: mpd.duration, height: mpd.variants[0] ? mpd.variants[0].height : 0 };
+            } catch (_) {
+                return { ...link, ok: false, unreachable: true, hidden: false };
+            }
+        }
         if (link.kind !== 'hls') return { ...link, ok: link.kind === 'video', hidden: link.kind !== 'video' };
         try {
             const playlist = await Promise.race([

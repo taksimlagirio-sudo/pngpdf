@@ -341,7 +341,7 @@ function sliceRange(segments, range, total) {
  * `createSinkFor(fileName, mime)` hedefi açar (konum seçildiyse tıklamada sorulmuştur).
  */
 export async function downloadHlsVod({
-    job, videoUrl, videoPlaylist = null, audioUrl = null, name, range = null, mode = 'auto', createSinkFor
+    job, videoUrl, videoPlaylist = null, audioUrl = null, audioPlaylist = null, name, range = null, mode = 'auto', createSinkFor
 }) {
     // Kendi denetleyicisi: hata olunca paralel parçalar durur ama iş iptal sayılmaz
     // (bağlantı hata verirse aynı iş "video açılıp kaydedilerek" sürebilir).
@@ -350,7 +350,7 @@ export async function downloadHlsVod({
     const signal = local.signal;
     const video = videoPlaylist || await loadPlaylist(videoUrl, { mode, signal });
     if (video.type === 'master') throw new Error('Önce bir kalite seçin');
-    const audio = audioUrl ? await loadPlaylist(audioUrl, { mode, signal }) : null;
+    const audio = audioPlaylist || (audioUrl ? await loadPlaylist(audioUrl, { mode, signal }) : null);
 
     const streams = [{ id: 'v', playlist: video }];
     if (audio && audio.type === 'media' && audio.segments.length) streams.push({ id: 'a', playlist: audio });
