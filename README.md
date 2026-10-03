@@ -10,7 +10,7 @@ Koyu (varsayılan) ve açık tema; renk: sıcak grafit nötrler + lime.
 
 | Bölüm | Ne yapar |
 | --- | --- |
-| **Algıla** | Yapıştırdığınız adresin ardında ne olduğunu bulur. Video/ses dosyası, HLS yayını (kalite, format, aralık seçimi), canlı yayın (süre sınırlı kayıt) ya da web sayfası (içindeki medya ve resimler). |
+| **Algıla** | Yapıştırdığınız adresin ardında ne olduğunu bulur. Video/ses dosyası, HLS ya da DASH yayını (kalite, format, aralık seçimi), canlı yayın (süre sınırlı kayıt) ya da web sayfası (içindeki medya ve resimler). |
 | **Resimler** | Bir sayfadaki görselleri bulur; türe göre süzer, simgeleri gizler, seçtiklerinizi ayrı ayrı dosyalar olarak (istenirse tek ZIP) indirir. Sunucuda gallery-dl kuruluysa bilinen sitelerde (Instagram, X, Pinterest, Reddit…) tam boyutlu resimleri ve galerinin tamamını o bulur. |
 | **İndirmeler** | Süren kayıtlar, indirmeler, sıradakiler ve geçmiş. Aynı anda en fazla 1/2/3/5 iş; sıradakini "Şimdi başlat". |
 | **Ayarlar** | Tema, varsayılan kaydetme yöntemi (İndirilenler / Galeri / Konum seç), bağlantı yöntemi, arka planda indirme, kendi sunucum. |
@@ -69,6 +69,15 @@ sayfa reklama yönlendirilirse geçiş engellenir ya da videonun sayfasına geri
 basılır. Engellenen reklam sayısı kayıt kartında yazar. Ayarlar → Reklam engelleme bölümü durumu ve
 engelleyicinin neyi görüp neyi görmediğini gösterir (yalnızca sunucunun açtığı sayfalar; telefonundaki
 tarayıcı, dosyaların ve ayarların değil; listeler GitHub'dan indirilir, adresler hiçbir yere gönderilmez).
+
+## DASH (.mpd)
+
+DASH bildirimleri de HLS gibi açılır: kaliteler (720p, 360p…), süre, boyut tahmini ve aralık seçimi
+aynı ekranda. Ayrı gelen görüntü ve ses indirilip tek, sarılabilir MP4'te birleştirilir (yeniden
+kodlama yok). Desteklenen adreslemeler: `SegmentTemplate` (`$Number$` / `$Time$`, `SegmentTimeline`),
+`SegmentList` (bayt aralıklı tek dosya dahil), `SegmentBase` (tek dosya; parçalar `sidx`'ten), birden
+çok `Period`. Yalnızca MP4 (fMP4) akışlar; DRM'li (Widevine/PlayReady) ve canlı DASH indirilmez.
+Önizleme gösterilmez (tarayıcı DASH'i kendi oynatamaz).
 
 ## HLS: önizleme, kalite, ses ve aralık
 

@@ -5,6 +5,7 @@ import { analyzeUrl, formatDuration, describeMediaPlaylist } from './detect.js';
 import { downloadFile } from './video.js';
 import { downloadMerged } from './merge.js';
 import { downloadHlsVod, recordHlsLive, loadPlaylist, audioFor, baseNameFor } from './hls.js';
+import { dashPlaylist } from './dash.js';
 import {
     addJob, createSink, effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch,
     askNotificationPermission
@@ -169,7 +170,8 @@ export function initDetectTab({ navigate, toast, openImages }) {
             rangeEnd: '',
             recLimit: 2,
             recCustomMin: 45,
-            media: d.playlist ? d : null,
+            // DASH: süre bildirimden; kalite kartları ve aralık seçimi HLS'teki gibi çalışır.
+            media: d.playlist ? d : result.target === 'dash' ? { duration: d.duration || 0, live: false } : null,
             audioUrl: d.audioUrl || pair || null,
             loadingVariant: false,
             showHidden: false
@@ -226,6 +228,10 @@ export function initDetectTab({ navigate, toast, openImages }) {
             if (thumbs.has(link.url)) continue;
             if (link.unreachable) {
                 thumbs.set(link.url, { ok: false }); // doğrudan oynatılamaz; kaydedilerek indirilir
+                continue;
+            }
+            if (link.kind === 'dash') {
+                thumbs.set(link.url, { ok: true, height: link.height, duration: link.duration }); // önizleme yok, indirilebilir
                 continue;
             }
             const result = await probePreview(link.url, { kind: link.kind, proxied: false });
@@ -288,6 +294,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
     function currentExt() {
         if (info.unreachable) return '.mp4';
         if (info.target === 'hls') return info.details.audioOnly ? '.m4a' : '.mp4';
+        if (info.target === 'dash') return '.mp4';
         if (ui.audioUrl) return '.mp4';
         return '.' + (info.suggestedName.split('.').pop() || info.ext || 'bin');
     }
@@ -312,7 +319,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
     }
 
     function rangeHtml() {
-        if (info.target !== 'hls' || !ui.media || ui.media.live) return '';
+        if (!['hls', 'dash'].includes(info.target) || !ui.media || ui.media.live || !ui.media.duration) return '';
         const total = ui.media.duration;
         if (!ui.rangeOpen) {
             return `<button class="row" style="border:1px solid var(--ln);border-radius:14px" data-act="range-open">
@@ -334,6 +341,15 @@ export function initDetectTab({ navigate, toast, openImages }) {
         const d = info.details;
         const bits = [];
         if (info.unreachable) return `${info.kind === 'hls' ? 'Yayın' : 'Video'} · bağlantı doğrudan açılmıyor`;
+        if (info.target === 'dash') {
+            bits.push(d.live ? 'Canlı yayın (DASH)' : 'Video (DASH)');
+            if (d.duration && !d.live) bits.push(hms(d.duration));
+            const v = currentVariant();
+            if (v && v.resolution) bits.push(v.resolution.replace('x', '×'));
+            if (d.hasAudio) bits.push('ses ayrı · birleştirilecek');
+            if (d.drm) bits.push(`DRM (${d.drm})`);
+            return bits.join(' · ');
+        }
         if (info.target === 'hls') {
             bits.push(d.live ? 'Canlı yayın' : 'Video');
             if (d.duration && !d.live) bits.push(hms(d.duration));
@@ -353,7 +369,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
     }
 
     function downloadSize() {
-        if (info.target !== 'hls') return info.size || 0;
+        if (!['hls', 'dash'].includes(info.target)) return info.size || 0;
         if (!ui.media) return 0;
         const { start, end } = rangeSeconds();
         const seconds = ui.rangeOpen ? Math.max(0, Math.min(end || ui.media.duration, ui.media.duration) - start) : ui.media.duration;
@@ -361,7 +377,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
     }
 
     function renderDownload() {
-        const isHls = info.target === 'hls';
+        const isHls = info.target === 'hls' || info.target === 'dash';
         let body = '';
         if (info.downloadable) {
             const size = downloadSize();
@@ -610,6 +626,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
 
     async function pickVariant(index) {
         ui.variant = index;
+        if (info.target === 'dash') return render(); // kalite bilgisi bildirimde hazır
         const variant = currentVariant();
         if (info.details.master) ui.audioUrl = audioFor(info.details.master, variant) || ui.audioUrl;
         if (preview) preview.selectQuality(variant.url);
@@ -688,6 +705,30 @@ export function initDetectTab({ navigate, toast, openImages }) {
         const isHls = info.target === 'hls' || (info.unreachable && info.kind === 'hls');
         const name = cleanName();
         try {
+            if (info.target === 'dash') {
+                const mpd = info.details.mpd;
+                const variant = currentVariant();
+                const audioRep = mpd.audios[0] || null;
+                const { saveMode, createSinkFor } = await prepareSink(`${name}.mp4`, 'video/mp4');
+                const range = ui.rangeOpen ? rangeSeconds() : null;
+                const mode = prefs.conn;
+                addJob({
+                    name: `${name}.mp4`,
+                    kind: 'hls',
+                    thumb: null,
+                    saveMode,
+                    run: withCaptureFallback(async (job) => {
+                        job.setDetail('Parça listesi hazırlanıyor...');
+                        const [videoPlaylist, audioPlaylist] = await Promise.all([
+                            dashPlaylist(mpd, variant, { mode, signal: job.signal }),
+                            audioRep ? dashPlaylist(mpd, audioRep, { mode, signal: job.signal }) : null
+                        ]);
+                        return downloadHlsVod({ job, videoPlaylist, audioPlaylist, name, range, mode, createSinkFor });
+                    }, { mediaUrl: info.url, kind: 'video', name, saveMode, createSinkFor })
+                });
+                toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'İndirme başladı · İndirmeler');
+                return;
+            }
             if (isHls) {
                 if (!ui.media && !info.unreachable) throw new Error('Yayın bilgisi okunamadı');
                 const variant = currentVariant();
