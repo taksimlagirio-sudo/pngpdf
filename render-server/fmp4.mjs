@@ -33,7 +33,9 @@ function topLevelBoxes(fd, fileSize) {
 const u8 = (buf) => new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 
 /**
- * @param {{file: string, mime: string}[]} streams  SourceBuffer başına yakalanan dosyalar
+ * @param {{file: string, mime: string, offsets?: {at: number, shift: number}[]}[]} streams
+ *   SourceBuffer başına yakalanan dosyalar; offsets: dosyanın hangi baytından itibaren oynatıcının
+ *   hangi timestampOffset'i (sn) uyguladığı
  * @param {string} outFile
  * @returns {Promise<{ext: string, duration?: number, warning?: string}>}
  */
@@ -53,7 +55,7 @@ export async function mergeFmp4(streams, outFile) {
             fs.writeSync(out, bytes, 0, bytes.length, pos);
             pos += bytes.length;
         }
-    });
+    }, { alignStartsOver: 5 });
     try {
         await builder.start();
         for (const [index, stream] of streams.entries()) {
@@ -61,6 +63,12 @@ export async function mergeFmp4(streams, outFile) {
             try {
                 const boxes = topLevelBoxes(fd, fs.fstatSync(fd).size);
                 const id = `sb${index}`;
+                const offsets = stream.offsets || [];
+                const shiftAt = (at) => {
+                    let shift = 0;
+                    for (const o of offsets) if (o.at <= at) shift = o.shift;
+                    return shift;
+                };
                 for (let i = 0; i < boxes.length; i++) {
                     const b = boxes[i];
                     if (b.type === 'moov') {
@@ -69,7 +77,7 @@ export async function mergeFmp4(streams, outFile) {
                         const next = boxes[i + 1];
                         if (!next || next.type !== 'mdat') continue;
                         // moof + mdat birlikte verilir (örnek konumları moof'a göredir).
-                        await builder.addFragment(id, u8(readAt(fd, b.offset, b.size + next.size)));
+                        await builder.addFragment(id, u8(readAt(fd, b.offset, b.size + next.size)), shiftAt(b.offset));
                         i++;
                     }
                 }

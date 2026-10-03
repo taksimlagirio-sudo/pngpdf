@@ -13,6 +13,11 @@ if [ ! -d node_modules/playwright-core ] || [ ! -d node_modules/@ghostery/adbloc
     npm install --omit=dev || exit 1
 fi
 
+# yt-dlp (isteğe bağlı): bilinen sitelerde video adreslerini/kalitelerini bulur.
+if ! command -v yt-dlp >/dev/null 2>&1; then
+    echo 'İpucu: yt-dlp kurulu değil. Kurmak için: pkg install python && pip install "yt-dlp[default]"'
+fi
+
 # Telefon ekranı kapanınca Termux'un uyutulmasını engelle (Termux:API gerekmez).
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
 

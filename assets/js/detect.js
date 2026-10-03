@@ -1,5 +1,5 @@
 // Bir adresin arkasında ne olduğunu anlar: tür, format, boyut, çözünürlük/süre.
-import { smartFetch, formatSize, fileNameFromUrl, proxyUrl, getRenderServer, renderSniff } from './util.js';
+import { smartFetch, formatSize, fileNameFromUrl, proxyUrl, getRenderServer, renderSniff, renderExtract } from './util.js';
 import { parsePlaylist, loadPlaylist, findDrm, audioFor, playlistHasVideo } from './hls.js';
 
 const SNIFF_BYTES = 65536;
@@ -338,6 +338,8 @@ function basePageResult(url) {
 }
 
 async function sniffOnServer(result, url, signal, onStage) {
+    // Önce yt-dlp (sunucuda kuruluysa): bilinen sitelerde gerçek kalite listesini verir.
+    if (await extractOnServer(result, url, signal, onStage)) return;
     onStage('Sayfa kendi sunucunda çalıştırılıyor (oynatıcının istekleri bekleniyor)...');
     try {
         const sniffed = await renderSniff(url, { signal });
@@ -367,6 +369,28 @@ async function sniffOnServer(result, url, signal, onStage) {
     } catch (err) {
         result.warnings.push(`Kendi sunucuna ulaşılamadı: ${err.message}`);
     }
+}
+
+/** yt-dlp ile çözümleme; video bulunduysa true (sayfa ayrıca açılmaz). */
+async function extractOnServer(result, url, signal, onStage) {
+    onStage('Sayfa çözümleniyor (yt-dlp)...');
+    let extracted;
+    try {
+        extracted = await renderExtract(url, { signal });
+    } catch (err) {
+        if (err.name === 'AbortError') throw err;
+        return false; // eski sunucu ya da hata: tarayıcıyla açma yolu sürer
+    }
+    if (!extracted || !extracted.ok || !extracted.items.length) return false;
+    if (extracted.title) result.details.title = extracted.title;
+    result.details.thumbnail = extracted.thumbnail || '';
+    result.details.extractor = extracted.extractor || '';
+    result.details.fromYtdlp = true;
+    result.details.links = extracted.items.map((item) => ({
+        url: item.url, kind: item.kind, size: item.size || 0, height: item.height || 0, audioUrl: item.audioUrl || null,
+        variants: item.variants || 0, live: Boolean(item.live), duration: extracted.duration || 0, fromYtdlp: true
+    }));
+    return true;
 }
 
 const MAX_SCRIPTS = 4;

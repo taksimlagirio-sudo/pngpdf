@@ -110,7 +110,8 @@ const CAPTURE_SCRIPT = `(() => {
                 try {
                     const u8 = data instanceof ArrayBuffer ? new Uint8Array(data)
                         : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-                    send('data', id, toB64(u8));
+                    // timestampOffset: oynatıcı bu akışın zamanını kaydırıyorsa birleştirirken aynısı yapılır.
+                    send('data', id, toB64(u8), Number(this.timestampOffset) || 0);
                 } catch (_) {}
                 return append.call(this, data);
             };
@@ -281,7 +282,7 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
             }
             if (type === 'sb') {
                 const file = path.join(cap.work, `${tracks.size}.bin`);
-                tracks.set(id, { mime: payload || '', ms: ms || '', fd: fs.openSync(file, 'w'), file, bytes: 0 });
+                tracks.set(id, { mime: payload || '', ms: ms || '', fd: fs.openSync(file, 'w'), file, bytes: 0, offsets: [] });
                 return;
             }
             if (type === 'buf') {
@@ -300,6 +301,9 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
                 const track = tracks.get(id);
                 if (!track) return;
                 const buf = Buffer.from(payload, 'base64');
+                const shift = Number(ms) || 0;
+                const lastShift = track.offsets.length ? track.offsets[track.offsets.length - 1].shift : 0;
+                if (shift !== lastShift) track.offsets.push({ at: track.bytes, shift });
                 fs.writeSync(track.fd, buf);
                 track.bytes += buf.length;
                 msBytes.set(track.ms, (msBytes.get(track.ms) || 0) + buf.length);
@@ -353,6 +357,8 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
                         cap.state = 'capturing'; // kullanıcı başlattı
                         persist(cap);
                     }
+                    if (video.duration > 0 && video.duration < 1e6) cap.duration = video.duration;
+                    cap.phase = 'Video indiriliyor';
                     progressive = downloadProgressive(context, video.src, { referer: videoFrame.url() || page.url() }, cap)
                         .catch((err) => { cap.progressiveError = err.message; });
                     videoFrame.evaluate(() => document.querySelectorAll('video').forEach((v) => v.pause())).catch(() => {});
@@ -735,6 +741,8 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
                 const range = res.headers()['content-range'] || '';
                 total = Number(range.split('/')[1]) || 0;
                 cap.total = total;
+                // Süre biliniyorsa ilerleme saniye olarak da gösterilir (dosya baştan sona iner).
+                if (cap.duration > 0 && total) cap.mediaSec = cap.duration * Math.min(1, offset / total);
                 if (!body.length || (total && offset >= total)) break;
             }
             cap.total = total || offset;

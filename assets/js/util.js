@@ -167,6 +167,34 @@ export function renderSniff(url, { signal, waitMs } = {}) {
     });
 }
 
+/**
+ * Sayfadaki videoları sunucudaki yt-dlp'ye çözdürür (yalnızca veri: adresler, kaliteler).
+ * Sunucunun verdiği "/stream/…" adresleri token'lı tam adrese çevrilir. yt-dlp yoksa null.
+ */
+export async function renderExtract(url, { signal } = {}) {
+    const config = getRenderServer();
+    if (!config) return null;
+    const result = await renderRequest(config, '/extract', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url }),
+        signal
+    }, 90000);
+    if (!result || !result.available) return null;
+    const full = (u) => (u && u.startsWith('/stream/') ? `${config.url}${u}?token=${encodeURIComponent(config.token)}` : u);
+    for (const item of result.items || []) {
+        item.url = full(item.url);
+        if (item.audioUrl) item.audioUrl = full(item.audioUrl);
+    }
+    return result;
+}
+
+/** Adres kendi sunucumun yt-dlp akışı mı (doğrudan sunucudan iner, CORS sorunu yok)? */
+export function isServerStream(url) {
+    const config = getRenderServer();
+    return Boolean(config && url && url.startsWith(`${config.url}/stream/`));
+}
+
 /** Kayıtlı sunucuya JSON isteği (etkileşimli oturum vb. için). */
 export function renderApi(path, init = {}, timeoutMs = 30000) {
     const config = getRenderServer();

@@ -36,6 +36,7 @@ import { classify, dedupKey, isSegment } from './media.mjs';
 import { createRecorder } from './recorder.mjs';
 import { createCapturer } from './capture.mjs';
 import { createLoginStore } from './logins.mjs';
+import { findYtdlp, extractInfo, normalizeInfo } from './ytdlp.mjs';
 import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -550,6 +551,26 @@ function dirOf(url) {
 
 /* ---------------- İndirme proxy'si ---------------- */
 
+/**
+ * Yönlendirmeleri elle izleyerek ister: her adımda özel ağ kontrolü yapılır, başka bir siteye
+ * yönlendirilince çerez gönderilmez.
+ */
+async function fetchUpstream(target, headers, { method = 'GET', signal } = {}) {
+    let current = new URL(target);
+    const startHost = current.host;
+    const sent = { ...headers };
+    for (let hop = 0; ; hop++) {
+        await assertPublicTarget(current);
+        if (current.host !== startHost) delete sent.cookie;
+        const upstream = await fetch(current, { method, headers: sent, redirect: 'manual', signal });
+        const location = upstream.headers.get('location');
+        if (!location || upstream.status < 300 || upstream.status >= 400) return upstream;
+        if (hop >= MAX_REDIRECTS) throw new Error('Çok fazla yönlendirme');
+        upstream.body?.cancel().catch(() => {});
+        current = new URL(location, current);
+    }
+}
+
 async function proxyFetch(req, res, target, refererParam) {
     let current;
     try {
@@ -560,21 +581,16 @@ async function proxyFetch(req, res, target, refererParam) {
 
     const referer = refererParam || refererByUrl.get(target) || refererByHost.get(current.host) || '';
     const headers = { 'user-agent': DESKTOP_UA, accept: '*/*' };
+    // yt-dlp'nin bu adres için verdiği başlıklar (User-Agent, Referer, çerez...).
+    Object.assign(headers, requestHeadersByUrl.get(target) || requestHeadersByHost.get(current.host) || {});
     if (req.headers.range) headers.range = req.headers.range;
-    if (referer) headers.referer = referer;
+    if (referer && !headers.referer) headers.referer = referer;
 
     let upstream;
-    for (let hop = 0; ; hop++) {
-        try {
-            await assertPublicTarget(current);
-        } catch (err) {
-            return sendJson(res, 400, { error: err.message });
-        }
-        upstream = await fetch(current, { method: req.method === 'HEAD' ? 'HEAD' : 'GET', headers, redirect: 'manual' });
-        const location = upstream.headers.get('location');
-        if (!location || upstream.status < 300 || upstream.status >= 400) break;
-        if (hop >= MAX_REDIRECTS) return sendJson(res, 502, { error: 'Çok fazla yönlendirme' });
-        current = new URL(location, current);
+    try {
+        upstream = await fetchUpstream(current, headers, { method: req.method === 'HEAD' ? 'HEAD' : 'GET' });
+    } catch (err) {
+        return sendJson(res, /yönlendirme/.test(err.message) ? 502 : 400, { error: err.message });
     }
 
     const out = { ...CORS_HEADERS, 'cache-control': 'no-store' };
@@ -590,6 +606,116 @@ async function proxyFetch(req, res, target, refererParam) {
     res.on('close', () => stream.destroy());
     stream.on('error', () => res.destroy());
     stream.pipe(res);
+}
+
+/* ---------------- yt-dlp: veri katmanı ---------------- */
+
+// yt-dlp'nin bulduğu akışlar. HLS ham adresiyle verilir (uygulamanın HLS indiricisi kullanır),
+// başlıkları /fetch'te kullanılmak üzere saklanır. Diğerleri sunucuda tek bir adres olarak sunulur:
+// /stream/<kimlik> doğru başlık/çerezle, parça parça (YouTube yavaşlatmasın diye) ya da DASH
+// parçalarını art arda ekleyerek tek dosya akıtır.
+const requestHeadersByUrl = new Map();
+const requestHeadersByHost = new Map();
+const streams = new Map();
+const STREAM_TTL_MS = 6 * 60 * 60 * 1000;
+const STREAM_CHUNK = 10 * 1024 * 1024;
+
+function registerStream(request, { hls = false } = {}) {
+    if (hls) {
+        if (requestHeadersByUrl.size > 2000) requestHeadersByUrl.clear();
+        requestHeadersByUrl.set(request.url, request.headers);
+        try {
+            requestHeadersByHost.set(new URL(request.url).host, request.headers);
+        } catch (_) { /* geçersiz adres */ }
+        return request.url;
+    }
+    const id = randomBytes(12).toString('hex');
+    streams.set(id, { ...request, created: Date.now() });
+    return `/stream/${id}`;
+}
+
+setInterval(() => {
+    const now = Date.now();
+    for (const [id, entry] of streams) if (now - entry.created > STREAM_TTL_MS) streams.delete(id);
+}, 10 * 60 * 1000).unref();
+
+async function extractWithYtdlp(url) {
+    const result = await extractInfo(url, { cookies: logins.storageState()?.cookies || [] });
+    if (!result.ok) return { available: !result.missing, ok: false, reason: result.reason, unsupported: Boolean(result.unsupported) };
+    const page = normalizeInfo(result.info, registerStream);
+    return { available: true, ok: true, ...page };
+}
+
+async function serveStream(req, res, entry) {
+    const headers = { 'user-agent': DESKTOP_UA, accept: '*/*', ...entry.headers };
+    const controller = new AbortController();
+    res.on('close', () => controller.abort());
+    const signal = controller.signal;
+    const pipeBody = async (upstream) => {
+        for await (const chunk of upstream.body) {
+            if (!res.write(chunk)) await new Promise((r) => res.once('drain', r));
+        }
+    };
+
+    // DASH parçaları: art arda tek akış (ilk parça init segmenti).
+    if (entry.fragments && entry.fragments.length) {
+        res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'video/mp4', 'cache-control': 'no-store' });
+        if (req.method === 'HEAD') return res.end();
+        for (const url of entry.fragments) {
+            const upstream = await fetchUpstream(url, headers, { signal });
+            if (!upstream.ok) throw new Error(`Parça alınamadı (HTTP ${upstream.status})`);
+            await pipeBody(upstream);
+        }
+        return res.end();
+    }
+
+    // Uygulama aralık istediyse (önizleme, sürdürme) aynen iletilir.
+    if (req.headers.range || req.method === 'HEAD') {
+        const upstream = await fetchUpstream(entry.url, { ...headers, ...(req.headers.range ? { range: req.headers.range } : {}) },
+            { method: req.method === 'HEAD' ? 'HEAD' : 'GET', signal });
+        const out = { ...CORS_HEADERS, 'cache-control': 'no-store' };
+        for (const key of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+            const value = upstream.headers.get(key);
+            if (value) out[key] = value;
+        }
+        res.writeHead(upstream.status, out);
+        if (req.method === 'HEAD' || !upstream.body) return res.end();
+        await pipeBody(upstream);
+        return res.end();
+    }
+
+    // Tamamı: parça parça (bazı sunucular, ör. YouTube, tek seferlik büyük isteği yavaşlatır).
+    const chunk = entry.chunk || STREAM_CHUNK;
+    let offset = 0;
+    let total = 0;
+    for (;;) {
+        const upstream = await fetchUpstream(entry.url, { ...headers, range: `bytes=${offset}-${offset + chunk - 1}` }, { signal });
+        if (offset === 0) {
+            if (upstream.status !== 200 && upstream.status !== 206) {
+                upstream.body?.cancel().catch(() => {});
+                return sendJson(res, 502, { error: `Video sunucusu HTTP ${upstream.status} döndü` });
+            }
+            total = upstream.status === 206
+                ? Number((upstream.headers.get('content-range') || '').split('/')[1]) || 0
+                : Number(upstream.headers.get('content-length')) || 0;
+            const out = { ...CORS_HEADERS, 'content-type': upstream.headers.get('content-type') || 'application/octet-stream', 'cache-control': 'no-store', 'accept-ranges': 'bytes' };
+            if (total) out['content-length'] = total;
+            res.writeHead(200, out);
+            if (upstream.status === 200) {
+                await pipeBody(upstream); // aralık desteklenmiyor: tamamı tek seferde geldi
+                return res.end();
+            }
+        } else if (upstream.status !== 206) {
+            throw new Error(`Video sunucusu HTTP ${upstream.status} döndü`);
+        }
+        const before = offset;
+        for await (const piece of upstream.body) {
+            offset += piece.length;
+            if (!res.write(piece)) await new Promise((r) => res.once('drain', r));
+        }
+        if (offset === before || (total && offset >= total)) break;
+    }
+    res.end();
 }
 
 /* ---------------- Uygulamanın kendisi (statik dosyalar) ---------------- */
@@ -801,7 +927,33 @@ const server = http.createServer(async (req, res) => {
 
     try {
         if (url.pathname === '/health' && req.method === 'GET') {
-            return sendJson(res, 200, { ok: true, name: 'indirici-render-server', version: VERSION, adblock: adblockStatus(), logins: { enabled: logins.enabled, sites: logins.sites().length } });
+            return sendJson(res, 200, { ok: true, name: 'indirici-render-server', version: VERSION, adblock: adblockStatus(), logins: { enabled: logins.enabled, sites: logins.sites().length },
+                ytdlp: await findYtdlp().then((t) => (t ? { version: t.version } : null)) });
+        }
+
+        if (url.pathname === '/extract' && req.method === 'POST') {
+            const body = await readJson(req);
+            let target;
+            try {
+                target = new URL(body.url);
+            } catch (_) {
+                return sendJson(res, 400, { error: 'Geçerli bir url gönderin' });
+            }
+            await assertPublicTarget(target);
+            return sendJson(res, 200, await extractWithYtdlp(target.href));
+        }
+
+        const streamMatch = url.pathname.match(/^\/stream\/([0-9a-f]{24})$/);
+        if (streamMatch && (req.method === 'GET' || req.method === 'HEAD')) {
+            const entry = streams.get(streamMatch[1]);
+            if (!entry) return sendJson(res, 404, { error: 'Akışın süresi doldu; sayfayı yeniden algıla' });
+            try {
+                await serveStream(req, res, entry);
+            } catch (err) {
+                if (!res.headersSent) return sendJson(res, 502, { error: err.message });
+                res.destroy();
+            }
+            return;
         }
 
         if (url.pathname === '/logins' && req.method === 'GET') {
