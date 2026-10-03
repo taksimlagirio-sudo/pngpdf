@@ -114,7 +114,13 @@ const MOVIE_TIMESCALE = 1000;
  *   // patch: { position, bytes } — dosyanın başındaki mdat boyutu; hedefte o konuma yazılmalı.
  */
 export class Mp4Builder {
-    constructor({ write }) {
+    /**
+     * @param {{write: (bytes: Uint8Array) => Promise<void>}} sink
+     * @param {{alignStartsOver?: number}} [options]  izlerin başlangıçları bu kadar saniyeden fazla
+     *   ayrıksa (zaman damgaları farklı tabanlardan) hepsi aynı anda başlatılır
+     */
+    constructor({ write }, { alignStartsOver = 0 } = {}) {
+        this.alignStartsOver = alignStartsOver;
         this.writeOut = write;
         this.pos = 0;
         this.tracks = new Map(); // "akış:izNo" → iz
@@ -222,13 +228,16 @@ export class Mp4Builder {
         }
     }
 
-    /** Bir ya da birden çok moof+mdat içeren segmenti ekler. Sıralı çağrılmalı. */
-    addFragment(streamId, bytes) {
-        this.lock = this.lock.then(() => this.processFragment(streamId, bytes));
+    /**
+     * Bir ya da birden çok moof+mdat içeren segmenti ekler. Sıralı çağrılmalı.
+     * `shiftSec`: oynatıcının bu parçaya uyguladığı timestampOffset (MSE'de olduğu gibi eklenir).
+     */
+    addFragment(streamId, bytes, shiftSec = 0) {
+        this.lock = this.lock.then(() => this.processFragment(streamId, bytes, shiftSec));
         return this.lock;
     }
 
-    async processFragment(streamId, b) {
+    async processFragment(streamId, b, shiftSec = 0) {
         for (const moof of boxesIn(b).filter((x) => x.type === 'moof')) {
             let prevEnd = moof.start;
             let first = true;
@@ -250,6 +259,7 @@ export class Mp4Builder {
 
                 const tfdt = find(b, traf, 'tfdt');
                 let dts = tfdt ? (b[tfdt.body] === 1 ? u64(b, tfdt.body + 4) : u32(b, tfdt.body + 4)) : null;
+                if (dts !== null && shiftSec) dts += Math.round(shiftSec * track.timescale);
                 let dataPos = base;
                 for (const trun of findAll(b, traf, 'trun')) {
                     const version = b[trun.body];
@@ -346,13 +356,17 @@ export class Mp4Builder {
         const tracks = this.order.filter((t) => t.sizes.n > 0);
         if (!tracks.length) throw new Error('Kaydedilecek video verisi yok');
         const mdatEnd = this.pos;
-        const startSec = Math.min(...tracks.map((t) => t.firstDts / t.timescale));
+        const starts = tracks.map((t) => t.firstDts / t.timescale);
+        const startSec = Math.min(...starts);
+        // Başlangıçlar çok ayrıksa (ör. görüntü ile sesin zaman tabanı farklı) boşluk bırakılmaz:
+        // yoksa ses çalarken görüntü dakikalarca gri kalır.
+        const align = this.alignStartsOver > 0 && Math.max(...starts) - startSec > this.alignStartsOver;
         const use64 = mdatEnd > 0xffffffff;
 
         let movieDur = 0;
         const traks = tracks.map((t, i) => {
             const mediaDur = t.nextDts - t.firstDts;
-            const offsetMovie = Math.round((t.firstDts / t.timescale - startSec) * MOVIE_TIMESCALE);
+            const offsetMovie = align ? 0 : Math.round((t.firstDts / t.timescale - startSec) * MOVIE_TIMESCALE);
             const mediaMovie = Math.round((mediaDur / t.timescale) * MOVIE_TIMESCALE);
             const trackMovie = offsetMovie + mediaMovie;
             movieDur = Math.max(movieDur, trackMovie);
