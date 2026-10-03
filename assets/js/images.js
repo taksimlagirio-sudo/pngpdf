@@ -1,6 +1,6 @@
 // "Resimler" ekranı: bir sayfadaki görselleri bulur, boyutlarını okur, seçtiklerini indirir
 // (tek tek ya da tek ZIP olarak).
-import { $, escapeHtml, isHttpUrl, smartFetch, formatSize, fileNameFromUrl, getRenderServer, renderSniff, saveBlob } from './util.js';
+import { $, escapeHtml, isHttpUrl, smartFetch, formatSize, fileNameFromUrl, getRenderServer, renderSniff, saveBlob, proxyUrl } from './util.js';
 import { findImages, mergeImages } from './detect.js';
 import { addJob, effectiveSaveMode, createSink } from './downloads.js';
 import { getPrefs } from './prefs.js';
@@ -8,7 +8,7 @@ import { createZip } from './zip.js';
 
 const MIN_SIDE = 300;      // "simge" sayılmayan en küçük kenar
 const PROBE_PARALLEL = 6;
-const PROBE_TIMEOUT_MS = 12000;
+const PROBE_TIMEOUT_MS = 20000;
 
 export function initImagesTab({ toast }) {
     const urlInput = $('imgUrl');
@@ -16,7 +16,7 @@ export function initImagesTab({ toast }) {
     const statusBox = $('imgStatus');
     const resultBox = $('imgResult');
 
-    let items = [];          // {url, name, type, w, h, size, failed}
+    let items = [];          // {url, src, name, type, w, h, size, loaded, failed}
     let selected = new Set();
     let typeFilter = 'all';
     let showSmall = false;
@@ -57,14 +57,14 @@ export function initImagesTab({ toast }) {
                 resultBox.innerHTML = '<div class="empty">Bu sayfada resim bulunamadı.</div>';
                 return;
             }
-            items = urls.map((u) => ({ url: u, name: fileNameFromUrl(u), type: typeOf(u), w: 0, h: 0, size: 0, loaded: false }));
+            items = urls.map((u) => ({ url: u, page: url, name: fileNameFromUrl(u), type: typeOf(u), w: 0, h: 0, size: 0, loaded: false }));
             setBusy(`${items.length} resim inceleniyor...`);
             render();
-            await probeAll(items, () => mySeq === seq && renderSoon());
+            await probeAll(items, url, () => mySeq === seq && renderSoon());
             if (mySeq !== seq) return;
             setBusy('');
-            // Varsayılan seçim: simge olmayan görünür resimler.
-            selected = new Set(visible().map((it) => it.url));
+            // Varsayılan seçim: önizlemesi açılan görünür resimler.
+            selected = new Set(visible().filter((it) => !it.failed).map((it) => it.url));
             render();
         } catch (err) {
             if (mySeq !== seq) return;
@@ -116,39 +116,56 @@ export function initImagesTab({ toast }) {
     }
 
     function isSmall(it) {
-        return it.loaded && !it.failed && Math.max(it.w, it.h) < MIN_SIDE;
+        return it.loaded && !it.failed && it.w > 0 && Math.max(it.w, it.h) < MIN_SIDE;
+    }
+
+    // Simgeler yalnızca büyük resim de varsa gizlenir; sayfada hepsi küçükse liste boş kalmasın.
+    function hidingSmall() {
+        return !showSmall && items.some((it) => !isSmall(it));
+    }
+
+    // Önizlemesi açılamayan resimler de listede kalır (sona dizilir): çoğu yine de indirilebilir.
+    function pooled() {
+        const hide = hidingSmall();
+        const list = items.filter((it) => !(hide && isSmall(it)));
+        return [...list.filter((it) => !it.failed), ...list.filter((it) => it.failed)];
     }
 
     function visible() {
-        return items.filter((it) => !it.failed && (showSmall || !isSmall(it)) && (typeFilter === 'all' || it.type === typeFilter));
+        return pooled().filter((it) => typeFilter === 'all' || it.type === typeFilter);
     }
 
     function render() {
         if (!items.length) return;
-        const pool = items.filter((it) => !it.failed && (showSmall || !isSmall(it)));
+        const pool = pooled();
         const types = ['JPG', 'PNG', 'WEBP', 'GIF', 'SVG', 'AVIF'].filter((t) => pool.some((it) => it.type === t));
         const list = visible();
         const sel = items.filter((it) => selected.has(it.url));
         const selBytes = sel.reduce((sum, it) => sum + (it.size || 0), 0);
         const allVisSel = list.length > 0 && list.every((it) => selected.has(it.url));
-        const hidden = items.filter(isSmall).length;
+        const hidden = hidingSmall() ? items.filter(isSmall).length : 0;
+        const broken = pool.filter((it) => it.failed).length;
 
         resultBox.innerHTML = `
             ${pageTitle ? `<div class="res-meta" style="margin-top:-4px">${escapeHtml(pageTitle)}</div>` : ''}
             <div class="img-count-row"><span class="img-count">${pool.length} resim bulundu</span>
                 <button class="link-btn" data-act="small" style="color:var(--mt);font-weight:500">${showSmall
                     ? 'Simgeler gösteriliyor'
-                    : `Min. ${MIN_SIDE} px · simgeler gizli${hidden ? ` (${hidden})` : ''}`}</button></div>
+                    : hidden ? `Min. ${MIN_SIDE} px · simgeler gizli (${hidden})` : `Min. ${MIN_SIDE} px`}</button></div>
+            ${broken ? `<p class="hint" style="margin:0 0 8px">${broken} resmin önizlemesi açılmadı (site başka yerde gösterilmesini
+                engelliyor olabilir)${getRenderServer() ? '' : '; kendi sunucunla açılabilir'}. Seçip indirmeyi yine deneyebilirsin.</p>` : ''}
             <div class="chips">
                 <button class="chip${typeFilter === 'all' ? ' on' : ''}" data-act="type" data-v="all">Tümü<span>${pool.length}</span></button>
                 ${types.map((t) => `<button class="chip${typeFilter === t ? ' on' : ''}" data-act="type" data-v="${t}">${t}<span>${pool.filter((it) => it.type === t).length}</span></button>`).join('')}
             </div>
             <div class="img-grid">${list.map((it) => `
                 <button class="tile${selected.has(it.url) ? ' on' : ''}" data-act="pick" data-url="${escapeHtml(it.url)}">
-                    <div class="tile-img"><img src="${escapeHtml(it.url)}" alt="" loading="lazy" referrerpolicy="no-referrer">
+                    <div class="tile-img">${it.failed
+                        ? '<span class="tile-broken">Önizleme yok</span>'
+                        : `<img src="${escapeHtml(it.src || it.url)}" alt="" loading="lazy" referrerpolicy="no-referrer">`}
                         <span class="tile-type">${it.type}</span><span class="tile-check">✓</span></div>
                     <div class="tile-body"><div class="tile-name">${escapeHtml(it.name)}</div>
-                        <div class="tile-dims">${it.loaded ? `${it.w}×${it.h}` : '…'}${it.size ? ' · ' + formatSize(it.size) : ''}</div></div>
+                        <div class="tile-dims">${it.failed ? 'açılmadı' : it.w ? `${it.w}×${it.h}` : it.loaded ? 'boyut bilinmiyor' : '…'}${it.size ? ' · ' + formatSize(it.size) : ''}</div></div>
                 </button>`).join('')}</div>
             ${list.length ? '' : '<div class="empty">Bu filtrede resim yok.</div>'}
             <div class="selbar">
@@ -254,7 +271,14 @@ export function initImagesTab({ toast }) {
 async function fetchImage(job, it, mode, save) {
     let res;
     try {
-        res = await smartFetch(it.url, { mode, init: { signal: job.signal } });
+        // Önizleme sunucu üzerinden açıldıysa (ya da hiç açılmadıysa) indirme de oradan, sayfanın Referer'ıyla.
+        const viaServer = it.src || (it.failed && proxyUrl(it.url, it.page));
+        if (viaServer) {
+            res = await fetch(viaServer, { signal: job.signal });
+            if (!res.ok) throw new Error(`Sunucu ${res.status} döndü`);
+        } else {
+            res = await smartFetch(it.url, { mode, init: { signal: job.signal } });
+        }
     } catch (err) {
         if (err.name === 'AbortError' || !save) throw err;
         // CORS'a kapalı ve sunucu yok: tarayıcı baytları okuyamaz; resim yine de görüntülenebilir.
@@ -288,41 +312,50 @@ function typeOf(url) {
     return { jpg: 'JPG', jpeg: 'JPG', png: 'PNG', webp: 'WEBP', gif: 'GIF', svg: 'SVG', avif: 'AVIF' }[ext] || 'IMG';
 }
 
-/** Her resmi <img> ile yükleyip piksel boyutunu okur (CORS gerekmez); boyut bilgisi varsa alır. */
-function probeAll(list, onUpdate) {
+/**
+ * Her resmi <img> ile yükleyip piksel boyutunu okur (CORS gerekmez); boyut bilgisi varsa alır.
+ * Açılmayan resim (hotlink koruması vb.) kendi sunucun varsa sayfanın Referer'ıyla oradan denenir.
+ */
+function probeAll(list, pageUrl, onUpdate) {
     let cursor = 0;
     const worker = async () => {
         while (cursor < list.length) {
             const it = list[cursor++];
-            await probe(it);
+            let result = await probe(it, it.url);
+            const viaServer = result === 'error' && proxyUrl(it.url, pageUrl);
+            if (viaServer) {
+                result = await probe(it, viaServer);
+                if (result === 'ok') it.src = viaServer;
+            }
+            it.loaded = true;
+            // Zaman aşımı "bozuk" sayılmaz: yavaş bağlantıda resim yine de gelir, boyutu bilinmez.
+            it.failed = result === 'error';
             onUpdate();
         }
     };
     return Promise.all(Array.from({ length: Math.min(PROBE_PARALLEL, list.length) }, worker));
 }
 
-function probe(it) {
+/** 'ok' | 'error' | 'timeout' */
+function probe(it, src) {
     return new Promise((resolve) => {
         const img = new Image();
         img.referrerPolicy = 'no-referrer';
-        const timer = setTimeout(() => finish(false), PROBE_TIMEOUT_MS);
-        function finish(ok) {
+        const timer = setTimeout(() => finish('timeout'), PROBE_TIMEOUT_MS);
+        function finish(result) {
             clearTimeout(timer);
             img.onload = img.onerror = null;
-            it.loaded = true;
-            if (ok) {
+            if (result === 'ok') {
                 it.w = img.naturalWidth;
                 it.h = img.naturalHeight;
                 // Sunucu Timing-Allow-Origin veriyorsa aktarılan boyut okunabilir.
-                const entry = performance.getEntriesByName(it.url).pop();
+                const entry = performance.getEntriesByName(src).pop();
                 if (entry && entry.encodedBodySize) it.size = entry.encodedBodySize;
-            } else {
-                it.failed = true;
             }
-            resolve();
+            resolve(result);
         }
-        img.onload = () => finish(img.naturalWidth > 0);
-        img.onerror = () => finish(false);
-        img.src = it.url;
+        img.onload = () => finish(img.naturalWidth > 0 ? 'ok' : 'error');
+        img.onerror = () => finish('error');
+        img.src = src;
     });
 }

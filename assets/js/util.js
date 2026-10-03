@@ -201,10 +201,11 @@ export async function renderBlob(path, timeoutMs = 15000) {
 // CORS engelini aşmak için tek proxy kullanıcının kendi sunucusu; ayarlı değilse null.
 // (Netlify yalnızca siteyi barındırıyor, indirmeler oradan geçmiyor.) <video src> gibi başlık
 // eklenemeyen yerlerde de çalışsın diye token sorgu parametresiyle gönderilir.
-export function proxyUrl(target) {
+export function proxyUrl(target, referer = '') {
     const server = getRenderServer();
     if (!server) return null;
-    return `${server.url}/fetch?url=${encodeURIComponent(target)}&token=${encodeURIComponent(server.token)}`;
+    return `${server.url}/fetch?url=${encodeURIComponent(target)}&token=${encodeURIComponent(server.token)}` +
+        (referer ? `&referer=${encodeURIComponent(referer)}` : '');
 }
 
 const NO_SERVER_HINT = 'Bunu indirmek için Ayarlar → "Kendi sunucum" bölümünden sunucunu ayarla.';
