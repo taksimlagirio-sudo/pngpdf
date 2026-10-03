@@ -2020,3 +2020,51 @@ body.can-float .float-only {
     font-weight: 700;
     font-size: 18px;
 }
+
+.paste-btn {
+    margin-top: 8px;
+    width: 100%;
+    height: 40px;
+    border-radius: 12px;
+    border: 1px dashed var(--ln);
+    color: var(--mt);
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.paste-btn:active {
+    border-color: var(--ac);
+    color: var(--ac);
+}
+
+.method-choice {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.method-choice .btn-row {
+    display: flex;
+    gap: 8px;
+}
+
+.method-choice .btn-row > * {
+    flex: 1;
+    min-width: 0;
+    padding: 0 10px;
+    white-space: nowrap;
+}
+
+.remember-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--mt);
+    font-size: 13px;
+}
+
+.remember-row input {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--ac);
+}

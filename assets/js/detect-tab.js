@@ -1,6 +1,6 @@
 // "Algıla" ekranı: adresteki içeriği tanır, önizlemesini oynatır, seçenekleri gösterir ve
 // indirmeyi/kaydı başlatır.
-import { $, escapeHtml, isHttpUrl, formatSize, hms, getRenderServer, isServerStream } from './util.js';
+import { $, escapeHtml, isHttpUrl, formatSize, hms, getRenderServer, isServerStream, checkRenderServer } from './util.js';
 import { analyzeUrl, formatDuration, describeMediaPlaylist, cachedManifest } from './detect.js';
 import { downloadFile } from './video.js';
 import { downloadMerged } from './merge.js';
@@ -14,6 +14,34 @@ import { getPrefs, setPref, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { canRemote, openRemoteView } from './remote.js';
 import { canServerRecord, startServerRecording, captureIntoJob } from './serverrec.js';
 import { attachPreview, grabFrame, probePreview } from './preview.js';
+
+// yt-dlp'nin en güçlü olduğu büyük platformlar: bunlarda "nasıl bakalım?" diye sorulur.
+const BIG_SITES = [
+    ['tiktok.com', 'TikTok'], ['instagram.com', 'Instagram'], ['youtube.com', 'YouTube'], ['youtu.be', 'YouTube'],
+    ['x.com', 'X'], ['twitter.com', 'X'], ['facebook.com', 'Facebook'], ['fb.watch', 'Facebook'],
+    ['vimeo.com', 'Vimeo'], ['reddit.com', 'Reddit'], ['redd.it', 'Reddit'], ['twitch.tv', 'Twitch'],
+    ['dailymotion.com', 'Dailymotion'], ['dai.ly', 'Dailymotion'], ['pinterest.com', 'Pinterest'], ['pin.it', 'Pinterest'],
+    ['threads.net', 'Threads'], ['threads.com', 'Threads'], ['snapchat.com', 'Snapchat'], ['linkedin.com', 'LinkedIn'],
+    ['bilibili.com', 'Bilibili'], ['vk.com', 'VK'], ['ok.ru', 'OK'], ['rumble.com', 'Rumble'], ['kick.com', 'Kick'],
+    ['bsky.app', 'Bluesky'], ['tumblr.com', 'Tumblr'], ['streamable.com', 'Streamable']
+];
+
+/** Büyük platformsa [alan adı, ad]; değilse null. */
+export function bigSiteOf(url) {
+    let host;
+    try {
+        host = new URL(url).hostname.toLowerCase();
+    } catch (_) {
+        return null;
+    }
+    return BIG_SITES.find(([d]) => host === d || host.endsWith('.' + d)) || null;
+}
+
+/** Yapıştırılan/paylaşılan metnin içindeki ilk bağlantı ("şuna bak https://…"). */
+export function firstUrl(text) {
+    const m = String(text || '').match(/https?:\/\/[^\s<>"']+/i);
+    return m ? m[0].replace(/[),.;!?]+$/, '') : String(text || '').trim();
+}
 
 const KIND_TAG = { hls: 'HLS', video: 'MP4', audio: 'SES', dash: 'DASH', image: 'IMG' };
 const KIND_LABEL = {
@@ -46,16 +74,96 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
     urlInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') onAnalyzeClick();
     });
+    $('detectPasteBtn').addEventListener('click', () => pasteAndAnalyze());
+
+    async function readClipboard() {
+        if (!navigator.clipboard || !navigator.clipboard.readText) throw new Error('Bu tarayıcı panoyu okumaya izin vermiyor');
+        return navigator.clipboard.readText();
+    }
 
     async function onAnalyzeClick() {
-        let url = urlInput.value.trim();
-        if (!url && navigator.clipboard && navigator.clipboard.readText) {
+        let url = firstUrl(urlInput.value);
+        if (!url) {
             try {
-                url = (await navigator.clipboard.readText()).trim();
-                urlInput.value = url;
+                url = firstUrl(await readClipboard());
             } catch (_) { /* pano izni yok */ }
         }
-        analyze(url);
+        urlInput.value = url;
+        start(url);
+    }
+
+    /** Panodaki bağlantıyı yapıştırıp hemen algılar. */
+    async function pasteAndAnalyze() {
+        let text;
+        try {
+            text = await readClipboard();
+        } catch (_) {
+            setError('Panoya erişilemedi. Bağlantıyı kutuya basılı tutup yapıştırın (tarayıcı pano izni isterse "İzin ver").');
+            urlInput.focus();
+            return;
+        }
+        const url = firstUrl(text);
+        if (!isHttpUrl(url)) {
+            setError('Panoda bir bağlantı yok. Önce paylaşılacak bağlantıyı kopyalayın.');
+            return;
+        }
+        urlInput.value = url;
+        start(url);
+    }
+
+    // Sunucuda yt-dlp kurulu mu (bir kez sorulur).
+    let ytdlpCheck = null;
+    function ytdlpAvailable() {
+        const config = getRenderServer();
+        if (!config) return Promise.resolve(false);
+        if (!ytdlpCheck) {
+            ytdlpCheck = checkRenderServer(config).then((h) => Boolean(h && h.ytdlp)).catch(() => {
+                ytdlpCheck = null;
+                return false;
+            });
+        }
+        return ytdlpCheck;
+    }
+
+    /**
+     * Kullanıcının başlattığı algılama: büyük platformsa (ve sunucuda yt-dlp varsa) önce "nasıl
+     * bakalım?" diye sorar ya da hatırlanan/ayardaki yöntemi kullanır.
+     */
+    async function start(url) {
+        const big = isHttpUrl(url) ? bigSiteOf(url) : null;
+        if (!big || !(await ytdlpAvailable())) return analyze(url);
+        const prefs = getPrefs();
+        const method = (prefs.siteMethods || {})[big[0]] || prefs.bigSites;
+        if (method === 'ytdlp') return analyze(url, { useExtract: true });
+        if (method === 'ours') return analyze(url, { noExtract: true });
+        askMethod(url, big);
+    }
+
+    function askMethod(url, [domain, name]) {
+        ++seq;
+        info = null;
+        closePreview();
+        setBusy('');
+        resultBox.innerHTML = `
+            <div class="card card-pad method-choice">
+                <div><div class="toggle-row-title">Bu bir ${escapeHtml(name)} bağlantısı. Nasıl bakalım?</div>
+                <div class="toggle-row-sub">yt-dlp ${escapeHtml(name)} için özel yazılmış yöntemle videoyu ve kaliteleri bulur.
+                    Kendi yöntemimiz sayfayı sunucundaki tarayıcıda açıp oynatıcının isteklerini dinler.
+                    yt-dlp alamazsa kendiliğinden bizim yönteme geçilir.</div></div>
+                <div class="btn-row">
+                    <button class="btn-ac" data-method="ytdlp">yt-dlp ile</button>
+                    <button class="btn-ghost" data-method="ours" style="height:46px">Kendi yöntemimiz</button>
+                </div>
+                <label class="remember-row"><input type="checkbox" data-remember>
+                    <span>${escapeHtml(name)} için seçimimi hatırla</span></label>
+            </div>`;
+        resultBox.querySelectorAll('[data-method]').forEach((btn) => btn.addEventListener('click', () => {
+            const method = btn.dataset.method;
+            if (resultBox.querySelector('[data-remember]').checked) {
+                setPref('siteMethods', { ...(getPrefs().siteMethods || {}), [domain]: method });
+            }
+            analyze(url, method === 'ytdlp' ? { useExtract: true } : { noExtract: true });
+        }, { once: true }));
     }
 
     function setBusy(text) {
@@ -76,7 +184,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
      * `pair`: sayfada ayrı bulunan ses playlist'i (görüntüyle birleştirilecek).
      * `page`: bağlantının bulunduğu sayfa — bağlantı inmezse video o sayfayla açılıp kaydedilir.
      */
-    async function analyze(url, { pair = null, page = null, title = '', noExtract = false, fromYtdlp = false } = {}) {
+    async function analyze(url, { pair = null, page = null, title = '', noExtract = false, useExtract = false, fromYtdlp = false } = {}) {
         if (!isHttpUrl(url)) {
             setError('Geçerli bir http(s) adresi girin.');
             return;
@@ -96,7 +204,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
             const result = await analyzeUrl(url, {
                 mode: getPrefs().conn,
                 // yt-dlp yalnızca Ayarlar'dan açıldıysa; varsayılan: sayfa doğrudan bizim sunucuda taranır.
-                noExtract: noExtract || !getPrefs().useYtdlp,
+                noExtract: noExtract || !(useExtract || getPrefs().useYtdlp),
                 onStage: (text) => mySeq === seq && setBusy(text)
             });
             if (mySeq !== seq) return;
@@ -916,12 +1024,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null }) {
 
     return {
         prefill(url, autoStart) {
-            urlInput.value = url;
-            if (autoStart) analyze(url);
+            urlInput.value = firstUrl(url);
+            if (autoStart) start(firstUrl(url));
         },
         analyze(url) {
-            urlInput.value = url;
-            analyze(url);
+            urlInput.value = firstUrl(url);
+            start(firstUrl(url));
         },
         refresh: render
     };

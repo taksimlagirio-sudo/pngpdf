@@ -10,7 +10,7 @@ Koyu (varsayılan) ve açık tema; renk: sıcak grafit nötrler + lime.
 
 | Bölüm | Ne yapar |
 | --- | --- |
-| **Algıla** | Yapıştırdığınız adresin ardında ne olduğunu bulur. Video/ses dosyası, HLS ya da DASH yayını (kalite, format, aralık seçimi), canlı yayın (süre sınırlı kayıt) ya da web sayfası (içindeki medya ve resimler). Web sayfasında (paylaşılan gönderi dahil) videolar ve fotoğraflar aynı anda, ayrı bölümlerde çıkar. |
+| **Algıla** | Yapıştırdığınız (ya da "Yapıştır ve algıla" ile panodan aldığınız) adresin ardında ne olduğunu bulur. Video/ses dosyası, HLS ya da DASH yayını (kalite, format, aralık seçimi), canlı yayın (süre sınırlı kayıt) ya da web sayfası (içindeki medya ve resimler). Web sayfasında (paylaşılan gönderi dahil) videolar ve fotoğraflar aynı anda, ayrı bölümlerde çıkar. |
 | **Resimler** | Bir sayfadaki görselleri bulur; türe göre süzer, simgeleri gizler, seçtiklerinizi ayrı ayrı dosyalar olarak (istenirse tek ZIP) indirir. Sunucuda gallery-dl kuruluysa bilinen sitelerde (Instagram, X, Pinterest, Reddit…) tam boyutlu resimleri ve galerinin tamamını o bulur. |
 | **İndirmeler** | Süren kayıtlar, indirmeler, sıradakiler ve geçmiş. Aynı anda en fazla 1/2/3/5 iş; sıradakini "Şimdi başlat". |
 | **Ayarlar** | Tema, varsayılan kaydetme yöntemi (İndirilenler / Galeri / Konum seç), bağlantı yöntemi, arka planda indirme, kendi sunucum. |
@@ -196,7 +196,10 @@ göremez. [`render-server/`](render-server/README.md) kendi bilgisayarında (vey
 telefonda) çalışan küçük bir sunucudur: sayfayı gerçek bir Chromium'da açıp attığı medya
 isteklerini toplar. **Ayarlar → Kendi sunucum** bölümüne adresini ve token'ını girince:
 
-- **Ayarlar → "Bilinen sitelerde yt-dlp kullan"** açıksa (varsayılan kapalı) ve sunucuda yt-dlp kuruluysa sayfa önce ona sorulur: bilinen sitelerde (YouTube, Vimeo, Instagram…)
+- **Büyük platformlarda** (TikTok, Instagram, YouTube, X, Facebook, Vimeo, Reddit…) sunucuda yt-dlp kuruluysa
+  uygulama "yt-dlp ile mi, kendi yöntemimizle mi?" diye sorar (site için hatırlanabilir; Ayarlar → Büyük platformlar:
+  Sor / yt-dlp / Kendi yöntemimiz). Diğer siteler doğrudan sunucuda taranır (Ayarlar → "Diğer sitelerde de yt-dlp dene").
+  yt-dlp kullanılınca sayfa önce ona sorulur: bilinen sitelerde (YouTube, Vimeo, Instagram…)
   videonun kalite listesi gelir; ayrı gelen görüntü ve ses telefonda tek MP4'te birleştirilir. yt-dlp
   yalnızca adresleri bulur, indirme ve ekranlar İndirici'nindir (ayrıntı: render-server/README.md).
 - Sayfa linkleri (paylaşılanlar dahil) bu sunucuda çalıştırılır; bulunan medya, statik taramanın

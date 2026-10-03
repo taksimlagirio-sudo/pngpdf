@@ -3,6 +3,8 @@ import { $, isHttpUrl, getRenderServer, setRenderServer, checkRenderServer, rend
 import { getPrefs, setPref, onPrefs, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch } from './downloads.js';
 
+const BIG_LABELS = { ask: 'Sor', ytdlp: 'yt-dlp', ours: 'Kendi yöntemimiz' };
+
 export function initSettings({ onServerChange, install }) {
     const root = $('settingsView');
     root.innerHTML = `
@@ -83,6 +85,7 @@ export function initSettings({ onServerChange, install }) {
         themeBox.innerHTML = [['dark', 'Koyu'], ['light', 'Açık']].map(([v, l]) =>
             `<button class="${prefs.theme === v ? 'on' : ''}" data-set="theme" data-v="${v}">${l}</button>`).join('');
         const save = effectiveSaveMode(prefs.save);
+        const remembered = Object.entries(prefs.siteMethods || {});
         const bgOk = canBackgroundFetch && save !== 'disk';
         defaultsBox.innerHTML = `
             <button class="row" data-set="save"><span class="row-value" style="font-weight:400">Kaydet</span>
@@ -94,8 +97,14 @@ export function initSettings({ onServerChange, install }) {
                 <span class="toggle${prefs.background && bgOk ? ' on' : ''}"></span></button>
             <button class="row" data-set="keepAwake"><span class="row-value" style="font-weight:400">İndirirken ekranı açık tut</span>
                 <span class="toggle${prefs.keepAwake ? ' on' : ''}"></span></button>
-            <button class="row" data-set="useYtdlp"><span class="row-value" style="font-weight:400">Bilinen sitelerde yt-dlp kullan
-                <span class="muted" style="display:block;font-size:12px">Sunucuda kuruluysa; kapalıyken sayfa doğrudan sunucunda taranır</span></span>
+            <button class="row" data-set="bigSites"><span class="row-value" style="font-weight:400">Büyük platformlar
+                <span class="muted" style="display:block;font-size:12px">TikTok, Instagram, YouTube, X… (sunucuda yt-dlp kuruluysa)</span></span>
+                <span class="muted">${BIG_LABELS[prefs.bigSites] || BIG_LABELS.ask} ›</span></button>
+            ${remembered.length ? `<button class="row" data-set="resetSites"><span class="row-value" style="font-weight:400">Hatırlanan seçimler
+                <span class="muted" style="display:block;font-size:12px">${remembered.map(([d, m]) => `${d}: ${m === 'ytdlp' ? 'yt-dlp' : 'kendi yöntemimiz'}`).join(', ')}</span></span>
+                <span class="muted">Sıfırla</span></button>` : ''}
+            <button class="row" data-set="useYtdlp"><span class="row-value" style="font-weight:400">Diğer sitelerde de yt-dlp dene
+                <span class="muted" style="display:block;font-size:12px">Kapalıyken diğer sayfalar doğrudan sunucunda taranır</span></span>
                 <span class="toggle${prefs.useYtdlp ? ' on' : ''}"></span></button>`;
     }
 
@@ -117,6 +126,11 @@ export function initSettings({ onServerChange, install }) {
         if (key === 'background') setPref('background', !prefs.background);
         if (key === 'keepAwake') setPref('keepAwake', !prefs.keepAwake);
         if (key === 'useYtdlp') setPref('useYtdlp', !prefs.useYtdlp);
+        if (key === 'bigSites') {
+            const order = ['ask', 'ytdlp', 'ours'];
+            setPref('bigSites', order[(order.indexOf(prefs.bigSites) + 1) % order.length]);
+        }
+        if (key === 'resetSites') setPref('siteMethods', {});
     });
     onPrefs(renderPrefs);
     renderPrefs();
