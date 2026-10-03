@@ -243,37 +243,57 @@ async function openRecordedPage(pageUrl, contextOptions) {
     await context.addInitScript(CODEC_SPOOF);
     // Reklamlar engellenir: reklam videoları listeye düşmesin, oynatıcı reklamla oyalanmasın.
     const state0 = { blockedAds: 0 };
-    await installRouting(context, { onBlocked: () => { state0.blockedAds++; } });
+    const blocked = new Set(); // engellenen reklam istekleri "başarısız istek" diye listeye girmesin
+    await installRouting(context, { onBlocked: (url) => { state0.blockedAds++; blocked.add(url); } });
     const page = await context.newPage();
     // Tıklamanın açtığı reklam pencereleri hemen kapatılsın.
     context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
-    const state = Object.assign(state0, { found: new Map(), firstMediaAt: 0 });
+    const state = Object.assign(state0, { found: new Map(), firstMediaAt: 0, pending: [] });
 
-    const record = (url, contentType, size, referer) => {
+    const record = (url, contentType, size, referer, { response = null, failed = false } = {}) => {
+        if (failed && blocked.has(url)) return;
         if (isSegment(url, contentType)) return;
         const kind = classify(url, contentType);
         if (!kind) return;
         const key = dedupKey(url, kind);
-        const existing = state.found.get(key);
-        if (existing) {
-            existing.url = url;
-            existing.size = size || existing.size;
-            existing.seenCount += 1;
+        let item = state.found.get(key);
+        if (item) {
+            // Ana liste (tüm kaliteler) aynı yoldaki alt listeyle ezilmesin.
+            if (!item.master) item.url = url;
+            item.size = size || item.size;
+            item.seenCount += 1;
+            if (!failed) item.failed = false;
         } else {
-            state.found.set(key, { url, kind, mime: contentType || '', size: size || 0, referer: referer || pageUrl, seenCount: 1 });
+            item = { url, kind, mime: contentType || '', size: size || 0, referer: referer || pageUrl, seenCount: 1, failed };
+            state.found.set(key, item);
         }
         rememberReferer(url, referer || pageUrl);
         if (!state.firstMediaAt && (kind === 'hls' || kind === 'video' || kind === 'dash')) state.firstMediaAt = Date.now();
+
+        // Liste içeriği tarayıcının aldığı anda saklanır: ana listenin adresi çoğu zaman tek kullanımlık
+        // ya da kısa ömürlü bir anahtar taşır; uygulama yeniden isteyince 403 alır, kaliteler kaybolur.
+        if (response && (kind === 'hls' || kind === 'dash') && response.status() === 200 && !(size > 2 * 1024 * 1024)) {
+            state.pending.push(response.text().then((text) => {
+                if (kind === 'hls' && text.includes('#EXT-X-STREAM-INF')) {
+                    item.master = true;
+                    item.url = url;
+                    item.text = text;
+                } else if (kind === 'dash' && /<MPD[\s>]/.test(text)) {
+                    item.text = text;
+                    item.url = url;
+                }
+            }).catch(() => {}));
+        }
     };
 
     page.on('response', (response) => {
         const headers = response.headers();
         const request = response.request();
         record(response.url(), headers['content-type'] || '', Number(headers['content-length']) || 0,
-            request.headers().referer);
+            request.headers().referer, { response, failed: response.status() >= 400 });
     });
     page.on('requestfailed', (request) => {
-        record(request.url(), '', 0, request.headers().referer);
+        record(request.url(), '', 0, request.headers().referer, { failed: true });
     });
     return { context, page, state };
 }
@@ -428,6 +448,8 @@ async function sniff(pageUrl, waitMs) {
             if (!state.firstMediaAt) await nudgePlayback(page, started, nudge);
         }
         title = await page.title().catch(() => '');
+        // Saklanan liste içerikleri okunsun (sayfa kapanmadan).
+        await Promise.race([Promise.allSettled(state.pending), new Promise((r) => setTimeout(r, 3000))]);
     } finally {
         await context.close().catch(() => {});
     }

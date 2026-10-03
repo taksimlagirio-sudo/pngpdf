@@ -1,7 +1,7 @@
 // "Algıla" ekranı: adresteki içeriği tanır, önizlemesini oynatır, seçenekleri gösterir ve
 // indirmeyi/kaydı başlatır.
 import { $, escapeHtml, isHttpUrl, formatSize, hms, getRenderServer, isServerStream } from './util.js';
-import { analyzeUrl, formatDuration, describeMediaPlaylist } from './detect.js';
+import { analyzeUrl, formatDuration, describeMediaPlaylist, cachedManifest } from './detect.js';
 import { downloadFile } from './video.js';
 import { downloadMerged } from './merge.js';
 import { downloadHlsVod, recordHlsLive, loadPlaylist, audioFor, baseNameFor } from './hls.js';
@@ -211,6 +211,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
             const p = await attachPreview(video, info.url, {
                 kind: info.kind,
                 proxied: info.access === 'proxy',
+                cached: cachedManifest,
                 onError: () => showMsg('Önizleme bu tarayıcıda oynatılamıyor; indirme yine de çalışır.')
             });
             if (mySeq !== seq) return p.destroy();
@@ -529,7 +530,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
             </button>` : '';
 
         const hiddenNote = [];
-        if (d.hiddenLinks) hiddenNote.push(`${d.hiddenLinks} bağlantı gizlendi (yalnızca ses, kalite parçası ya da açılmıyor)`);
+        if (d.hiddenLinks) hiddenNote.push(`${d.hiddenLinks} bağlantı gizlendi (kalite parçası, yalnızca ses, önizleme klibi ya da yarıda kalan istek)`);
         if (failed.length && !ui.showHidden) hiddenNote.push(`<button data-act="show-hidden">${failed.length} oynatılamayanı göster</button>`);
         const foot = embeds.map((e) => `<div class="media-foot">Gömülü oynatıcı: <button data-act="analyze-link" data-url="${escapeHtml(e.url)}">${escapeHtml(e.host)}</button> — içini taramak için dokunun</div>`).join('')
             + (hiddenNote.length ? `<div class="media-foot">${hiddenNote.join(' · ')}</div>` : '');

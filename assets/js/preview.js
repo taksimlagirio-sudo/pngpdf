@@ -43,13 +43,30 @@ function proxyLoader(Hls) {
     };
 }
 
+/** Saklanan liste içeriği varsa ağa gitmeden verir (tek kullanımlık anahtarlı ana listeler). */
+function cachedLoader(Base, cached) {
+    return class extends Base {
+        load(context, config, callbacks) {
+            const text = cached(context.url);
+            if (text == null) return super.load(context, config, callbacks);
+            const now = performance.now();
+            const stats = this.stats;
+            if (stats) {
+                stats.loading.start = stats.loading.first = stats.loading.end = now;
+                stats.loaded = stats.total = text.length;
+            }
+            setTimeout(() => callbacks.onSuccess({ url: context.url, data: text }, stats, context, null), 0);
+        }
+    };
+}
+
 const isHlsUrl = (url, kind) => kind === 'hls' || /\.m3u8(\?|$)/i.test(url);
 
 /**
  * `video` öğesinde kaynağı oynatır. `proxied`: istekler kendi sunucun üzerinden gitsin.
  * Dönen nesne: destroy(), selectQuality(url) ve hata bildirimi için onError.
  */
-export async function attachPreview(video, url, { kind = '', proxied = false, onError = () => {}, startLow = false } = {}) {
+export async function attachPreview(video, url, { kind = '', proxied = false, onError = () => {}, startLow = false, cached = null } = {}) {
     video.playsInline = true;
     if (!isHlsUrl(url, kind)) {
         video.crossOrigin = proxied ? 'anonymous' : null;
@@ -70,6 +87,7 @@ export async function attachPreview(video, url, { kind = '', proxied = false, on
     const config = { enableWorker: true, lowLatencyMode: false, capLevelToPlayerSize: !startLow, maxBufferLength: 20 };
     if (startLow) config.startLevel = 0;
     if (proxied) config.loader = proxyLoader(Hls);
+    if (cached) config.loader = cachedLoader(config.loader || Hls.DefaultConfig.loader, cached);
     const hls = new Hls(config);
     hls.on(Hls.Events.ERROR, (_e, data) => {
         if (data.fatal) onError(new Error(data.details || 'Yayın oynatılamadı'));
