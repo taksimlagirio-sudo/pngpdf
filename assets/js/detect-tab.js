@@ -22,7 +22,7 @@ const KIND_LABEL = {
 };
 const REC_LIMITS = [['Sınırsız', 0], ['30 dk', 1800], ['1 sa', 3600], ['2 sa', 7200], ['Özel', -1]];
 
-export function initDetectTab({ navigate, toast, openImages }) {
+export function initDetectTab({ navigate, toast, openImages, photos = null }) {
     const urlInput = $('detectUrl');
     const analyzeBtn = $('detectBtn');
     const statusBox = $('detectStatus');
@@ -31,6 +31,11 @@ export function initDetectTab({ navigate, toast, openImages }) {
 
     let info = null;      // analyzeUrl sonucu
     let ui = null;        // seçimler (kalite, ad, aralık, kayıt süresi)
+    // Sayfanın fotoğrafları: Resimler ekranının taraması (gallery-dl dahil) arka planda yapılır,
+    // sonuçlar burada videolardan ayrı bir bölümde gösterilir.
+    let photosPage = null;
+    let photosSnap = null;
+    if (photos) photos.subscribe((snap) => { photosSnap = snap; paintPhotos(); });
     let autoHops = 0;     // sayfadan medyaya otomatik geçişte sonsuz döngüyü engeller
     let remote = null;    // açık "kendim dokunayım" oturumu
     let preview = null;   // açık önizleme oynatıcısı
@@ -77,6 +82,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
             return;
         }
         const mySeq = ++seq;
+        photosPage = page || null;
         analyzeBtn.disabled = true;
         if (remote) {
             remote.close();
@@ -101,6 +107,11 @@ export function initDetectTab({ navigate, toast, openImages }) {
             if (title && result.target !== 'page') ui.name = cleanTitle(title);
             setBusy('');
 
+            // Sayfanın fotoğrafları arka planda aranmaya başlar (videolarla aynı anda).
+            if (result.target === 'page' && photos) {
+                photosPage = result.url;
+                photos.prefetch(result.url, result.details.images || [], result.details.title || '');
+            }
             // Sayfada tek bir video bulunduysa doğrudan onu aç.
             const links = result.details.links || [];
             if (result.target === 'page' && links.length === 1 && autoHops < 2) {
@@ -256,9 +267,44 @@ export function initDetectTab({ navigate, toast, openImages }) {
 
     function render() {
         if (!info) return;
-        if (info.target === 'page') return renderPage();
-        if (info.target === 'hls' && ui.media && ui.media.live) return renderLive();
-        return renderDownload();
+        if (info.target === 'page') renderPage();
+        else if (info.target === 'hls' && ui.media && ui.media.live) renderLive();
+        else renderDownload();
+        if (photosPage) {
+            // Sayfa listesinde videoların hemen altına; video kartında kartın altına.
+            const after = resultBox.querySelector('.media-table');
+            if (after) after.insertAdjacentHTML('afterend', '<div class="photos-slot"></div>');
+            else resultBox.insertAdjacentHTML('beforeend', '<div class="photos-slot"></div>');
+            paintPhotos();
+        }
+    }
+
+    /** "Fotoğraflar" bölümü: videolardan ayrı; Resimler ekranının sonuçlarından. */
+    function paintPhotos() {
+        const slot = resultBox.querySelector('.photos-slot');
+        if (!slot || !photosPage) return;
+        const snap = photosSnap && photosSnap.url === photosPage ? photosSnap : null;
+        const list = snap ? snap.items : [];
+        const busy = !snap || snap.busy;
+        const head = `<div class="settings-sec-head"><span class="sec-label">Fotoğraflar${list.length ? ` · ${list.length}` : ''}</span>
+            ${snap && snap.source ? `<span class="muted" style="font-size:12px">${escapeHtml(snap.source)}</span>` : ''}</div>`;
+        if (!list.length) {
+            slot.innerHTML = `<div class="photos">${head}<div class="${busy ? 'busy' : 'empty'}">${busy
+                ? '<span class="spinner"></span><span>Fotoğraflar aranıyor...</span>' : 'Bu sayfada fotoğraf bulunamadı.'}</div></div>`;
+            return;
+        }
+        const shown = list.slice(0, 9);
+        slot.innerHTML = `<div class="photos">${head}
+            <div class="photo-strip">${shown.map((it, i) => `
+                <button class="photo-tile" data-act="photos-open" title="${escapeHtml(it.name)}">
+                    <img src="${escapeHtml(it.src || it.url)}" alt="" loading="lazy" referrerpolicy="no-referrer">
+                    ${i === shown.length - 1 && list.length > shown.length ? `<span class="photo-more">+${list.length - shown.length}</span>` : ''}
+                </button>`).join('')}</div>
+            ${busy ? '<span class="sec-hint">Diğerleri aranıyor...</span>' : ''}
+            <div class="dl-actions">
+                <button class="btn-big" data-act="photos-all">${list.length} fotoğrafı indir</button>
+                <button class="btn-ghost" data-act="photos-open">Seç ›</button>
+            </div></div>`;
     }
 
     function warningsHtml() {
@@ -496,7 +542,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
         const shown = links.filter((l) => !failed.includes(l) || ui.showHidden);
         const counts = [];
         if (links.length) counts.push(`${links.length - (ui.showHidden ? 0 : failed.length)} video`);
-        if (images.length) counts.push(`${images.length} resim`);
+        if (images.length && !photosPage) counts.push(`${images.length} resim`);
         const source = d.fromYtdlp ? ` (yt-dlp${d.extractor ? ' · ' + d.extractor : ''})` : d.fromRender ? ' (sunucunda çalıştırılarak)' : d.fromScripts ? ' (script dosyalarında)' : '';
 
         const rows = shown.map((l) => {
@@ -519,7 +565,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
 
         const exts = [...new Set(images.map((u) => (u.split('?')[0].match(/\.([a-z0-9]{3,4})$/i) || [])[1]).filter(Boolean)
             .map((e) => e.toLowerCase()))].slice(0, 4);
-        const imageRow = images.length ? `
+        const imageRow = images.length && !photosPage ? `
             <button class="media-row images" data-act="images">
                 <span class="img-peek">${images.slice(0, 1).map((u) =>
                     `<span class="thumb media-thumb"><img src="${escapeHtml(u)}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>`).join('')}</span>
@@ -535,6 +581,7 @@ export function initDetectTab({ navigate, toast, openImages }) {
         const foot = embeds.map((e) => `<div class="media-foot">Gömülü oynatıcı: <button data-act="analyze-link" data-url="${escapeHtml(e.url)}">${escapeHtml(e.host)}</button> — içini taramak için dokunun</div>`).join('')
             + (hiddenNote.length ? `<div class="media-foot">${hiddenNote.join(' · ')}</div>` : '');
         const table = rows || imageRow || foot ? `
+            ${photosPage && rows ? '<span class="sec-label">Videolar</span>' : ''}
             <div class="card media-table">
                 <div class="media-head"><span></span><span>Adres</span><span>Kalite</span><span></span></div>
                 ${rows}${imageRow}${foot}
@@ -607,6 +654,11 @@ export function initDetectTab({ navigate, toast, openImages }) {
         if (act === 'capture') return startCapture(btn.dataset.url || info.url);
         if (!info) return;
         if (act === 'rescan') return analyze(info.url, { noExtract: true });
+        if (act === 'photos-all' && photos) {
+            photos.downloadAll();
+            return;
+        }
+        if (act === 'photos-open' && photosPage) return openImages(photosPage, [], '');
         if (act === 'images') return openImages(info.url, info.details.images || [], info.details.title);
         if (act === 'remote') {
             btn.classList.add('hidden');

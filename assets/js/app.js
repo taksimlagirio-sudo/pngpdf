@@ -81,6 +81,7 @@ const imagesTab = initImagesTab({ toast });
 const detectTab = initDetectTab({
     navigate,
     toast,
+    photos: imagesTab,
     openImages(pageUrl, urls, title) {
         navigate('images');
         imagesTab.open(pageUrl, urls, title);

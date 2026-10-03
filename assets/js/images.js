@@ -24,6 +24,20 @@ export function initImagesTab({ toast }) {
     let pageTitle = '';
     let source = '';         // resimleri kim buldu (gallery-dl ise site adıyla)
     let seq = 0;
+    let currentUrl = '';     // taranan sayfa
+    let scanning = false;
+    const subscribers = new Set(); // Algıla'daki "Fotoğraflar" bölümü bu ekranın sonuçlarını gösterir
+
+    function snapshot() {
+        return {
+            url: currentUrl, busy: scanning, title: pageTitle, source,
+            items: items.length ? visible().filter((it) => !it.failed) : []
+        };
+    }
+    function notify() {
+        const snap = snapshot();
+        subscribers.forEach((fn) => fn(snap));
+    }
 
     scanBtn.addEventListener('click', () => scan(urlInput.value.trim()));
     urlInput.addEventListener('keydown', (e) => {
@@ -32,6 +46,8 @@ export function initImagesTab({ toast }) {
 
     function setBusy(text) {
         statusBox.innerHTML = text ? `<div class="busy"><span class="spinner"></span><span>${escapeHtml(text)}</span></div>` : '';
+        scanning = Boolean(text);
+        notify();
     }
 
     async function scan(url, known = null, title = '') {
@@ -40,6 +56,7 @@ export function initImagesTab({ toast }) {
             return;
         }
         const mySeq = ++seq;
+        currentUrl = url;
         scanBtn.disabled = true;
         items = [];
         selected = new Set();
@@ -71,6 +88,7 @@ export function initImagesTab({ toast }) {
             if (!urls.length) {
                 setBusy('');
                 resultBox.innerHTML = '<div class="empty">Bu sayfada resim bulunamadı.</div>';
+                notify();
                 return;
             }
             items = urls.map((u) => {
@@ -156,6 +174,7 @@ export function initImagesTab({ toast }) {
     }
 
     function render() {
+        notify();
         if (!items.length) return;
         const pool = pooled();
         const types = ['JPG', 'PNG', 'WEBP', 'GIF', 'SVG', 'AVIF'].filter((t) => pool.some((it) => it.type === t));
@@ -318,8 +337,25 @@ export function initImagesTab({ toast }) {
     return {
         /** Algıla ekranında bulunan resimlerle aç. */
         open(pageUrl, urls, title) {
+            if (pageUrl === currentUrl && (scanning || items.length)) return; // zaten taranıyor/tarandı
             urlInput.value = pageUrl;
             scan(pageUrl, urls && urls.length ? urls : null, title || '');
+        },
+        /** Ekrana geçmeden arka planda tara (Algıla'daki Fotoğraflar bölümü için). */
+        prefetch(pageUrl, urls, title) {
+            this.open(pageUrl, urls, title);
+        },
+        /** Sonuçları dinle; hemen o anki durumla da çağrılır. Dönen fonksiyon dinlemeyi bırakır. */
+        subscribe(fn) {
+            subscribers.add(fn);
+            fn(snapshot());
+            return () => subscribers.delete(fn);
+        },
+        /** Görünen (önizlemesi açılan) bütün resimleri indir. */
+        downloadAll() {
+            selected = new Set(visible().filter((it) => !it.failed).map((it) => it.url));
+            render();
+            return download();
         }
     };
 }
