@@ -227,9 +227,9 @@ Instagram, X gibi bilinen ~1800 sitede videonun gerçek adresleri ve kalite list
 - Ayrı görüntü + ses (DASH, YouTube): ikisi ayrı akış olarak verilir, telefonda tek MP4'te birleştirilir.
 
 yt-dlp kurulu değilse ya da siteyi tanımıyorsa sayfa eskisi gibi sunucudaki tarayıcıda açılır.
-Siteye özel çıkarıcısı olmayan sayfalarda (yt-dlp'nin "Generic/HTML5MediaEmbed" çıkarıcıları sayfayı
-yalnızca okur, oynatıcıyı çalıştırmaz) önce bizim yöntem çalışır; yt-dlp'nin bulup bizim bulamadıkları
-listenin sonuna eklenir. yt-dlp'nin sonuçlarının altında "Sayfayı kendi yöntemimizle tara" düğmesi vardır.
+yt-dlp yalnızca kendine özel çıkarıcısı olan sitelerde kullanılır (`--ies default,-generic`): genel
+bir sitede yt-dlp ağa hiç çıkmaz, sayfa doğrudan sunucudaki tarayıcıda açılır. yt-dlp'nin sonuçlarının
+altında "Sayfayı kendi yöntemimizle tara" düğmesi vardır.
 
 HLS'te yt-dlp'nin verdiği Referer/çerez, listenin (ve alt listelerinin) içindeki bütün sunuculara
 (ör. parçaların geldiği CDN) uygulanır: sunucu yt-dlp'nin bulduğu listeyi bir kez okuyup bunları kaydeder.

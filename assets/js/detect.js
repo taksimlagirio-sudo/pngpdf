@@ -337,21 +337,18 @@ function basePageResult(url) {
     };
 }
 
-// yt-dlp'nin siteye özel olmayan çıkarıcıları: sayfayı yalnızca okurlar, oynatıcıyı çalıştırmazlar.
-// Böyle sayfalarda bizim yöntem (sayfayı tarayıcıda açıp oynatıcının isteklerini dinlemek) daha
-// doğrudur; yt-dlp'nin sonucu yalnızca bizimki bir şey bulamazsa kullanılır.
+// yt-dlp yalnızca kendine özel çıkarıcısı olan sitelerde kullanılır (sunucu genel çıkarıcıyı kapalı
+// çalıştırır); genel sitelerde sayfa doğrudan bizim sunucudaki tarayıcıda açılır.
 const GENERIC_EXTRACTOR = /^(generic|html5mediaembed)$/i;
 
 async function sniffOnServer(result, url, signal, onStage, { noExtract = false } = {}) {
     // Önce yt-dlp (sunucuda kuruluysa): bilinen sitelerde gerçek kalite listesini verir.
-    let backup = null;
     if (!noExtract) {
         const extracted = await extractOnServer(url, signal, onStage);
         if (extracted && !GENERIC_EXTRACTOR.test(extracted.extractor || '')) {
             applyExtracted(result, extracted);
             return;
         }
-        backup = extracted;
     }
     onStage('Sayfa kendi sunucunda çalıştırılıyor (oynatıcının istekleri bekleniyor)...');
     try {
@@ -374,28 +371,12 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
         result.details.fromRender = sniffed.items.length > 0;
         result.details.images = mergeImages(result.details.images || [], sniffed.items.filter((i) => i.kind === 'image').map((i) => i.url));
 
-        if (backup) {
-            // Bizim bulduklarımız önce; yt-dlp'nin bulup bizim bulamadıkları ardından. Uygulamanın
-            // desteklemediği DASH (.mpd) adresleri, yt-dlp onları zaten indirilebilir akışlara ayırdığı için düşer.
-            const ours = result.details.links.filter((l) => l.kind !== 'dash');
-            // Aynı video iki kez çıkmasın: yt-dlp akışının asıl adresi (source) bizimkiyle karşılaştırılır.
-            const extra = extractedLinks(backup).filter((l) => !ours.some((o) => o.url === l.url || (l.source && o.url === l.source)));
-            result.details.links = [...ours, ...extra];
-            if (!result.details.title && backup.title) result.details.title = backup.title;
-            if (!ours.length) {
-                result.details.fromYtdlp = true;
-                result.details.extractor = backup.extractor || '';
-                result.details.thumbnail = backup.thumbnail || '';
-            }
-            if (result.details.links.length) return;
-        }
         if (result.details.links.length === 0) {
             result.warnings.push('Sayfa kendi sunucunda çalıştırıldı, oynat düğmesine de basıldı ama medya isteği ' +
                 'görülmedi. Sayfa birkaç tıklama ya da onay istiyorsa aşağıdaki "👆 Sayfayı aç, kendim dokunayım" ' +
                 'ile kendin geç. Yayın kapalıysa, giriş gerekiyorsa, WebRTC ile geliyorsa veya DRM korumalıysa bulunamaz.');
         }
     } catch (err) {
-        if (backup) return applyExtracted(result, backup);
         result.warnings.push(`Kendi sunucuna ulaşılamadı: ${err.message}`);
     }
 }

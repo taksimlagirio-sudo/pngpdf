@@ -95,7 +95,10 @@ export async function extractInfo(url, { cookies = [] } = {}) {
     try {
         const args = [
             ...tool.args, '-J', '--no-playlist', '--ignore-config', '--no-warnings',
-            '--socket-timeout', '20', '--no-cache-dir'
+            '--socket-timeout', '20', '--no-cache-dir',
+            // Yalnızca siteye özel çıkarıcılar: tanınmayan (genel) sitede yt-dlp ağa hiç çıkmaz,
+            // sayfa doğrudan bizim sunucudaki tarayıcıda açılır.
+            '--ies', 'default,-generic'
         ];
         if (cookieFile) args.push('--cookies', cookieFile);
         // YouTube'un imza/hız sınırı çözümü bir JS çalıştırıcısı ister; sunucunun kendi Node.js'i verilir
@@ -112,6 +115,7 @@ export async function extractInfo(url, { cookies = [] } = {}) {
             };
         }
         let info = JSON.parse(r.out);
+        if (!info) return { ok: false, reason: 'Site tanınmadı', unsupported: true };
         // Oynatma listesi döndüyse (--no-playlist'e rağmen) ilk videoyu al.
         if (info._type === 'playlist' && Array.isArray(info.entries)) {
             const first = info.entries.find((e) => e && (e.formats || e.url));
