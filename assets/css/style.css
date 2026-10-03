@@ -2990,3 +2990,15 @@ kbd { font: 600 11px/1 var(--mono); padding: 3px 6px; border-radius: 5px; border
 @media (min-width: 960px) {
     .ed-ticks.ed-desk, .ed-keys.ed-desk, .seg.ed-desk, .ph-batch.ed-desk { display: flex !important; }
 }
+
+/* Her sekmede "Yapıştır ve algıla" */
+.view-title { flex: 1; min-width: 0; }
+.head-paste { flex: none; height: 36px; padding: 0 12px; border-radius: 11px; border: 1px dashed var(--ln); color: var(--mt); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.head-paste:active { border-color: var(--ac); color: var(--ac); }
+.side-paste { display: none; }
+@media (max-width: 380px) { .head-paste { font-size: 12px; padding: 0 9px; } }
+@media (min-width: 960px) {
+    .head-paste { display: none; }
+    .side-paste { display: block; margin: 0 0 10px; height: 38px; border-radius: 10px; border: 1px dashed var(--ln); color: var(--mt); font-size: 13px; font-weight: 600; }
+    .side-paste:hover { border-color: var(--ac); color: var(--tx); }
+}

@@ -1371,6 +1371,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     renderIdle();
 
     return {
+        paste: pasteAndAnalyze,
         prefill(url, autoStart, { shared = false } = {}) {
             const link = firstUrl(url);
             urlInput.value = link;

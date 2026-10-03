@@ -65,6 +65,12 @@ function navigate(name) {
 }
 
 document.addEventListener('click', (e) => {
+    // "Yapıştır ve algıla" her sekmede: Algıla'ya geçip panodaki bağlantıyı algılar.
+    if (e.target.closest('[data-paste]')) {
+        navigate('detect');
+        detectTab.paste();
+        return;
+    }
     const themeBtn = e.target.closest('[data-theme-toggle]');
     if (themeBtn) {
         setPref('theme', getPrefs().theme === 'light' ? 'dark' : 'light');
