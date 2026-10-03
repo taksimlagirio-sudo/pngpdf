@@ -583,7 +583,8 @@ async function proxyFetch(req, res, target, refererParam) {
     const referer = refererParam || refererByUrl.get(target) || refererByHost.get(current.host) || '';
     const headers = { 'user-agent': DESKTOP_UA, accept: '*/*' };
     // yt-dlp'nin bu adres için verdiği başlıklar (User-Agent, Referer, çerez...).
-    Object.assign(headers, requestHeadersByUrl.get(target) || requestHeadersByHost.get(current.host) || {});
+    const known = requestHeadersByUrl.get(target) || requestHeadersByHost.get(current.host) || null;
+    Object.assign(headers, known || {});
     if (req.headers.range) headers.range = req.headers.range;
     if (referer && !headers.referer) headers.referer = referer;
 
@@ -598,6 +599,19 @@ async function proxyFetch(req, res, target, refererParam) {
     for (const key of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']) {
         const value = upstream.headers.get(key);
         if (value) out[key] = value;
+    }
+
+    // yt-dlp'nin başlıklarıyla gelen m3u8: içindeki adresler (alt listeler, init, parçalar, anahtarlar)
+    // çoğu zaman başka bir sunucuda (CDN) ve aynı Referer/çerezi ister; onlar için de kaydedilir.
+    const type = upstream.headers.get('content-type') || '';
+    if (known && upstream.ok && req.method !== 'HEAD' && !req.headers.range &&
+        (/mpegurl/i.test(type) || /\.m3u8(\?|$)/i.test(current.pathname))) {
+        const text = await upstream.text();
+        if (text.startsWith('#EXTM3U')) rememberPlaylistHeaders(text, upstream.url || current.href, known);
+        const body = Buffer.from(text);
+        out['content-length'] = body.length;
+        res.writeHead(upstream.status, out);
+        return res.end(body);
     }
     res.writeHead(upstream.status, out);
 
@@ -640,10 +654,59 @@ setInterval(() => {
     for (const [id, entry] of streams) if (now - entry.created > STREAM_TTL_MS) streams.delete(id);
 }, 10 * 60 * 1000).unref();
 
+/** Listedeki her adres için yt-dlp başlıklarını kaydeder (adres ve sunucu bazında). */
+function rememberPlaylistHeaders(text, baseUrl, headers) {
+    const uris = [];
+    for (const raw of text.split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line) continue;
+        if (line.startsWith('#')) {
+            for (const m of line.matchAll(/URI="([^"]+)"/g)) uris.push(m[1]);
+        } else {
+            uris.push(line);
+        }
+    }
+    for (const uri of uris.slice(0, 20000)) {
+        try {
+            const abs = new URL(uri, baseUrl);
+            if (!/^https?:$/.test(abs.protocol)) continue;
+            if (requestHeadersByUrl.size > 50000) requestHeadersByUrl.clear();
+            requestHeadersByUrl.set(abs.href, headers);
+            if (!requestHeadersByHost.has(abs.host)) requestHeadersByHost.set(abs.host, headers);
+        } catch (_) { /* geçersiz adres */ }
+    }
+}
+
+/**
+ * yt-dlp'nin bulduğu HLS listesini (ve alt listelerini) bir kez okuyup içindeki sunucuları kaydeder:
+ * uygulama listeyi doğrudan çekse de parçalar /fetch'e düşünce doğru Referer/çerezle istenir.
+ */
+async function prefetchHlsHeaders(url, headers) {
+    const read = async (target) => {
+        const upstream = await fetchUpstream(target, { 'user-agent': DESKTOP_UA, accept: '*/*', ...headers },
+            { signal: AbortSignal.timeout(8000) });
+        const text = upstream.ok ? await upstream.text() : '';
+        if (!text.startsWith('#EXTM3U')) return [];
+        rememberPlaylistHeaders(text, upstream.url || target, headers);
+        // Alt listeler (kaliteler, ses): yalnızca ana listeden.
+        return text.split(/\r?\n/).flatMap((line, i, lines) => {
+            if (/^#EXT-X-MEDIA:/.test(line)) return [...line.matchAll(/URI="([^"]+)"/g)].map((m) => m[1]);
+            if (/^#EXT-X-STREAM-INF/.test(line) && lines[i + 1] && !lines[i + 1].startsWith('#')) return [lines[i + 1].trim()];
+            return [];
+        }).map((u) => new URL(u, upstream.url || target).href);
+    };
+    try {
+        const children = await read(url);
+        await Promise.all(children.slice(0, 8).map((child) => read(child).catch(() => [])));
+    } catch (_) { /* okunamadı: uygulama yine dener */ }
+}
+
 async function extractWithYtdlp(url) {
     const result = await extractInfo(url, { cookies: logins.storageState()?.cookies || [] });
     if (!result.ok) return { available: !result.missing, ok: false, reason: result.reason, unsupported: Boolean(result.unsupported) };
     const page = normalizeInfo(result.info, registerStream);
+    await Promise.all(page.items.filter((i) => i.kind === 'hls')
+        .map((i) => prefetchHlsHeaders(i.url, requestHeadersByUrl.get(i.url) || {})));
     return { available: true, ok: true, ...page };
 }
 

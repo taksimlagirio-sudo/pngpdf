@@ -223,13 +223,13 @@ export function normalizeInfo(info, register) {
         // Aynı yükseklikte tek dosya varsa o yeğlenir (birleştirme gerekmez).
         const single = byHeight.get(h);
         if (single) {
-            items.push({ kind: 'video', url: register(requestOf(single)), height: h, size: single.filesize || single.filesize_approx || 0, ext: single.ext || 'mp4' });
+            items.push({ kind: 'video', url: register(requestOf(single)), source: single.url || '', height: h, size: single.filesize || single.filesize_approx || 0, ext: single.ext || 'mp4' });
             continue;
         }
         const video = pairs.get(h);
         audioUrl = audioUrl || register(requestOf(audio));
         const size = (video.filesize || video.filesize_approx || 0) + (audio.filesize || audio.filesize_approx || 0);
-        items.push({ kind: 'video', url: register(requestOf(video)), audioUrl, height: h, size, ext: 'mp4' });
+        items.push({ kind: 'video', url: register(requestOf(video)), source: video.url || '', audioUrl, height: h, size, ext: 'mp4' });
     }
 
     return {
