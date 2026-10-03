@@ -581,16 +581,41 @@ async function proxyFetch(req, res, target, refererParam) {
     }
 
     const referer = refererParam || refererByUrl.get(target) || refererByHost.get(current.host) || '';
-    const headers = { 'user-agent': DESKTOP_UA, accept: '*/*' };
-    // yt-dlp'nin bu adres için verdiği başlıklar (User-Agent, Referer, çerez...).
-    const known = requestHeadersByUrl.get(target) || requestHeadersByHost.get(current.host) || null;
-    Object.assign(headers, known || {});
-    if (req.headers.range) headers.range = req.headers.range;
-    if (referer && !headers.referer) headers.referer = referer;
+    const base = { 'user-agent': DESKTOP_UA, accept: '*/*' };
+    if (req.headers.range) base.range = req.headers.range;
+    if (referer) base.referer = referer;
+
+    // yt-dlp'nin başlıkları: bu adresin kendisi (ya da onun listesindeki adresler) için tamamı;
+    // yalnızca aynı sunucudaysa sadece Referer/çerez/Origin (sayfanın tarayıcısının bulduğu Referer önce).
+    const exact = requestHeadersByUrl.get(target) || null;
+    const sameHost = !exact ? requestHeadersByHost.get(current.host) || null : null;
+    let headers = base;
+    if (exact) {
+        headers = { ...base, ...exact, range: base.range };
+        if (!headers.range) delete headers.range;
+    } else if (sameHost) {
+        headers = { ...base };
+        for (const key of ['referer', 'cookie', 'origin']) {
+            if (!sameHost[key]) continue;
+            if (key === 'referer' && (refererParam || refererByUrl.has(target))) continue;
+            headers[key] = sameHost[key];
+        }
+    }
 
     let upstream;
     try {
-        upstream = await fetchUpstream(current, headers, { method: req.method === 'HEAD' ? 'HEAD' : 'GET' });
+        const method = req.method === 'HEAD' ? 'HEAD' : 'GET';
+        upstream = await fetchUpstream(current, headers, { method });
+        // yt-dlp başlıklarıyla reddedildiyse bir kez yalın başlıklarla (eski yöntem) dene.
+        if (headers !== base && (upstream.status === 401 || upstream.status === 403)) {
+            const retry = await fetchUpstream(current, base, { method });
+            if (retry.ok || retry.status === 206) {
+                upstream.body?.cancel().catch(() => {});
+                upstream = retry;
+            } else {
+                retry.body?.cancel().catch(() => {});
+            }
+        }
     } catch (err) {
         return sendJson(res, /yönlendirme/.test(err.message) ? 502 : 400, { error: err.message });
     }
@@ -604,10 +629,10 @@ async function proxyFetch(req, res, target, refererParam) {
     // yt-dlp'nin başlıklarıyla gelen m3u8: içindeki adresler (alt listeler, init, parçalar, anahtarlar)
     // çoğu zaman başka bir sunucuda (CDN) ve aynı Referer/çerezi ister; onlar için de kaydedilir.
     const type = upstream.headers.get('content-type') || '';
-    if (known && upstream.ok && req.method !== 'HEAD' && !req.headers.range &&
+    if (exact && upstream.ok && req.method !== 'HEAD' && !req.headers.range &&
         (/mpegurl/i.test(type) || /\.m3u8(\?|$)/i.test(current.pathname))) {
         const text = await upstream.text();
-        if (text.startsWith('#EXTM3U')) rememberPlaylistHeaders(text, upstream.url || current.href, known);
+        if (text.startsWith('#EXTM3U')) rememberPlaylistHeaders(text, upstream.url || current.href, exact);
         const body = Buffer.from(text);
         out['content-length'] = body.length;
         res.writeHead(upstream.status, out);

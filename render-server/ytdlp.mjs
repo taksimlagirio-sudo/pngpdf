@@ -145,7 +145,8 @@ function cookieHeader(field) {
 function requestOf(f) {
     const headers = {};
     for (const [k, v] of Object.entries(f.http_headers || {})) {
-        if (typeof v === 'string' && v && !/^(cookie|host|content-length)$/i.test(k)) headers[k.toLowerCase()] = v;
+        // yt-dlp'nin her isteğe koyduğu genel "sayfa gezintisi" başlıkları medya isteğinde 403'e yol açabilir.
+        if (typeof v === 'string' && v && !/^(cookie|host|content-length|accept|accept-language|sec-fetch-[a-z]+)$/i.test(k)) headers[k.toLowerCase()] = v;
     }
     const cookie = cookieHeader(f.cookies);
     if (cookie) headers.cookie = cookie;
