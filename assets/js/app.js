@@ -8,6 +8,7 @@ import { initSettings } from './settings.js';
 import { openSetup, parsePairLink, redeemPair } from './setup.js';
 import { initLibraryTab } from './library-tab.js';
 import { createViewer } from './viewer.js';
+import { createEditor } from './editor.js';
 import { restoreServerRecordings } from './serverrec.js';
 import { canFloat, toggleFloatingBar, onFloatStateChange } from './floatbar.js';
 
@@ -141,6 +142,8 @@ const detectTab = initDetectTab({
 
 /* ---- Ayarlar + kenar çubuğundaki sunucu kartı ---- */
 const viewer = createViewer({ toast });
+const editor = createEditor({ toast });
+viewer.setEditor((item) => editor.open(item));
 libraryTab = initLibraryTab({ toast, viewer });
 
 settingsTab = initSettings({
