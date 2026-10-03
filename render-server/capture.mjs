@@ -46,14 +46,65 @@ const CAPTURE_SCRIPT = `(() => {
         if (!ids.has(ms)) ids.set(ms, 'm' + (++next) + Math.random().toString(36).slice(2, 6));
         return ids.get(ms);
     };
+    // Oynatıcılar videoyu çoğu zaman (kapalı) shadow DOM'a koyar; querySelectorAll onu bulamaz.
+    // Oluşturulan gölge kökleri ve oynatılan/kaynağı verilen medya öğeleri burada tutulur.
+    const roots = window.__indiriciRoots = [];
+    const media = window.__indiriciMedia = [];
+    const remember = (list, item, max) => {
+        try {
+            if (item && !list.includes(item)) {
+                list.push(item);
+                if (list.length > max) list.shift();
+            }
+        } catch (_) {}
+    };
+    if (window.Element && Element.prototype.attachShadow) {
+        const attach = Element.prototype.attachShadow;
+        Element.prototype.attachShadow = function (init) {
+            const root = attach.call(this, init);
+            remember(roots, root, 1000);
+            return root;
+        };
+    }
+    if (window.HTMLMediaElement) {
+        const HME = HTMLMediaElement.prototype;
+        const play = HME.play;
+        HME.play = function () {
+            remember(media, this, 50);
+            return play.apply(this, arguments);
+        };
+        for (const prop of ['src', 'srcObject']) {
+            const d = Object.getOwnPropertyDescriptor(HME, prop);
+            if (d && d.set) {
+                Object.defineProperty(HME, prop, { ...d, set(value) {
+                    remember(media, this, 50);
+                    return d.set.call(this, value);
+                } });
+            }
+        }
+    }
     const hook = (MS) => {
         if (!MS || !MS.prototype || MS.prototype.__indiriciHooked) return;
         MS.prototype.__indiriciHooked = true;
+        // Oynatıcı son parçayı ekleyince endOfStream çağırır: videonun bittiğinin kesin işareti.
+        const eos = MS.prototype.endOfStream;
+        MS.prototype.endOfStream = function (error) {
+            if (!error) send('eos', idOf(this));
+            return eos.apply(this, arguments);
+        };
         const add = MS.prototype.addSourceBuffer;
         MS.prototype.addSourceBuffer = function (mime) {
             const sb = add.call(this, mime);
             const id = (++next) + '-' + Math.random().toString(36).slice(2, 8);
+            const ms = this;
             send('sb', id, String(mime), idOf(this));
+            // Tamponun sonu ve MediaSource süresi: video öğesi bulunamazsa ilerleme buradan izlenir.
+            sb.addEventListener('updateend', () => {
+                try {
+                    const b = sb.buffered;
+                    send('buf', id, b.length ? b.end(b.length - 1) : 0, isFinite(ms.duration) ? ms.duration : -1);
+                } catch (_) {}
+            });
             const append = sb.appendBuffer;
             sb.appendBuffer = function (data) {
                 try {
@@ -90,7 +141,13 @@ const CAPTURE_SCRIPT = `(() => {
 
 // Sayfadaki asıl videoyu bulur, sessiz + hızlı oynatır, durumunu döner.
 function driveVideo(speed) {
-    const videos = [...document.querySelectorAll('video')];
+    const videos = new Set(document.querySelectorAll('video'));
+    for (const root of window.__indiriciRoots || []) {
+        try { root.querySelectorAll('video').forEach((v) => videos.add(v)); } catch (_) { /* kök gitmiş */ }
+    }
+    for (const v of window.__indiriciMedia || []) {
+        if (v && v.tagName === 'VIDEO') videos.add(v);
+    }
     let best = null;
     let bestScore = -1;
     for (const v of videos) {
@@ -204,6 +261,8 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
         cap.context = context;
         const tracks = new Map(); // SourceBuffer kimliği → {mime, ms, fd, file, bytes}
         const msBytes = new Map();
+        const msDuration = new Map(); // MediaSource kimliği → sitenin bildirdiği süre (sn)
+        const msEnded = new Set();    // endOfStream çağrılmış MediaSource'lar
         const mediaStatus = new Map(); // yayın isteklerinin HTTP durumları (neden olmadığını söylemek için)
         let drm = '';
         let lastDataAt = 0;
@@ -223,6 +282,18 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
             if (type === 'sb') {
                 const file = path.join(cap.work, `${tracks.size}.bin`);
                 tracks.set(id, { mime: payload || '', ms: ms || '', fd: fs.openSync(file, 'w'), file, bytes: 0 });
+                return;
+            }
+            if (type === 'buf') {
+                const track = tracks.get(id);
+                if (!track) return;
+                track.bufEnd = Number(payload) || 0;
+                const dur = Number(ms);
+                if (dur > 0) msDuration.set(track.ms, dur);
+                return;
+            }
+            if (type === 'eos') {
+                msEnded.add(id);
                 return;
             }
             if (type === 'data') {
@@ -289,16 +360,31 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
                 if (cap.progressiveError) throw new Error(cap.progressiveError);
                 if (cap.progressiveDone) { cap.reason = 'video indirildi'; return 'done'; }
 
-                if (video && flowing && !progressive) {
+                if (flowing && !progressive) {
                     if (cap.state === 'waiting') {
                         cap.state = 'capturing'; // kullanıcı başlattı
                         persist(cap);
                     }
-                    if (video.duration > 0) cap.duration = video.duration;
-                    if (video.duration === -1) cap.duration = 0;
-                    if (video.time > cap.mediaSec + 0.01) {
-                        cap.mediaSec = video.time;
-                        lastProgress = { at: Date.now(), time: video.time };
+                    // Kaydedilen MediaSource: videonun bağlı olduğu, yoksa en çok veri gelen.
+                    const main = (video && video.ms && msBytes.get(video.ms)) ? video.ms
+                        : (cap.mainMs && msBytes.get(cap.mainMs)) ? cap.mainMs
+                        : ([...msBytes.entries()].sort((a, b) => b[1] - a[1])[0] || [''])[0];
+                    // Bulunan video MediaSource'a bağlı değilse (ör. sayfadaki küçük önizleme) ölçüt olamaz.
+                    const mseVideo = video && (video.ms || video.src === 'blob' || !video.src) ? video : null;
+                    let bufEnd = Infinity;
+                    for (const track of tracks.values()) {
+                        if (track.ms === main && track.bytes > 0) bufEnd = Math.min(bufEnd, track.bufEnd || 0);
+                    }
+                    if (!isFinite(bufEnd)) bufEnd = 0;
+                    const msDur = msDuration.get(main) || 0;
+                    if (mseVideo && mseVideo.duration > 0 && mseVideo.duration < 1e6) cap.duration = mseVideo.duration;
+                    else if (msDur > 0 && msDur < 1e6) cap.duration = msDur;
+                    else if (mseVideo && mseVideo.duration === -1) cap.duration = 0;
+                    // İlerleme: videonun konumu; video öğesine ulaşılamıyorsa eklenen verinin sonu.
+                    const time = mseVideo ? mseVideo.time : bufEnd;
+                    if (time > cap.mediaSec + 0.01) {
+                        cap.mediaSec = time;
+                        lastProgress = { at: Date.now(), time };
                         cap.phase = 'Kaydediliyor';
                     }
                     const now = Date.now();
@@ -306,12 +392,21 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
                         cap.speed = Math.max(0, (cap.mediaSec - sample.time) / ((now - sample.at) / 1000));
                         sample = { at: now, time: cap.mediaSec };
                     }
-                    if (video.ended || (cap.duration > 0 && video.time >= cap.duration - 0.3)) {
+                    if (mseVideo && (mseVideo.ended || (cap.duration > 0 && mseVideo.time >= cap.duration - 0.3))) {
                         cap.reason = 'video bitti';
                         cap.mediaSec = cap.duration || cap.mediaSec;
                         return 'done';
                     }
-                    if (Date.now() - Math.max(lastProgress.at, lastDataAt) > STALL_MS) {
+                    // Oynatıcı son parçayı ekleyip endOfStream dedi ya da tampon videonun sonuna ulaştı:
+                    // verinin tamamı elde, oynatmanın sona gelmesini beklemeye gerek yok.
+                    const allData = (main && msEnded.has(main)) ||
+                        (cap.duration > 0 && bufEnd >= cap.duration - 0.5 && now - lastDataAt > 1500);
+                    if (allData) {
+                        cap.reason = 'video bitti';
+                        cap.mediaSec = Math.max(cap.mediaSec, bufEnd, cap.duration || 0);
+                        return 'done';
+                    }
+                    if (now - Math.max(lastProgress.at, lastDataAt) > STALL_MS) {
                         cap.reason = 'oynatma durdu, elde olan kaydedildi';
                         return 'done';
                     }
@@ -417,6 +512,11 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
             cap.page = null;
             cap.endedAt = Date.now();
             cap.phase = '';
+            // Doğrudan indirilen dosyada süre oynatmadan bilinmez: dosyanın kendisinden okunur.
+            if (cap.state === 'done' && cap.file && !(cap.mediaSec > 0)) {
+                const sec = mp4Duration(path.join(dir, cap.file));
+                if (sec > 0) cap.mediaSec = cap.duration = sec;
+            }
             if (captures.has(cap.id)) persist(cap);
             if (cap.work) fs.rm(cap.work, { recursive: true, force: true }, () => {});
             cap.work = null;
@@ -805,6 +905,62 @@ function sameResource(a, b) {
         return x.origin + x.pathname + x.search === y.origin + y.pathname + y.search;
     } catch (_) {
         return a === b;
+    }
+}
+
+/** MP4 dosyasının süresi (sn): moov/mvhd okunur; moov sonda da olabilir. Okunamazsa 0. */
+function mp4Duration(file) {
+    let fd;
+    try {
+        fd = fs.openSync(file, 'r');
+        const size = fs.fstatSync(fd).size;
+        const head = Buffer.alloc(16);
+        let pos = 0;
+        while (pos + 8 <= size) {
+            fs.readSync(fd, head, 0, 16, pos);
+            let len = head.readUInt32BE(0);
+            const type = head.toString('latin1', 4, 8);
+            let hdr = 8;
+            if (len === 1) {
+                len = Number(head.readBigUInt64BE(8));
+                hdr = 16;
+            } else if (len === 0) {
+                len = size - pos;
+            }
+            if (len < hdr) return 0;
+            if (type === 'moov') {
+                const moov = Buffer.alloc(Math.min(len - hdr, 64 * 1024 * 1024));
+                fs.readSync(fd, moov, 0, moov.length, pos + hdr);
+                // mvhd; fragmanlı dosyada orada süre 0 olabilir, o zaman mvex/mehd.
+                let scale = 0;
+                let total = 0;
+                const walk = (start, end) => {
+                    for (let i = start; i + 8 <= end;) {
+                        const boxLen = moov.readUInt32BE(i);
+                        const box = moov.toString('latin1', i + 4, i + 8);
+                        if (boxLen < 8 || i + boxLen > end) break;
+                        const v1 = moov[i + 8] === 1;
+                        if (box === 'mvhd') {
+                            scale = moov.readUInt32BE(i + (v1 ? 28 : 20));
+                            total = v1 ? Number(moov.readBigUInt64BE(i + 32)) : moov.readUInt32BE(i + 24);
+                        } else if (box === 'mvex') {
+                            walk(i + 8, i + boxLen);
+                        } else if (box === 'mehd' && !total) {
+                            total = v1 ? Number(moov.readBigUInt64BE(i + 12)) : moov.readUInt32BE(i + 12);
+                        }
+                        i += boxLen;
+                    }
+                };
+                walk(0, moov.length);
+                return scale && total ? total / scale : 0;
+            }
+            pos += len;
+        }
+        return 0;
+    } catch (_) {
+        return 0;
+    } finally {
+        if (fd !== undefined) fs.closeSync(fd);
     }
 }
 
