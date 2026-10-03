@@ -216,7 +216,8 @@ hata açıklamasında "cihaza (IP) bağlı" ihtimali söylenmez; giriş/oturum v
 
 ## yt-dlp (veri katmanı)
 
-Kuruluysa sunucu, bir sayfa adresi gelince önce yt-dlp'ye sorar (`yt-dlp -J`): YouTube, Vimeo,
+Varsayılan olarak **kapalıdır**: uygulamada Ayarlar → "Bilinen sitelerde yt-dlp kullan" açılırsa ve yt-dlp
+kuruluysa, sunucu bir sayfa adresi gelince önce yt-dlp'ye sorar (`yt-dlp -J`): YouTube, Vimeo,
 Instagram, X gibi bilinen ~1800 sitede videonun gerçek adresleri ve kalite listesi gelir. yt-dlp
 **yalnızca bilgi verir**; dosya indirmez. Liste, kalite seçimi, önizleme, indirme ve birleştirme
 İndirici'nin kendisinde yapılır:

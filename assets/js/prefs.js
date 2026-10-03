@@ -8,7 +8,8 @@ const DEFAULTS = {
     background: false,    // Background Fetch ile arka planda indir
     concurrency: 3,       // aynı anda en fazla iş
     keepAwake: true,      // kayıt/indirme sürerken ekranı açık tut (wake lock)
-    recWhere: 'server'    // canlı kayıt: 'server' (kendi sunucum) | 'device'
+    recWhere: 'server',   // canlı kayıt: 'server' (kendi sunucum) | 'device'
+    useYtdlp: false       // Algıla'da önce yt-dlp'ye sor (sunucuda kuruluysa); kapalıyken yalnızca bizim tarama
 };
 
 let prefs = { ...DEFAULTS };

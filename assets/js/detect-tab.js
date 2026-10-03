@@ -89,7 +89,8 @@ export function initDetectTab({ navigate, toast, openImages }) {
         try {
             const result = await analyzeUrl(url, {
                 mode: getPrefs().conn,
-                noExtract,
+                // yt-dlp yalnızca Ayarlar'dan açıldıysa; varsayılan: sayfa doğrudan bizim sunucuda taranır.
+                noExtract: noExtract || !getPrefs().useYtdlp,
                 onStage: (text) => mySeq === seq && setBusy(text)
             });
             if (mySeq !== seq) return;
