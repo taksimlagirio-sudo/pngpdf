@@ -70,17 +70,22 @@ function hostOf(url) {
 
 export function initLibraryTab({ toast, viewer }) {
     const root = $('libraryView');
-    const ui = { source: 'all', type: null, query: '', searching: false };
+    const ui = { source: 'all', type: null, query: '', searching: false, selected: null, collection: null };
+    const desktop = () => window.matchMedia('(min-width: 960px)').matches;
     let items = [];
     let remote = [];
     let usage = null;
+    let visible = [];
+    let focusSearch = false;
 
     const all = () => [...items, ...remote].sort((a, b) => b.createdAt - a.createdAt);
 
     function filtered() {
         const q = ui.query.trim().toLocaleLowerCase('tr');
+        const c = ui.collection;
         return all()
             .filter((i) => ui.source === 'all' || (ui.source === 'server' ? i.server : !i.server))
+            .filter((i) => !c || (c.kind === 'rec' ? i.rec : c.kind === 'edited' ? i.edited : c.kind === 'page' ? i.page === c.value : i.site === c.value))
             .filter((i) => !q || `${i.name} ${i.site || ''}`.toLocaleLowerCase('tr').includes(q));
     }
 
@@ -111,14 +116,14 @@ export function initLibraryTab({ toast, viewer }) {
         const icon = item.thumb ? '' : `<span class="lib-ph">${item.kind === 'audio' ? '♪' : item.kind === 'photo' ? '▣' : '▶'}</span>`;
         if (style === 'list') {
             const [where, cls] = itemWhere(item);
-            return `<button class="lib-row" data-l="open" data-id="${escapeHtml(item.id)}">
+            return `<button class="lib-row${ui.selected === item.id ? ' sel' : ''}" data-l="open" data-id="${escapeHtml(item.id)}">
                 <span class="lib-row-th" style="${thumbStyle(item)}">${icon}${item.rec ? '<span class="lib-dot"></span>' : ''}</span>
                 <span class="lib-row-main"><span class="lib-row-n">${escapeHtml(item.name)}</span>
                     <span class="lib-row-m">${escapeHtml(itemMeta(item))}</span></span>
                 <span class="lib-where ${cls}">${where}</span></button>`;
         }
         const ratio = style === 'wall' && item.width && item.height ? Math.min(1.9, Math.max(0.5, item.height / item.width)) : 1;
-        return `<button class="lib-tile" data-l="open" data-id="${escapeHtml(item.id)}" style="${thumbStyle(item)};aspect-ratio:1/${ratio.toFixed(3)}">
+        return `<button class="lib-tile${ui.selected === item.id ? ' sel' : ''}" data-l="open" data-id="${escapeHtml(item.id)}" style="${thumbStyle(item)};aspect-ratio:1/${ratio.toFixed(3)}">
             ${icon}<span class="lib-badges">${tileBadges(item)}</span><span class="lib-dur">${escapeHtml(tileLabel(item))}</span></button>`;
     }
 
@@ -138,10 +143,15 @@ export function initLibraryTab({ toast, viewer }) {
         const anyVisual = list.some(isVisual);
         const empty = !all().length;
 
-        root.innerHTML = `
+        const shown = list;
+        if (ui.selected && !shown.some((i) => i.id === ui.selected)) ui.selected = null;
+        if (!ui.selected && shown.length && desktop()) ui.selected = shown[0].id;
+        visible = shown;
+        root.innerHTML = `<div class="lib-layout"><div class="lib-main">
             ${ui.searching ? `<div class="lib-search"><input class="input" type="search" data-l-q placeholder="Ad ya da site ara" value="${escapeHtml(ui.query)}"></div>` : ''}
             ${usageHtml()}
             <div class="lib-ctrls">
+                <label class="lib-desk-search"><input class="input" type="search" data-l-q placeholder="Ad, site ya da tür ara" value="${escapeHtml(ui.query)}"><kbd>Ctrl K</kbd></label>
                 <div class="seg lib-seg">${SOURCES.map(([k, l]) => `<button class="${ui.source === k ? 'on' : ''}" data-l="source" data-v="${k}">${l}</button>`).join('')}</div>
                 <div class="seg lib-seg">${STYLES.map(([k, l]) => `<button class="${style === k ? 'on' : ''}" data-l="style" data-v="${k}">${l}</button>`).join('')}</div>
             </div>
@@ -154,13 +164,88 @@ export function initLibraryTab({ toast, viewer }) {
                     <div class="lib-ghead"><span>${escapeHtml(g.label)}</span><span>${g.items.length} öğe</span></div>
                     <div class="lib-${style}">${g.items.map((i) => tileHtml(i, style)).join('')}</div>
                 </div>`).join('')}
-            ${anyVisual ? '<button class="lib-feed-btn" data-l="feed">▶ Akışta izle</button>' : ''}`;
-        if (ui.searching) {
-            const input = root.querySelector('[data-l-q]');
+            ${ui.collection ? `<button class="lib-coll-chip" data-l="coll-clear">${escapeHtml(ui.collection.label)} ✕</button>` : ''}
+            ${anyVisual ? '<button class="lib-feed-btn" data-l="feed">▶ Akışta izle</button>' : ''}
+            </div><aside class="lib-insp">${inspectorHtml()}</aside></div>`;
+        renderSide();
+        if (ui.searching || focusSearch) {
+            focusSearch = false;
+            const input = root.querySelector(ui.searching && !desktop() ? '.lib-search [data-l-q]' : '.lib-desk-search [data-l-q]');
             input.focus();
             input.setSelectionRange(input.value.length, input.value.length);
         }
     }
+
+    function selectedItem() {
+        return visible.find((i) => i.id === ui.selected) || null;
+    }
+
+    function inspectorHtml() {
+        const it = selectedItem();
+        if (!it) return '<div class="lib-insp-empty">Bir öğe seç</div>';
+        const rows = [
+            ['Boyut', it.size ? formatSize(it.size) : '—'],
+            ['Süre / ölçü', it.duration ? clock(it.duration) : it.width ? `${it.width}×${it.height}` : '—'],
+            ['Kaynak', it.site || '—'],
+            ['Nerede', it.server ? 'Sunucum (akıtılır)' : it.exportedAt ? 'Bu cihaz · galeride de var' : 'Yalnızca bu cihaz'],
+            ['İndirildi', new Date(it.createdAt).toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })]
+        ];
+        return `
+            <button class="lib-insp-prev" data-l="insp-open" style="${thumbStyle(it)}">${it.kind === 'photo' ? '' : '<span class="lib-insp-play">▶</span>'}</button>
+            <div class="lib-insp-t">${escapeHtml(it.name)}</div>
+            <div class="lib-insp-m">${KIND_LABEL[typeOf(it)] || 'Dosya'} · ${it.server ? 'sunucunda' : 'bu cihazda'}</div>
+            <div class="lib-insp-rows">${rows.map(([k, v]) => `<div><span>${k}</span><b>${escapeHtml(v)}</b></div>`).join('')}</div>
+            <div class="lib-insp-btns">
+                <button class="btn-ac" data-l="insp-open">Aç</button>
+                <button class="btn-ghost" data-l="insp-edit"${it.server ? ' disabled' : ''}>Düzenle</button>
+                <button class="btn-ghost" data-l="insp-export">Klasöre aktar</button>
+                <button class="btn-ghost" data-l="insp-share">Paylaş</button>
+            </div>
+            <div class="lib-keys"><span><kbd>Boşluk</kbd> önizle</span><span><kbd>Enter</kbd> aç</span><span><kbd>E</kbd> düzenle</span><span><kbd>Del</kbd> sil</span></div>`;
+    }
+
+    /** Kenar çubuğu: koleksiyonlar ve depolama (masaüstü). */
+    function renderSide() {
+        const box = $('libCollections');
+        const store = $('libSideStorage');
+        if (!box) return;
+        const list = all();
+        const pages = new Map();
+        const sites = new Map();
+        for (const i of list) {
+            if (i.page) pages.set(i.page, (pages.get(i.page) || 0) + 1);
+            if (i.site) sites.set(i.site, (sites.get(i.site) || 0) + 1);
+        }
+        const colls = [];
+        const topPage = [...pages].filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1])[0];
+        if (topPage) {
+            const inPage = list.filter((i) => i.page === topPage[0]);
+            const main = inPage.find((i) => i.kind === 'video' && !i.edited) || inPage[0];
+            colls.push({ kind: 'page', value: topPage[0], label: main.kind === 'video' ? baseTitle(main.name) : pathLabel(topPage[0]) });
+        }
+        for (const [site] of [...sites].sort((a, b) => b[1] - a[1]).slice(0, 2)) colls.push({ kind: 'site', value: site, label: site });
+        if (list.some((i) => i.rec)) colls.push({ kind: 'rec', label: 'Canlı kayıtlar' });
+        if (list.some((i) => i.edited)) colls.push({ kind: 'edited', label: 'Düzenlenenler' });
+        sideColls = colls;
+        box.innerHTML = colls.length ? `<span class="side-coll-t">Koleksiyonlar</span>${colls.map((c, k) =>
+            `<button class="${ui.collection && ui.collection.label === c.label ? 'on' : ''}" data-coll="${k}">${escapeHtml(c.label)}</button>`).join('')}` : '';
+        if (store && usage) {
+            const free = usage.free ? ` · ~${formatSize(usage.free)} boş` : '';
+            store.innerHTML = `<b>${formatSize(usage.total)} · bu cihaz</b>
+                <span class="lib-bar"><span class="u-video" style="width:${Math.min(100, usage.free ? (usage.total / (usage.total + usage.free)) * 100 : 5)}%"></span></span>
+                <small>${usage.count} öğe${free}</small>`;
+        }
+    }
+    let sideColls = [];
+    const pathLabel = (url) => {
+        try {
+            const u = new URL(url);
+            return (u.host.replace(/^www\./, '') + u.pathname).replace(/\/$/, '');
+        } catch (_) {
+            return url;
+        }
+    };
+    const baseTitle = (name) => name.replace(/\.[^.]+$/, '').replace(/-(\d+|duzenlendi)$/, '');
 
     async function refresh({ server = false } = {}) {
         items = await libList();
@@ -181,11 +266,17 @@ export function initLibraryTab({ toast, viewer }) {
         if (act === 'type') ui.type = btn.dataset.v || null;
         if (act === 'storage') return openStorage();
         if (act === 'open') {
-            const list = filtered().filter((i) => !ui.type || typeOf(i) === ui.type);
-            const index = list.findIndex((i) => i.id === btn.dataset.id);
-            if (index >= 0) viewer.open(list, index);
-            return;
+            if (desktop() && ui.selected !== btn.dataset.id) {
+                ui.selected = btn.dataset.id;
+                return render();
+            }
+            return openSelected(btn.dataset.id);
         }
+        if (act === 'insp-open') return openSelected(ui.selected);
+        if (act === 'insp-edit' && selectedItem()) return viewer.edit(selectedItem(), visible.filter((i) => i.kind === 'photo' && !i.server));
+        if (act === 'insp-export' && selectedItem()) return viewer.toGallery(selectedItem());
+        if (act === 'insp-share' && selectedItem()) return viewer.share(selectedItem());
+        if (act === 'coll-clear') ui.collection = null;
         if (act === 'feed') {
             const list = filtered().filter((i) => (!ui.type || typeOf(i) === ui.type) && isVisual(i));
             viewer.feed(list);
@@ -193,9 +284,65 @@ export function initLibraryTab({ toast, viewer }) {
         }
         render();
     });
+    root.addEventListener('dblclick', (e) => {
+        const btn = e.target.closest('[data-l="open"]');
+        if (btn && desktop()) openSelected(btn.dataset.id);
+    });
+
+    function openSelected(id) {
+        const index = visible.findIndex((i) => i.id === id);
+        if (index >= 0) viewer.open(visible, index);
+    }
+
+    const sideBox = $('libCollections');
+    if (sideBox) {
+        sideBox.addEventListener('click', (e) => {
+            const b = e.target.closest('[data-coll]');
+            if (!b) return;
+            const c = sideColls[Number(b.dataset.coll)];
+            ui.collection = ui.collection && ui.collection.label === c.label ? null : c;
+            if (document.body.dataset.view !== 'library') location.hash = 'library';
+            render();
+        });
+    }
+    const sideStore = $('libSideStorage');
+    if (sideStore) sideStore.addEventListener('click', () => openStorage());
+
+    // Masaüstü kısayolları
+    document.addEventListener('keydown', (e) => {
+        if (document.body.dataset.view !== 'library' || document.querySelector('.remote-overlay')) return;
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+            e.preventDefault();
+            focusSearch = true;
+            if (!desktop()) ui.searching = true;
+            return render();
+        }
+        if (e.target.matches('input, textarea, select')) return;
+        const it = selectedItem();
+        const idx = visible.findIndex((i) => i.id === ui.selected);
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+            if (!visible.length) return;
+            e.preventDefault();
+            const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1;
+            ui.selected = visible[Math.max(0, Math.min(visible.length - 1, idx + step))].id;
+            render();
+            const el = root.querySelector('.sel');
+            if (el) el.scrollIntoView({ block: 'nearest' });
+            return;
+        }
+        if (!it) return;
+        if (e.key === ' ' || e.key === 'Enter') {
+            e.preventDefault();
+            openSelected(it.id);
+        }
+        if (e.key.toLowerCase() === 'e') viewer.edit(it, visible.filter((i) => i.kind === 'photo' && !i.server));
+        if (e.key === 'Delete' || e.key === 'Backspace') viewer.remove(it);
+    });
+
     root.addEventListener('input', (e) => {
         if (!e.target.matches('[data-l-q]')) return;
         ui.query = e.target.value;
+        focusSearch = true;
         render();
     });
 

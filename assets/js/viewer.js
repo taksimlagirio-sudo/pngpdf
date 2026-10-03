@@ -84,11 +84,11 @@ export function createViewer({ toast, edit = null }) {
         return true;
     }
 
-    function startEdit(item, closeFn) {
+    function startEdit(item, closeFn, list = []) {
         if (!edit) return;
         if (item.server) return toast('Düzenlemek için önce telefona al');
         closeFn();
-        edit(item);
+        edit(item, list);
     }
 
     const ACTIONS = [['edit', '✎', 'Düzenle'], ['gallery', '↧', 'Galeriye'], ['share', '↗', 'Paylaş'], ['delete', '⌫', 'Sil']];
@@ -434,7 +434,7 @@ export function createViewer({ toast, edit = null }) {
                 btn.querySelector('span').textContent = '❚❚';
                 slideTimer = setInterval(() => (i + 1 < photos.length ? go(i + 1) : stopSlide()), 3000);
             }
-            if (v === 'edit') startEdit(item, close);
+            if (v === 'edit') startEdit(item, close, photos);
             if (v === 'gallery') toGallery(item);
             if (v === 'share') share(item);
             if (v === 'delete' && await remove(item)) {
@@ -603,6 +603,12 @@ export function createViewer({ toast, edit = null }) {
     }
 
     return {
+        toGallery,
+        share,
+        remove,
+        edit(item, list = []) {
+            if (edit) startEdit(item, () => {}, list);
+        },
         open(list, index) {
             const item = list[index];
             if (item.kind === 'photo') return openPhoto(list, index);

@@ -168,16 +168,22 @@ export function createEditor({ toast, onSaved = () => {} }) {
             lossless: Boolean(info)
         };
         const history = [];
+        const future = [];
         let duration = (info && info.duration) || item.duration || 0;
         let busy = false;
         let cancelled = false;
 
         el.innerHTML = `
-            <div class="ed">
-                <div class="ed-top"><button class="back-btn" data-e="close" aria-label="Kapat">←</button><span>Düzenle</span>
-                    <button class="link-btn" data-e="undo">Geri al</button></div>
+            <div class="ed ed-v">
+                <div class="ed-top"><button class="back-btn" data-e="close" aria-label="Kapat">←</button>
+                    <span class="ed-title"><span class="ed-mob">Düzenle</span><span class="ed-desk">${escapeHtml(baseName(item.name))} · düzenleniyor</span></span>
+                    <button class="link-btn" data-e="undo">Geri al</button><button class="link-btn ed-desk" data-e="redo">Yinele</button></div>
                 <div class="ed-stage"><video playsinline src="${url}"></video><span class="ed-now">0:00</span></div>
-                <div class="ed-strip" data-strip><div class="ed-thumbs"></div><div class="ed-sel"></div><div class="ed-head"></div></div>
+                <div class="ed-timeline">
+                    <div class="ed-ticks ed-desk"></div>
+                    <div class="ed-strip" data-strip><div class="ed-thumbs"></div><div class="ed-sel"></div><div class="ed-head"></div></div>
+                    <div class="ed-keys ed-desk"><span><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> oynat</span><span><kbd>I</kbd><kbd>O</kbd> giriş/çıkış</span><span><kbd>S</kbd> böl</span></div>
+                </div>
                 <div class="ed-boxes">
                     <label class="range-box"><span>Başlangıç</span><input data-e-in="start" inputmode="numeric"></label>
                     <label class="range-box"><span>Bitiş</span><input data-e-in="end" inputmode="numeric"></label>
@@ -190,13 +196,19 @@ export function createEditor({ toast, onSaved = () => {} }) {
                     <button data-e="mute"${isAudio ? ' disabled' : ''}><b>∅</b>Sessiz</button>
                     <button data-e="rotate"${isAudio ? ' disabled' : ''}><b>⟲</b>Döndür</button>
                 </div>
-                <button class="ed-ll" data-e="lossless"${info ? '' : ' disabled'}>
-                    <span><b>Kayıpsız ve hızlı</b><small data-e-llhint></small></span><span class="toggle"></span></button>
-                <span class="sec-label">Çıktı</span>
-                <div class="seg" data-e-outs>${OUTS.map(([k, l]) => `<button data-e="out" data-v="${k}">${l}</button>`).join('')}</div>
-                <div class="ed-progress hidden"><div class="stage-bar"><div></div></div><span></span><button class="link-btn" data-e="cancel">İptal</button></div>
-            </div>
-            <div class="ed-bar"><span data-e-size></span><button class="btn-big" data-e="save">Kopya olarak kaydet</button></div>`;
+                <div class="ed-side">
+                    <span class="ed-side-t ed-desk">Dışa aktar</span>
+                    <span class="sec-label ed-desk">Çıktı</span>
+                    <div class="seg ed-desk" data-e-outs>${OUTS.map(([k, l]) => `<button data-e="out" data-v="${k}">${l}</button>`).join('')}</div>
+                    <button class="ed-ll" data-e="lossless"${info ? '' : ' disabled'}>
+                        <span><b>Kayıpsız ve hızlı</b><small data-e-llhint></small></span><span class="toggle"></span></button>
+                    <span class="sec-label ed-mob">Çıktı</span>
+                    <div class="seg ed-mob" data-e-outs>${OUTS.map(([k, l]) => `<button data-e="out" data-v="${k}">${l}</button>`).join('')}</div>
+                    <div class="lib-insp-rows ed-desk ed-info"></div>
+                    <div class="ed-progress hidden"><div class="stage-bar"><div></div></div><span></span><button class="link-btn" data-e="cancel">İptal</button></div>
+                    <div class="ed-bar"><span data-e-size></span><button class="btn-big" data-e="save"><span class="ed-mob">Kopya olarak kaydet</span><span class="ed-desk">Dışa aktar</span></button></div>
+                </div>
+            </div>`;
 
         const video = el.querySelector('video');
         const strip = el.querySelector('[data-strip]');
@@ -206,7 +218,10 @@ export function createEditor({ toast, onSaved = () => {} }) {
         const snapshot = () => JSON.stringify({ start: st.start, end: st.end, mute: st.mute, rotate: st.rotate, out: st.out, lossless: st.lossless });
         const remember = () => {
             const s = snapshot();
-            if (history[history.length - 1] !== s) history.push(s);
+            if (history[history.length - 1] !== s) {
+                history.push(s);
+                future.length = 0;
+            }
             if (history.length > 50) history.shift();
         };
 
@@ -242,6 +257,13 @@ export function createEditor({ toast, onSaved = () => {} }) {
             else if (info && st.lossless) size = `~${formatSize(estimateSize(info, { start: snapped, end: st.end, mute: st.mute, audioOnly: st.out === 'audio' }))}`;
             else if (item.size && duration) size = `~${formatSize((item.size / duration) * (st.end - st.start) * (st.out === 'audio' ? 0.08 : 1))}`;
             el.querySelector('[data-e-size]').textContent = [label, size].filter(Boolean).join(' · ');
+            el.querySelector('.ed-info').innerHTML = [['Aralık', `${clock(snapped)} – ${clock(st.end)}`], ['Süre', clock(st.end - snapped)],
+                ['Tahmini', [label, size].filter(Boolean).join(' · ')], ['Hedef', 'Yeni kopya · Kitaplık']]
+                .map(([k, v]) => `<div><span>${k}</span><b>${escapeHtml(v)}</b></div>`).join('');
+            const ticks = el.querySelector('.ed-ticks');
+            if (duration && !ticks.childElementCount) {
+                ticks.innerHTML = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span>${clock(f * duration)}</span>`).join('');
+            }
         }
 
         function setRange(a, b) {
@@ -429,9 +451,17 @@ export function createEditor({ toast, onSaved = () => {} }) {
             }
             if (busy) return;
             if (a === 'undo') {
-                if (history.length > 1) history.pop();
+                if (history.length > 1) future.push(history.pop());
                 const prev = history[history.length - 1];
                 if (prev) Object.assign(st, JSON.parse(prev));
+                return paint();
+            }
+            if (a === 'redo') {
+                const next = future.pop();
+                if (next) {
+                    history.push(next);
+                    Object.assign(st, JSON.parse(next));
+                }
                 return paint();
             }
             if (a === 'save') return save();
@@ -459,7 +489,8 @@ export function createEditor({ toast, onSaved = () => {} }) {
             if (e.key === 's') save('split');
             if (e.key === 'i') { remember(); setRange(video.currentTime, st.end); }
             if (e.key === 'o') { remember(); setRange(st.start, video.currentTime); }
-            if ((e.ctrlKey || e.metaKey) && e.key === 'z') el.querySelector('[data-e="undo"]').click();
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') el.querySelector(e.shiftKey ? '[data-e="redo"]' : '[data-e="undo"]').click();
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') el.querySelector('[data-e="redo"]').click();
         };
         document.addEventListener('keydown', onKey);
         if (info) {
@@ -550,7 +581,7 @@ export function createEditor({ toast, onSaved = () => {} }) {
         ctx.putImageData(img, 0, 0);
     }
 
-    async function openPhoto(item) {
+    async function openPhoto(item, list = []) {
         const el = overlay('ed-photo');
         el.innerHTML = '<div class="vw-loading">Açılıyor…</div>';
         let bitmap;
@@ -564,7 +595,7 @@ export function createEditor({ toast, onSaved = () => {} }) {
         const ext = (item.name.split('.').pop() || '').toLowerCase();
         const fresh = () => ({
             tab: 'adjust', b: 1, c: 1, s: 1, filter: 0, ratio: 0, rotate: 0, flip: false,
-            crop: null, width: 0, height: 0, lockSize: true,
+            crop: null, width: 0, height: 0, lockSize: true, cmp: null,
             fmt: ext === 'png' ? 'png' : ext === 'webp' ? 'webp' : 'jpg'
         });
         let st = fresh();
@@ -600,18 +631,30 @@ export function createEditor({ toast, onSaved = () => {} }) {
 
         const ops = () => [['brightness', st.b], ['contrast', st.c], ['saturate', st.s], ...FILTERS[st.filter][1]];
 
+        const others = list.filter((p) => p.id !== item.id && p.kind === 'photo').slice(0, 30);
+        const batch = new Set();
         el.innerHTML = `
-            <div class="ed">
-                <div class="ed-top"><button class="back-btn" data-e="close" aria-label="Kapat">←</button><span>Düzenle</span>
+            <div class="ed ed-p">
+                <div class="ed-top"><button class="back-btn" data-e="close" aria-label="Kapat">←</button>
+                    <span class="ed-title"><span class="ed-mob">Düzenle</span><span class="ed-desk">${escapeHtml(item.name)}</span></span>
+                    <span class="ph-cmp-hint">Karşılaştırmak için resme dokun</span>
                     <button class="link-btn" data-e="reset">Sıfırla</button></div>
-                <div class="ph-ed-stage"><div class="ph-ed-wrap"><canvas class="ph-ed-canvas"></canvas>
+                <div class="ph-ed-stage"><div class="ph-ed-wrap"><canvas class="ph-ed-canvas"></canvas><canvas class="ph-ed-before"></canvas>
+                    <span class="ph-cmp-line"><i>⇔</i></span><span class="ph-tag before">ÖNCE</span><span class="ph-tag after">SONRA</span>
                     <div class="ph-ed-crop"><i></i><i></i><i></i><i></i></div></div></div>
-                <div class="seg" data-tabs>${[['crop', 'Kırp'], ['adjust', 'Ayarla'], ['filter', 'Filtre'], ['size', 'Boyut']].map(([k, l]) =>
-                    `<button data-e="tab" data-v="${k}">${l}</button>`).join('')}</div>
-                <div class="ph-ed-panel"></div>
-            </div>
-            <div class="ed-bar"><button class="btn-ghost" data-e="close">Vazgeç</button><button class="btn-big" data-e="save">Kopya olarak kaydet</button></div>`;
+                <div class="ed-side">
+                    <div class="seg" data-tabs>${[['crop', 'Kırp'], ['adjust', 'Ayarla'], ['filter', 'Filtre'], ['size', 'Boyut']].map(([k, l]) =>
+                        `<button data-e="tab" data-v="${k}">${l}</button>`).join('')}</div>
+                    <div class="ph-ed-panel"></div>
+                    <button class="btn-ghost ph-batch-btn hidden" data-e="batch"></button>
+                    <div class="ed-bar"><button class="btn-ghost" data-e="close">Vazgeç</button><button class="btn-big" data-e="save">Kopya olarak kaydet</button></div>
+                </div>
+                ${others.length ? `<div class="ph-batch ed-desk"><div class="ph-batch-list">${others.map((p) =>
+                    `<button data-e="pick" data-id="${escapeHtml(p.id)}" style="${p.thumb ? `background-image:url('${p.thumb}')` : ''}"></button>`).join('')}</div>
+                    <span class="ph-batch-n"><b>0</b> seçili · <kbd>Ctrl</kbd>+tık</span></div>` : ''}
+            </div>`;
         const canvas = el.querySelector('.ph-ed-canvas');
+        const before = el.querySelector('.ph-ed-before');
         const cropBox = el.querySelector('.ph-ed-crop');
         const panel = el.querySelector('.ph-ed-panel');
 
@@ -622,9 +665,30 @@ export function createEditor({ toast, onSaved = () => {} }) {
             canvas.width = Math.round(base.width * scale);
             canvas.height = Math.round(base.height * scale);
             canvas.getContext('2d').drawImage(base, 0, 0, canvas.width, canvas.height);
+            before.width = canvas.width;
+            before.height = canvas.height;
+            before.getContext('2d').drawImage(canvas, 0, 0);
             canvas.style.filter = cssOf(ops());
             paintCrop();
+            paintCompare();
         }
+
+        function paintCompare() {
+            const on = st.cmp !== null && st.tab !== 'crop';
+            el.querySelector('.ph-ed-wrap').classList.toggle('cmp', on);
+            if (!on) return;
+            before.style.clipPath = `inset(0 ${100 - st.cmp}% 0 0)`;
+            el.querySelector('.ph-cmp-line').style.left = `${st.cmp}%`;
+        }
+
+        // Önce/sonra: resme dokununca çizgi oraya gelir; çizginin üstüne dokununca kapanır.
+        el.querySelector('.ph-ed-wrap').addEventListener('click', (e) => {
+            if (st.tab === 'crop' || e.target.closest('.ph-ed-crop')) return;
+            const r = canvas.getBoundingClientRect();
+            const x = Math.max(4, Math.min(96, ((e.clientX - r.left) / r.width) * 100));
+            st.cmp = st.cmp !== null && Math.abs(st.cmp - x) < 4 ? null : x;
+            paintCompare();
+        });
 
         function paintCrop() {
             const c = st.crop;
@@ -762,28 +826,86 @@ export function createEditor({ toast, onSaved = () => {} }) {
             }
         });
 
+        /** Kaynak (döndürülmüş) tuvalden kırpıp boyutlandırır, renkleri uygular, dosyaya çevirir. */
+        async function exportFrom(src, c, w, h) {
+            const out = document.createElement('canvas');
+            out.width = w;
+            out.height = h;
+            const ctx = out.getContext('2d', { willReadFrequently: true });
+            ctx.imageSmoothingQuality = 'high';
+            const f = FORMATS.find(([k]) => k === st.fmt);
+            if (f[0] === 'jpg') {
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(0, 0, w, h);
+            }
+            ctx.drawImage(src, c.x, c.y, c.w, c.h, 0, 0, w, h);
+            const m = matrixOf(ops());
+            const identity = m.every((v, i) => Math.abs(v - [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0][i]) < 1e-6);
+            if (!identity) applyMatrix(ctx, w, h, m);
+            const blob = await new Promise((r) => out.toBlob(r, f[2], 0.9));
+            if (!blob) throw new Error('Kaydedilemedi');
+            return { blob, ext: f[0] };
+        }
+
+        /** Aynı ayarları (renk, filtre, döndürme, oran, biçim) seçili diğer fotoğraflara uygular. */
+        async function applyBatch() {
+            el.classList.add('busy');
+            let n = 0;
+            try {
+                for (const id of batch) {
+                    const other = others.find((p) => p.id === id);
+                    if (!other) continue;
+                    const bmp = await createImageBitmap(await libFile(id));
+                    const turned = st.rotate === 90 || st.rotate === 270;
+                    const src = document.createElement('canvas');
+                    src.width = turned ? bmp.height : bmp.width;
+                    src.height = turned ? bmp.width : bmp.height;
+                    const g = src.getContext('2d');
+                    g.translate(src.width / 2, src.height / 2);
+                    g.rotate((st.rotate * Math.PI) / 180);
+                    if (st.flip) g.scale(-1, 1);
+                    g.drawImage(bmp, -bmp.width / 2, -bmp.height / 2);
+                    bmp.close();
+                    const ratio = RATIOS[st.ratio][1];
+                    let c = { x: 0, y: 0, w: src.width, h: src.height };
+                    if (ratio) {
+                        let w = src.width;
+                        let h = w / ratio;
+                        if (h > src.height) {
+                            h = src.height;
+                            w = h * ratio;
+                        }
+                        c = { x: (src.width - w) / 2, y: (src.height - h) / 2, w, h };
+                    }
+                    const r = await exportFrom(src, c, Math.round(c.w), Math.round(c.h));
+                    await libAdd(r.blob, { name: `${baseName(other.name)}-duzenlendi.${r.ext}`, page: other.page, edited: true, from: other.id });
+                    n++;
+                }
+                toast(`${n} fotoğrafa uygulandı · kopyalar kitaplıkta`);
+                batch.clear();
+                paintBatch();
+            } catch (err) {
+                toast(err.message);
+            } finally {
+                el.classList.remove('busy');
+            }
+        }
+
+        function paintBatch() {
+            el.querySelectorAll('[data-e="pick"]').forEach((b) => b.classList.toggle('on', batch.has(b.dataset.id)));
+            const n = el.querySelector('.ph-batch-n b');
+            if (n) n.textContent = batch.size;
+            const btn = el.querySelector('.ph-batch-btn');
+            btn.classList.toggle('hidden', !batch.size);
+            btn.textContent = `Ayarları seçili ${batch.size} fotoğrafa uygula`;
+        }
+
         async function save() {
             el.classList.add('busy');
             try {
-                const c = st.crop;
                 const { w, h } = outSize();
-                const out = document.createElement('canvas');
-                out.width = w;
-                out.height = h;
-                const ctx = out.getContext('2d', { willReadFrequently: true });
-                ctx.imageSmoothingQuality = 'high';
-                const f = FORMATS.find(([k]) => k === st.fmt);
-                if (f[0] === 'jpg') {
-                    ctx.fillStyle = '#fff';
-                    ctx.fillRect(0, 0, w, h);
-                }
-                ctx.drawImage(base, c.x, c.y, c.w, c.h, 0, 0, w, h);
-                const m = matrixOf(ops());
-                const identity = m.every((v, i) => Math.abs(v - [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0][i]) < 1e-6);
-                if (!identity) applyMatrix(ctx, w, h, m);
-                const blob = await new Promise((r) => out.toBlob(r, f[2], 0.9));
-                if (!blob) throw new Error('Kaydedilemedi');
-                await libAdd(blob, { name: `${baseName(item.name)}-duzenlendi.${f[0]}`, page: item.page, edited: true, from: item.id });
+                const { blob, ext: outExt } = await exportFrom(base, st.crop, w, h);
+                await libAdd(blob, { name: `${baseName(item.name)}-duzenlendi.${outExt}`, page: item.page, edited: true, from: item.id });
                 toast('Kopya kitaplığa kaydedildi');
                 close();
                 onSaved();
@@ -806,6 +928,13 @@ export function createEditor({ toast, onSaved = () => {} }) {
             const a = btn.dataset.e;
             if (a === 'close') return close();
             if (a === 'save') return save();
+            if (a === 'batch') return applyBatch();
+            if (a === 'pick') {
+                const id = btn.dataset.id;
+                if (batch.has(id)) batch.delete(id);
+                else batch.add(id);
+                return paintBatch();
+            }
             if (a === 'reset') {
                 st = fresh();
                 return render();
@@ -834,6 +963,7 @@ export function createEditor({ toast, onSaved = () => {} }) {
             }
             if (a === 'fmt') st.fmt = btn.dataset.v;
             paintCrop();
+            paintCompare();
             drawPanel();
         });
         const onKey = (e) => {
@@ -844,8 +974,8 @@ export function createEditor({ toast, onSaved = () => {} }) {
     }
 
     return {
-        open(item) {
-            if (item.kind === 'photo') return openPhoto(item);
+        open(item, list = []) {
+            if (item.kind === 'photo') return openPhoto(item, list);
             if (item.kind === 'video' || item.kind === 'audio') return openVideo(item);
             toast('Bu dosya düzenlenemiyor');
         }

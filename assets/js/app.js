@@ -143,7 +143,7 @@ const detectTab = initDetectTab({
 /* ---- Ayarlar + kenar çubuğundaki sunucu kartı ---- */
 const viewer = createViewer({ toast });
 const editor = createEditor({ toast });
-viewer.setEditor((item) => editor.open(item));
+viewer.setEditor((item, list) => editor.open(item, list));
 libraryTab = initLibraryTab({ toast, viewer });
 
 settingsTab = initSettings({
