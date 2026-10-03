@@ -336,3 +336,12 @@ export async function probeAccess(url, mode = 'auto') {
     // Sunucu yoksa doğrudan dene; başarısız olursa normal indirmeye düşüp anlaşılır hata verir.
     return mode !== 'direct' && hasServer ? 'proxy' : 'direct';
 }
+
+/** Kısa süre: 0:38, 48:10, 2:14:08. */
+export function clock(seconds) {
+    const t = Math.max(0, Math.round(seconds || 0));
+    const h = Math.floor(t / 3600);
+    const m = Math.floor(t / 60) % 60;
+    const s = String(t % 60).padStart(2, '0');
+    return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
+}

@@ -3,6 +3,7 @@
 import { $, formatSize, escapeHtml, saveBlob, hms, formatLeft } from './util.js';
 import { getPrefs, setPref, onPrefs } from './prefs.js';
 import { openRemoteOverlay } from './remote.js';
+import { libAdd, libUpdate } from './library.js';
 
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -226,6 +227,7 @@ export function addJob({ name, kind = 'file', thumb = null, run = null, now = fa
         done(detail) {
             setStatus(job, 'done', detail || 'Tamamlandı');
             notifyFinished(job);
+            keepInLibrary(job);
         },
         fail(detail) {
             setStatus(job, 'error', detail || 'Başarısız');
@@ -336,6 +338,7 @@ async function shareJob(job) {
         await navigator.share({ files, title: job.name });
         job.saved = true;
         job.detail = 'Paylaşıldı';
+        markExported(job);
     } catch (err) {
         if (err.name !== 'AbortError') job.detail = 'Paylaşılamadı: ' + err.message;
     }
@@ -348,12 +351,34 @@ function saveJob(job) {
     if (job.files) {
         job.files.forEach((f) => saveBlob(f.blob, f.name));
         job.saved = true;
+        markExported(job);
         render();
     } else if (job.blob) {
         saveBlob(job.blob, job.name);
         job.saved = true;
+        markExported(job);
         render();
     }
+}
+
+/** Biten dosyanın uygulama içi kopyası (Kitaplık). Galeriye/İndirilenler'e ayrıca kaydedilir. */
+async function keepInLibrary(job) {
+    const files = job.files || (job.blob ? [{ blob: job.blob, name: job.name }] : []);
+    if (!files.length) return;
+    const src = job.source || {};
+    // İndirilenler'e kaydedilen hemen dışarıda da var sayılır; galeride paylaşılınca işaretlenir.
+    const exported = job.saveMode === 'downloads';
+    job.libIds = [];
+    for (const f of files) {
+        const item = await libAdd(f.blob, {
+            name: f.name, rec: job.kind === 'rec' || Boolean(job.serverRec), page: src.page || '', media: src.media || f.url || '', exported
+        }).catch(() => null);
+        if (item) job.libIds.push(item.id);
+    }
+}
+
+function markExported(job) {
+    for (const id of job.libIds || []) libUpdate(id, { exportedAt: Date.now() }).catch(() => {});
 }
 
 function notifyFinished(job) {

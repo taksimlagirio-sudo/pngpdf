@@ -5,7 +5,7 @@ import { effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch } f
 
 const BIG_LABELS = { ask: 'Sor', ytdlp: 'Açık', ours: 'Kapalı' };
 
-export function initSettings({ onServerChange, install, openSetup = () => {} }) {
+export function initSettings({ onServerChange, install, openSetup = () => {}, openStorage = () => {} }) {
     const root = $('settingsView');
     root.innerHTML = `
         <div class="settings-sec"><span class="sec-label">Görünüm</span>
@@ -105,6 +105,8 @@ export function initSettings({ onServerChange, install, openSetup = () => {} }) 
             <button class="row${bgOk ? '' : ' disabled'}" data-set="background" ${bgOk ? '' : 'disabled'}>
                 <span class="row-value" style="font-weight:400">Arka planda indir${canBackgroundFetch ? '' : ' (bu tarayıcıda yok)'}</span>
                 <span class="toggle${prefs.background && bgOk ? ' on' : ''}"></span></button>
+            <button class="row" data-set="storage"><span class="row-value" style="font-weight:400">Kitaplık ve depolama</span>
+                <span class="row-chev">›</span></button>
             <button class="row" data-set="keepAwake"><span class="row-value" style="font-weight:400">İndirirken ekranı açık tut</span>
                 <span class="toggle${prefs.keepAwake ? ' on' : ''}"></span></button>
 `;
@@ -129,6 +131,7 @@ export function initSettings({ onServerChange, install, openSetup = () => {} }) 
         const prefs = getPrefs();
         const key = btn.dataset.set;
         if (key === 'theme') setPref('theme', btn.dataset.v);
+        if (key === 'storage') return openStorage();
         if (key === 'save') {
             const order = ['downloads', 'gallery', 'disk'].filter((m) =>
                 m === 'downloads' || (m === 'gallery' && canShareFiles) || (m === 'disk' && canSaveToDisk));

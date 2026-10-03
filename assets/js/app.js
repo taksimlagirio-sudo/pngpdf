@@ -6,11 +6,14 @@ import { initDetectTab } from './detect-tab.js';
 import { initImagesTab } from './images.js';
 import { initSettings } from './settings.js';
 import { openSetup, parsePairLink, redeemPair } from './setup.js';
+import { initLibraryTab } from './library-tab.js';
+import { createViewer } from './viewer.js';
 import { restoreServerRecordings } from './serverrec.js';
 import { canFloat, toggleFloatingBar, onFloatStateChange } from './floatbar.js';
 
 let settingsTab = null; // Ayarlar açılınca sayaçları tazelemek için
-const VIEWS = ['detect', 'images', 'downloads', 'settings'];
+let libraryTab = null;
+const VIEWS = ['detect', 'images', 'library', 'downloads', 'settings'];
 // Eski sürümlerin sekme adresleri (kısayollar, yer imleri) yeni bölümlere düşsün.
 const LEGACY = { mp4: 'detect', hls: 'detect', image: 'images', pdf: 'detect' };
 
@@ -56,6 +59,7 @@ function navigate(name) {
     if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
     setCurrentView(name);
     if (name === 'settings' && settingsTab) settingsTab.refresh();
+    if (name === 'library' && libraryTab) libraryTab.refresh();
     window.scrollTo(0, 0);
 }
 
@@ -136,8 +140,12 @@ const detectTab = initDetectTab({
 });
 
 /* ---- Ayarlar + kenar çubuğundaki sunucu kartı ---- */
+const viewer = createViewer({ toast });
+libraryTab = initLibraryTab({ toast, viewer });
+
 settingsTab = initSettings({
     install,
+    openStorage: () => libraryTab.openStorage(),
     openSetup: showSetup,
     onServerChange(server, version) {
         const card = $('sideServer');
