@@ -12,7 +12,7 @@ import {
     askNotificationPermission
 } from './downloads.js';
 import { getPrefs, setPref, SAVE_LABELS, CONN_LABELS } from './prefs.js';
-import { canRemote, openRemoteView } from './remote.js';
+import { canRemote, openRemoteOverlay } from './remote.js';
 import { canServerRecord, startServerRecording, captureIntoJob } from './serverrec.js';
 import { attachPreview, grabFrame, probePreview } from './preview.js';
 
@@ -963,7 +963,6 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             ${warningsHtml()}
             ${captureHtml(!links.length)}
             ${canRemote() ? `<button class="btn-ghost" data-act="remote" style="height:46px">Sayfayı aç, kendim dokunayım</button>` : ''}
-            <div class="remote-slot"></div>
             ${first || photosPage ? `<div class="result-bar">
                 <button class="btn-ghost" data-act="photos-all" data-bar-photos hidden></button>
                 ${first ? `<button class="btn-big" data-act="analyze-link" data-url="${escapeHtml(first.url)}" data-pair="${escapeHtml(first.audioUrl || '')}" data-ytdlp="${first.fromYtdlp ? 1 : 0}">${escapeHtml(shortTitle(linkTitle(first, 0)))} indir</button>` : ''}
@@ -1094,10 +1093,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (act === 'photos-open' && photosPage) return openImages(photosPage, [], '');
         if (act === 'images') return openImages(info.url, info.details.images || [], info.details.title);
         if (act === 'remote') {
-            btn.classList.add('hidden');
-            const slot = resultBox.querySelector('.remote-slot');
-            remote = openRemoteView(slot, info.url, { onPick: (url) => analyze(url), shortUrl });
-            slot.scrollIntoView({ block: 'start', behavior: 'smooth' });
+            if (remote) remote.close();
+            remote = openRemoteOverlay(info.url, { onPick: (url) => analyze(url), shortUrl, onClose: () => { remote = null; } });
             return;
         }
         if (act === 'variant') return pickVariant(Number(btn.dataset.i));

@@ -2,7 +2,7 @@
 // (İndirilenler / Galeri / Konum seç), arka plan indirme ve İndirmeler ekranı + sağ sütun + şerit.
 import { $, formatSize, escapeHtml, saveBlob, hms, formatLeft } from './util.js';
 import { getPrefs, setPref, onPrefs } from './prefs.js';
-import { openRemoteView } from './remote.js';
+import { openRemoteOverlay } from './remote.js';
 
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -887,19 +887,11 @@ function renderFailed(job) {
 let sheet = null;
 function openTouch(job) {
     if (sheet) sheet.view.close();
-    const el = document.createElement('div');
-    el.className = 'sheet-backdrop';
-    el.innerHTML = '<div class="sheet"><div class="sheet-slot"></div></div>';
-    document.body.appendChild(el);
-    const view = openRemoteView(el.querySelector('.sheet-slot'), null, {
+    const view = openRemoteOverlay(null, {
         captureId: job.captureId,
         onClose: () => {
-            el.remove();
             sheet = null;
         }
-    });
-    el.addEventListener('click', (e) => {
-        if (e.target === el) view.close();
     });
     sheet = { jobId: job.id, view };
 }
