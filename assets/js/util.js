@@ -189,6 +189,19 @@ export async function renderExtract(url, { signal } = {}) {
     return result;
 }
 
+/** Sayfadaki resimleri sunucudaki gallery-dl'e buldurur (tam boyutlu adresler). Kurulu değilse null. */
+export async function renderImages(url, { signal } = {}) {
+    const config = getRenderServer();
+    if (!config) return null;
+    const result = await renderRequest(config, '/images', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url }),
+        signal
+    }, 60000);
+    return result && result.available ? result : null;
+}
+
 /** Adres kendi sunucumun yt-dlp akışı mı (doğrudan sunucudan iner, CORS sorunu yok)? */
 export function isServerStream(url) {
     const config = getRenderServer();

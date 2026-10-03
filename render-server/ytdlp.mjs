@@ -15,7 +15,7 @@ const MAX_OUTPUT = 64 * 1024 * 1024;
 
 let found = null; // Promise<{cmd, args, version} | null>
 
-function run(cmd, args, { timeoutMs = 10000, maxOutput = 1024 * 1024 } = {}) {
+export function run(cmd, args, { timeoutMs = 10000, maxOutput = 1024 * 1024 } = {}) {
     return new Promise((resolve) => {
         let out = '';
         let err = '';
@@ -62,8 +62,8 @@ export function findYtdlp() {
     return found;
 }
 
-/** Kayıtlı girişler (Playwright çerezleri) → yt-dlp'nin okuduğu Netscape çerez dosyası. */
-function writeCookieFile(cookies) {
+/** Kayıtlı girişler (Playwright çerezleri) → yt-dlp/gallery-dl.in okuduğu Netscape çerez dosyası. */
+export function writeCookieFile(cookies) {
     if (!cookies || !cookies.length) return null;
     const file = path.join(os.tmpdir(), `indirici-cookies-${randomBytes(8).toString('hex')}.txt`);
     const lines = ['# Netscape HTTP Cookie File'];
