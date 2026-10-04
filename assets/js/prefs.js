@@ -12,7 +12,8 @@ const DEFAULTS = {
     useYtdlp: false,      // büyük platformlar dışındaki sitelerde de önce yt-dlp'ye sor (sunucuda kuruluysa)
     libKeep: true,        // indirilenlerin bir kopyası Kitaplık'ta da tutulur
     libAutoClean: false,  // galeriye/İndirilenler'e kaydedilenler 7 gün sonra Kitaplık'tan kaldırılır
-    libStyle: 'grid',     // Kitaplık görünümü: grid | wall | list
+    libStyle: 'grid',
+    libSync: false,       // kitaplık kendi sunucun üzerinden cihazlar arasında eşitlenir     // Kitaplık görünümü: grid | wall | list
     fullGalleries: true,  // Resimler: bilinen sitelerde galerinin tamamı ve tam boyut (sunucuda gallery-dl)
     bigSites: 'ask',      // TikTok, Instagram, YouTube…: 'ask' (sor) | 'ytdlp' | 'ours' (kendi yöntemimiz)
     siteMethods: {}       // "bu site için hatırla": { 'tiktok.com': 'ytdlp' | 'ours' }

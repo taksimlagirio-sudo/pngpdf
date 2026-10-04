@@ -3,6 +3,7 @@ import { escapeHtml, formatSize, clock, saveBlob } from './util.js';
 import { libFile, libRemove, libUpdate, libAdd, saveProgress } from './library.js';
 import { canShareFiles } from './downloads.js';
 import { itemWhere } from './library-tab.js';
+import { openCast } from './cast.js';
 
 const SPEEDS = [0.5, 1, 1.5, 2, 4];
 const speedLabel = (v) => `${String(v).replace('.', ',')}×`;
@@ -131,6 +132,7 @@ export function createViewer({ toast, edit = null }) {
                     ${isAudio ? '<span class="vw-audio-art">♪</span>' : ''}
                     <button class="vw-x" data-v="close" aria-label="Kapat">✕</button>
                     <span class="vw-spd-badge">${speedLabel(speed)}</span>
+                    ${isAudio ? '' : '<button class="vw-tv" data-v="tv">▭ TV\'de oynat</button>'}
                     <button class="vw-skip back" data-v="back10">« 10 sn</button>
                     <button class="vw-play" data-v="play" aria-label="Oynat/duraklat">▶</button>
                     <button class="vw-skip fwd" data-v="fwd10">10 sn »</button>
@@ -314,6 +316,10 @@ export function createViewer({ toast, edit = null }) {
                 paintAb();
             }
             if (v === 'frame') grabFrame();
+            if (v === 'tv') {
+                video.pause();
+                openCast(item, { toast });
+            }
             if (v === 'pip') {
                 try {
                     if (document.pictureInPictureElement) await document.exitPictureInPicture();

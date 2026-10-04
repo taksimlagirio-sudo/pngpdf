@@ -1,6 +1,7 @@
 // "Kitaplık" sekmesi: indirilen videolar, fotoğraflar, sesler ve kayıtlar (bu cihazda ve sunucumda).
 import { $, escapeHtml, formatSize, clock, getRenderServer, renderApi } from './util.js';
 import { getPrefs, setPref, onPrefs } from './prefs.js';
+import { deviceInfo, lastSyncState, syncNow, syncedItems, fetchToDevice } from './sync.js';
 import { libList, onLibrary, libUsage, libRemove, libPersist, libClean, libUpdate, applyProgress } from './library.js';
 
 const KIND_LABEL = { video: 'Video', photo: 'Fotoğraf', audio: 'Ses', rec: 'Kayıt', file: 'Dosya' };
@@ -78,7 +79,14 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
     let visible = [];
     let focusSearch = false;
 
-    const all = () => [...items, ...remote].sort((a, b) => b.createdAt - a.createdAt);
+    let syncState = lastSyncState();
+    let syncing = null; // { done, total }
+    const syncOn = () => getPrefs().libSync && getRenderServer();
+    const all = () => {
+        const ids = new Set(items.map((i) => i.id));
+        const synced = syncOn() ? syncedItems(syncState, ids) : [];
+        return [...items, ...remote, ...synced].sort((a, b) => b.createdAt - a.createdAt);
+    };
 
     function filtered() {
         const q = ui.query.trim().toLocaleLowerCase('tr');
@@ -117,12 +125,13 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
         const icon = item.thumb ? '' : `<span class="lib-ph">${item.kind === 'audio' ? '♪' : item.kind === 'photo' ? '▣' : '▶'}</span>`;
         if (style === 'list') {
             const [where, cls] = itemWhere(item);
+            const devs = syncOn() && (!item.server || item.synced) ? deviceBadges(item) : '';
             return `<button class="lib-row${ui.selected === item.id ? ' sel' : ''}${ui.picking && ui.picked.has(item.id) ? ' picked' : ''}" data-l="open" data-id="${escapeHtml(item.id)}">
                 ${ui.picking ? `<span class="lib-pick row${ui.picked.has(item.id) ? ' on' : ''}">${ui.picked.has(item.id) ? '✓' : ''}</span>` : ''}
                 <span class="lib-row-th" style="${thumbStyle(item)}">${icon}${item.rec ? '<span class="lib-dot"></span>' : ''}</span>
                 <span class="lib-row-main"><span class="lib-row-n">${escapeHtml(item.name)}</span>
-                    <span class="lib-row-m">${escapeHtml(itemMeta(item))}</span></span>
-                <span class="lib-where ${cls}">${where}</span></button>`;
+                    ${devs ? `<span class="lib-devs">${devs}<small>${item.size ? formatSize(item.size) : ''}</small></span>` : `<span class="lib-row-m">${escapeHtml(itemMeta(item))}</span>`}</span>
+                ${item.synced ? `<span class="btn-ac lib-take" data-l="take" data-id="${escapeHtml(item.id)}">${fetching.has(item.id) ? `%${fetching.get(item.id)}` : 'Bu cihaza al'}</span>` : `<span class="lib-where ${cls}">${where}</span>`}</button>`;
         }
         const ratio = style === 'wall' && item.width && item.height ? Math.min(1.9, Math.max(0.5, item.height / item.width)) : 1;
         return `<button class="lib-tile${ui.selected === item.id ? ' sel' : ''}" data-l="open" data-id="${escapeHtml(item.id)}" style="${thumbStyle(item)};aspect-ratio:1/${ratio.toFixed(3)}">
@@ -160,11 +169,12 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
                 <button class="link-btn" data-l="pick-cancel">Vazgeç</button></div>` : '';
         root.innerHTML = `<div class="lib-layout"><div class="lib-main">
             ${pickBar}
+            ${syncOn() && !ui.picking ? syncCardHtml() : ''}
             ${ui.searching ? `<div class="lib-search"><input class="input" type="search" data-l-q placeholder="Ad ya da site ara" value="${escapeHtml(ui.query)}"></div>` : ''}
             ${usageHtml()}
             <div class="lib-ctrls">
                 <label class="lib-desk-search"><input class="input" type="search" data-l-q placeholder="Ad, site ya da tür ara" value="${escapeHtml(ui.query)}"><kbd>Ctrl K</kbd></label>
-                <div class="seg lib-seg">${SOURCES.map(([k, l]) => `<button class="${ui.source === k ? 'on' : ''}" data-l="source" data-v="${k}">${l}</button>`).join('')}</div>
+                <div class="seg lib-seg">${(syncOn() ? [['all', 'Hepsi'], ['device', 'Bu cihazda'], ['server', 'Öbür cihazda']] : SOURCES).map(([k, l]) => `<button class="${ui.source === k ? 'on' : ''}" data-l="source" data-v="${k}">${l}</button>`).join('')}</div>
                 <div class="seg lib-seg">${STYLES.map(([k, l]) => `<button class="${style === k ? 'on' : ''}" data-l="style" data-v="${k}">${l}</button>`).join('')}</div>
             </div>
             <div class="lib-chips">${TYPES.map(([l, k], i) => `<button class="lib-chip${ui.type === k ? ' on' : ''}" data-l="type" data-v="${k || ''}">${l} <small>${counts[i]}</small></button>`).join('')}
@@ -198,6 +208,53 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
             const input = root.querySelector(ui.searching && !desktop() ? '.lib-search [data-l-q]' : '.lib-desk-search [data-l-q]');
             input.focus();
             input.setSelectionRange(input.value.length, input.value.length);
+        }
+    }
+
+    const fetching = new Map();
+
+    function deviceBadges(item) {
+        const me = deviceInfo();
+        const devices = recentDevices();
+        const ids = [me.id, ...Object.keys(devices).filter((id) => id !== me.id)];
+        const has = (id) => (id === me.id ? !item.server : Boolean(item.devices && item.devices[id]));
+        // Sunucudaki karşılığı bu cihaz için de bilgi taşır (öbür cihaz bende ne olduğunu bilir).
+        const serverCopy = syncState && syncState.items.find((x) => x.id === item.id);
+        return ids.slice(0, 3).map((id) => {
+            const on = has(id) || Boolean(serverCopy && serverCopy.devices && serverCopy.devices[id]);
+            const name = id === me.id ? me.name : (devices[id] || {}).name || 'Cihaz';
+            return `<span class="dev-badge${on ? ' on' : ''}">${escapeHtml(name.toLocaleUpperCase('tr'))}</span>`;
+        }).join('');
+    }
+
+    /** Son 60 günde eşitlenmiş cihazlar. */
+    function recentDevices() {
+        const all = (syncState && syncState.devices) || {};
+        return Object.fromEntries(Object.entries(all).filter(([, d]) => Date.now() - (d.lastSync || 0) < 60 * 864e5));
+    }
+
+    function syncCardHtml() {
+        const devices = recentDevices();
+        const me = deviceInfo();
+        const others = Object.entries(devices).filter(([id]) => id !== me.id).map(([, d]) => d.name);
+        const when = syncState ? Math.round((Date.now() - syncState.at) / 60000) : null;
+        const status = syncing ? `Eşitleniyor · ${syncing.done}/${syncing.total}` : syncState ? `Eşitlendi · ${when < 1 ? 'az önce' : `${when} dk önce`}` : 'Henüz eşitlenmedi';
+        return `<div class="sync-card"><i class="${syncing ? 'busy' : syncState ? 'ok' : ''}"></i>
+            <span><b>${status}</b><small>Bu ${me.name.toLocaleLowerCase('tr')}${others.length ? ` ↔ ${escapeHtml(others.join(', '))}` : ''} · sunucu üzerinden</small></span>
+            <button class="link-btn" data-l="sync"${syncing ? ' disabled' : ''}>Eşitle</button></div>`;
+    }
+
+    async function runSync() {
+        if (syncing || !syncOn()) return;
+        syncing = { done: 0, total: 0 };
+        render();
+        try {
+            syncState = await syncNow({ onProgress: (done, total) => { syncing = { done, total }; render(); } });
+        } catch (err) {
+            toast(`Eşitlenemedi: ${err.message}`);
+        } finally {
+            syncing = null;
+            render();
         }
     }
 
@@ -295,7 +352,18 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
     };
     const baseTitle = (name) => name.replace(/\.[^.]+$/, '').replace(/-(\d+|duzenlendi)$/, '');
 
+    let autoSyncTimer = null;
+    /** Eşitleme açıksa: kitaplık açıldığında (2 dk'da bir) ve yeni öğe gelince arkadan eşitlenir. */
+    function scheduleSync(delay = 4000) {
+        if (!syncOn()) return;
+        clearTimeout(autoSyncTimer);
+        autoSyncTimer = setTimeout(() => {
+            if (!syncState || Date.now() - syncState.at > 2 * 60 * 1000 || delay === 0) runSync();
+        }, delay);
+    }
+
     async function refresh({ server = false } = {}) {
+        scheduleSync();
         items = await libList();
         usage = await libUsage();
         if (server) remote = applyProgress(await serverItems());
@@ -313,6 +381,19 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
         if (act === 'style') setPref('libStyle', btn.dataset.v);
         if (act === 'type') ui.type = btn.dataset.v || null;
         if (act === 'storage') return openStorage();
+        if (act === 'sync') return runSync();
+        if (act === 'take') {
+            e.stopPropagation();
+            const item = all().find((i) => i.id === btn.dataset.id);
+            if (!item || fetching.has(item.id)) return;
+            fetching.set(item.id, 0);
+            render();
+            fetchToDevice(item, { onProgress: (p) => { fetching.set(item.id, Math.round(p * 100)); render(); } })
+                .then(() => { toast(`"${item.name}" bu cihaza alındı`); runSync(); })
+                .catch((err) => toast(err.message))
+                .finally(() => { fetching.delete(item.id); refresh(); });
+            return;
+        }
         if (act === 'open' && ui.picking) {
             const id = btn.dataset.id;
             if (ui.picked.has(id)) ui.picked.delete(id); else ui.picked.add(id);
@@ -534,7 +615,15 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
         });
     }
 
-    onLibrary(() => refresh());
+    let lastCount = -1;
+    onLibrary((list) => {
+        if (lastCount >= 0 && list.length > lastCount && syncOn()) {
+            clearTimeout(autoSyncTimer);
+            autoSyncTimer = setTimeout(runSync, 5000);
+        }
+        lastCount = list.length;
+        refresh();
+    });
     onPrefs(() => render());
     libClean().then((n) => {
         if (n) toast(`${n} eski öğe kitaplıktan kaldırıldı (galeride duruyor)`);
@@ -573,6 +662,9 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
                         <button class="row" data-s="clean"><span class="row-value" style="font-weight:400">Galeriye kaydedilenleri temizle
                             <span class="muted row-sub">7 gün sonra kitaplıktan kaldır</span></span>
                             <span class="toggle${prefs.libAutoClean ? ' on' : ''}"></span></button>
+                        ${srv ? `<button class="row" data-s="sync"><span class="row-value" style="font-weight:400">Cihazlar arası eşitle
+                            <span class="muted row-sub">Kitaplık sunucun üzerinden telefon ve bilgisayar arasında eşitlenir</span></span>
+                            <span class="toggle${prefs.libSync ? ' on' : ''}"></span></button>` : ''}
                         <button class="row" data-s="keep"><span class="row-value" style="font-weight:400">İndirilenleri kitaplıkta da tut
                             <span class="muted row-sub">Kapalıyken yalnızca seçtiğin yere kaydedilir</span></span>
                             <span class="toggle${prefs.libKeep !== false ? ' on' : ''}"></span></button>
@@ -603,6 +695,10 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
                 if (n) toast(`${n} öğe kaldırıldı`);
             }
             if (s === 'keep') setPref('libKeep', getPrefs().libKeep === false);
+            if (s === 'sync') {
+                setPref('libSync', !getPrefs().libSync);
+                if (getPrefs().libSync) runSync();
+            }
             if (s === 'server') {
                 close();
                 ui.source = 'server';

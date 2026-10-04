@@ -41,7 +41,10 @@ import { createLoginStore } from './logins.mjs';
 import { findYtdlp, extractInfo, normalizeInfo, listEntries } from './ytdlp.mjs';
 import { findGalleryDl, extractImages } from './gallerydl.mjs';
 import { createCookieJar } from './cookiejar.mjs';
-import { pairPage, redeemCode } from './pairing.mjs';
+import { pairPage, redeemCode, networkAddresses, tailscaleName } from './pairing.mjs';
+import { createLibStore } from './libstore.mjs';
+import { createTv } from './tv.mjs';
+import qrcode from './vendor/qrcode.mjs';
 import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd, installPageGuards, disarmOverlays } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -89,8 +92,8 @@ function authorized(req, url) {
 
 const CORS_HEADERS = {
     'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET, HEAD, POST, DELETE, OPTIONS',
-    'access-control-allow-headers': 'authorization, content-type, range',
+    'access-control-allow-methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
+    'access-control-allow-headers': 'authorization, content-type, range, x-meta, x-device',
     'access-control-expose-headers': 'content-length, content-type, content-range, accept-ranges',
     // https bir sayfadan yerel ağdaki/localhost'taki sunucuya istek için (Chrome Private Network Access).
     'access-control-allow-private-network': 'true',
@@ -1130,6 +1133,162 @@ async function handleWatch(req, res, url) {
     return result ? sendJson(res, 200, result) : sendJson(res, 404, { error: 'Takip bulunamadı' });
 }
 
+/* ---------------- Cihazlar arası kitaplık ve TV'de oynat ---------------- */
+
+const libstore = createLibStore({ dir: process.env.LIBRARY_DIR || path.join(HERE, '.library') });
+const tv = createTv();
+
+/** Dosyayı Range desteğiyle gönderir (oynatıcılar ileri sarabilsin). */
+function sendFileRange(req, res, file, extra = {}) {
+    const size = file.size;
+    const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '');
+    let start = 0;
+    let end = size - 1;
+    if (m) {
+        if (m[1]) start = Number(m[1]);
+        if (m[2]) end = Math.min(size - 1, Number(m[2]));
+        if (!m[1] && m[2]) start = Math.max(0, size - Number(m[2]));
+        if (start > end || start >= size) {
+            res.writeHead(416, { ...CORS_HEADERS, 'content-range': `bytes */${size}` });
+            return res.end();
+        }
+    }
+    const ascii = file.name.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
+    res.writeHead(m ? 206 : 200, {
+        ...CORS_HEADERS, ...extra,
+        'content-type': file.mime,
+        'content-length': end - start + 1,
+        'accept-ranges': 'bytes',
+        ...(m ? { 'content-range': `bytes ${start}-${end}/${size}` } : {}),
+        'content-disposition': `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+        'cache-control': 'no-store'
+    });
+    if (req.method === 'HEAD') return res.end();
+    const stream = fs.createReadStream(file.path, { start, end });
+    res.on('close', () => stream.destroy());
+    stream.on('error', () => res.destroy());
+    stream.pipe(res);
+}
+
+/** "library:ID" / "record:ID" / "capture:ID" → dosya. */
+function sourceFile(source) {
+    const [kind, id] = String(source || '').split(':');
+    if (kind === 'library') return libstore.file(id);
+    if (kind === 'record') return recorder.file(id);
+    if (kind === 'capture') return capturer.file(id);
+    return null;
+}
+
+/** TV'nin açabileceği adresler (bu ağ / Tailscale / PUBLIC_URL). */
+async function reachableBases() {
+    const out = [];
+    const publicUrl = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+    if (publicUrl) out.push({ label: 'Uzaktan', url: publicUrl });
+    if (HOST === '0.0.0.0' || HOST === '::') {
+        const { lan, tailnet } = networkAddresses();
+        for (const ip of lan.slice(0, 2)) out.push({ label: 'Bu ağda', url: `http://${ip}:${PORT}` });
+        const ts = await tailscaleName();
+        if (ts || tailnet[0]) out.push({ label: 'Tailscale', url: `http://${ts || tailnet[0]}:${PORT}` });
+    }
+    out.push({ label: 'Bu cihaz', url: `http://127.0.0.1:${PORT}` });
+    return out;
+}
+
+/** Token istemeyen TV uçları: oynatıcı sayfası, dosya, komut bekleme, durum bildirme. */
+async function handleTvPublic(req, res, url) {
+    const m = url.pathname.match(/^\/tv\/([0-9a-f]{12})\/([A-Za-z0-9_-]{16})(\/(file|poll|state))?$/);
+    if (!m) return false;
+    const s = tv.check(m[1], m[2]);
+    if (!s) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('Oturum bulunamadı ya da süresi doldu');
+        return true;
+    }
+    const part = m[4];
+    if (!part && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(tv.page(s));
+        return true;
+    }
+    if (part === 'file' && (req.method === 'GET' || req.method === 'HEAD')) {
+        const file = sourceFile(s.source);
+        if (!file) {
+            res.writeHead(404);
+            res.end();
+            return true;
+        }
+        sendFileRange(req, res, file);
+        return true;
+    }
+    if (part === 'poll' && req.method === 'GET') {
+        sendJson(res, 200, await tv.poll(s, Number(url.searchParams.get('after')) || 0));
+        return true;
+    }
+    if (part === 'state' && req.method === 'POST') {
+        tv.report(s, await readJson(req, 4096).catch(() => ({})));
+        sendJson(res, 200, { ok: true });
+        return true;
+    }
+    return false;
+}
+
+async function handleTv(req, res, url) {
+    if (url.pathname === '/tv' && req.method === 'POST') {
+        const body = await readJson(req);
+        if (!sourceFile(body.source)) return sendJson(res, 404, { error: 'Dosya sunucuda bulunamadı' });
+        const s = tv.create({ source: body.source, title: body.title });
+        const path_ = `/tv/${s.id}/${s.secret}`;
+        const urls = (await reachableBases()).map((b) => ({ ...b, url: b.url + path_ }));
+        return sendJson(res, 200, { id: s.id, urls });
+    }
+    const m = url.pathname.match(/^\/tv\/([0-9a-f]{12})(\/(cmd|qr))?$/);
+    if (!m) return sendJson(res, 404, { error: 'Bulunamadı' });
+    const s = tv.get(m[1]);
+    if (!s) return sendJson(res, 404, { error: 'Oturum bulunamadı' });
+    if (m[3] === 'cmd' && req.method === 'POST') {
+        const body = await readJson(req);
+        tv.command(s.id, body.action, body.value);
+        return sendJson(res, 200, tv.publicState(s));
+    }
+    if (m[3] === 'qr' && req.method === 'GET') {
+        const qr = qrcode(0, 'M');
+        qr.addData(String(url.searchParams.get('u') || '').slice(0, 500));
+        qr.make();
+        res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/svg+xml', 'cache-control': 'no-store' });
+        return res.end(qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true }));
+    }
+    if (!m[3] && req.method === 'GET') return sendJson(res, 200, tv.publicState(s));
+    if (!m[3] && req.method === 'DELETE') {
+        tv.command(s.id, 'close');
+        setTimeout(() => tv.remove(s.id), 3000);
+        return sendJson(res, 200, { ok: true });
+    }
+    return sendJson(res, 404, { error: 'Bulunamadı' });
+}
+
+async function handleLibrary(req, res, url) {
+    if (url.pathname === '/library' && req.method === 'GET') return sendJson(res, 200, libstore.list());
+    if (url.pathname === '/library/sync' && req.method === 'POST') return sendJson(res, 200, libstore.sync(await readJson(req, 4 * 1024 * 1024)));
+    const m = url.pathname.match(/^\/library\/item\/([a-z0-9]{4,40})(\/file)?$/i);
+    if (!m) return sendJson(res, 404, { error: 'Bulunamadı' });
+    const [, id, isFile] = m;
+    if (isFile && (req.method === 'GET' || req.method === 'HEAD')) {
+        const file = libstore.file(id);
+        if (!file) return sendJson(res, 404, { error: 'Dosya yok' });
+        return sendFileRange(req, res, file);
+    }
+    if (!isFile && req.method === 'PUT') {
+        let meta = {};
+        try {
+            meta = JSON.parse(Buffer.from(String(req.headers['x-meta'] || ''), 'base64').toString('utf8') || '{}');
+        } catch (_) { /* üst veri yok */ }
+        const item = await libstore.put(id, meta, req, String(req.headers['x-device'] || ''));
+        return sendJson(res, 200, item);
+    }
+    if (!isFile && req.method === 'DELETE') return sendJson(res, libstore.remove(id) ? 200 : 404, { ok: true });
+    return sendJson(res, 404, { error: 'Bulunamadı' });
+}
+
 /** /record (canlı HLS kaydı) ve /capture (sunucuda oynatıp kaydetme) aynı biçimde yönetilir. */
 async function handleJobs(req, res, url) {
     const [, kind] = url.pathname.match(/^\/(record|capture)/) || [];
@@ -1210,6 +1369,11 @@ const server = http.createServer(async (req, res) => {
         return res.end();
     }
 
+    if (url.pathname.startsWith('/tv/') && await handleTvPublic(req, res, url).catch((err) => {
+        if (!res.headersSent) sendJson(res, 400, { error: err.message });
+        return true;
+    })) return;
+
     if (req.method === 'GET' || req.method === 'HEAD') {
         const file = staticFile(url.pathname);
         if (file) return serveStatic(req, res, file);
@@ -1252,6 +1416,8 @@ const server = http.createServer(async (req, res) => {
 
     try {
         if (url.pathname === '/watch' || url.pathname.startsWith('/watch/')) return await handleWatch(req, res, url);
+        if (url.pathname === '/tv' || url.pathname.startsWith('/tv/')) return await handleTv(req, res, url);
+        if (url.pathname === '/library' || url.pathname.startsWith('/library/')) return await handleLibrary(req, res, url);
         if (url.pathname === '/list' && req.method === 'POST') {
             // Çalma listesi/kanal: içindeki videoların adresleri (toplu ekleme için).
             const body = await readJson(req);

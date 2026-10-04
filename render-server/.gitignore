@@ -7,3 +7,4 @@ node_modules/
 .push-keys.json
 .push-subs.json
 .watches.json
+.library/

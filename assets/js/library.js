@@ -98,14 +98,14 @@ function hostOf(url) {
  * Dosyayı kitaplığa ekler. Küçük resim, süre ve ölçüler arkadan çıkarılır.
  * @returns {Promise<object|null>} eklenen öğe (kitaplık kapalıysa null)
  */
-export async function libAdd(blob, { name, rec = false, page = '', media = '', exported = false, edited = false, from = '' } = {}) {
+export async function libAdd(blob, { name, rec = false, page = '', media = '', exported = false, edited = false, from = '', id: givenId = '', extra = {} } = {}) {
     if (!blob || !blob.size || getPrefs().libKeep === false || !('indexedDB' in window)) return null;
-    const id = 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const id = givenId || 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const mime = blob.type || '';
     const item = {
         id, name: name || 'dosya', mime, size: blob.size, kind: kindOf(mime, name), rec: Boolean(rec),
         page, media, site: hostOf(page || media), createdAt: Date.now(), exportedAt: exported ? Date.now() : 0,
-        edited: Boolean(edited), from, duration: 0, width: 0, height: 0, thumb: ''
+        edited: Boolean(edited), from, duration: 0, width: 0, height: 0, thumb: '', ...extra
     };
     try {
         await tx(['items', 'files'], 'readwrite', (t) => {
