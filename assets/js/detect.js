@@ -445,7 +445,7 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
         if (result.details.links.length === 0 && ytdlpReason) result.warnings.push(`Gelişmiş bulma alamadı: ${ytdlpReason}`);
         if (result.details.links.length === 0) {
             result.warnings.push('Sayfa kendi sunucunda çalıştırıldı, oynat düğmesine de basıldı ama medya isteği ' +
-                'görülmedi. Sayfa birkaç tıklama ya da onay istiyorsa aşağıdaki "👆 Sayfayı aç, kendim dokunayım" ' +
+                'görülmedi. Sayfa birkaç tıklama ya da onay istiyorsa aşağıdaki "Sayfayı aç, kendim dokunayım" ' +
                 'ile kendin geç. Yayın kapalıysa, giriş gerekiyorsa, WebRTC ile geliyorsa veya DRM korumalıysa bulunamaz.');
         }
     } catch (err) {
@@ -482,7 +482,15 @@ function applyExtracted(result, extracted) {
     result.details.extractor = extracted.extractor || '';
     result.details.fromYtdlp = true;
     result.details.subtitles = extracted.subtitles || [];
-    result.details.links = extractedLinks(extracted);
+    // yt-dlp'nin biçimleri aynı videonun kaliteleridir: tek video, kalite seçimiyle gösterilir.
+    let links = extractedLinks(extracted);
+    if (links.length > 1) {
+        const byHeight = (x, y) => (y.height || 0) - (x.height || 0);
+        const videos = links.filter((l) => l.kind === 'video').sort(byHeight);
+        const formats = videos.length ? videos : links;
+        links = [{ ...formats[0], formats }];
+    }
+    result.details.links = links;
 }
 
 const MAX_SCRIPTS = 4;

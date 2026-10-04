@@ -1,5 +1,6 @@
 // "Kendi sunucunu kur": nerede çalışacağını seç, komutları kopyala, QR okutarak (ya da elle) bağlan.
 import { escapeHtml, isHttpUrl } from './util.js';
+import { icon } from './icons.js';
 
 const REPO = 'https://github.com/taksimlagirio-sudo/pngpdf';
 
@@ -84,7 +85,7 @@ export function openSetup({ connect, toast = () => {}, step = 1 } = {}) {
         const p = PLACES[place];
         el.innerHTML = `
             <div class="wz">
-                <div class="wz-top"><button class="back-btn" data-w="close" aria-label="Kapat">←</button><span>Kendi sunucunu kur</span></div>
+                <div class="wz-top"><button class="back-btn" data-w="close" aria-label="Kapat">${icon('back')}</button><span>Kendi sunucunu kur</span></div>
                 ${stepsHtml(2)}
                 <p class="wz-intro">Sunucu sayfaları gerçek bir tarayıcıda açar, kapalı sitelerden indirir ve telefon kilitliyken kaydeder.</p>
                 <div class="wz-places">${PLACES.map((o, i) => `
@@ -103,7 +104,7 @@ export function openSetup({ connect, toast = () => {}, step = 1 } = {}) {
         const canScan = 'BarcodeDetector' in window && navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
         el.innerHTML = `
             <div class="wz">
-                <div class="wz-top"><button class="back-btn" data-w="back" aria-label="Geri">←</button><span>Kendi sunucunu kur</span></div>
+                <div class="wz-top"><button class="back-btn" data-w="back" aria-label="Geri">${icon('back')}</button><span>Kendi sunucunu kur</span></div>
                 ${stepsHtml(3)}
                 ${canScan ? `<div class="wz-cam"><video playsinline muted></video><span class="wz-frame"></span>
                     <button class="btn-ac wz-cam-start" data-w="scan">Kamerayı aç</button></div>

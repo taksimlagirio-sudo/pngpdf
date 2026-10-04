@@ -3,6 +3,7 @@ import { $, escapeHtml, formatSize, clock, getRenderServer, renderApi } from './
 import { getPrefs, setPref, onPrefs } from './prefs.js';
 import { deviceInfo, lastSyncState, syncNow, syncedItems, fetchToDevice } from './sync.js';
 import { libList, onLibrary, libUsage, libRemove, libPersist, libClean, libUpdate, applyProgress } from './library.js';
+import { icon } from './icons.js';
 
 const KIND_LABEL = { video: 'Video', photo: 'Fotoğraf', audio: 'Ses', rec: 'Kayıt', file: 'Dosya' };
 const TYPES = [['Tümü', null], ['Video', 'video'], ['Fotoğraf', 'photo'], ['Ses', 'audio'], ['Kayıt', 'rec']];
@@ -122,20 +123,20 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
     }
 
     function tileHtml(item, style) {
-        const icon = item.thumb ? '' : `<span class="lib-ph">${item.kind === 'audio' ? '♪' : item.kind === 'photo' ? '▣' : '▶'}</span>`;
+        const mark = item.thumb ? '' : `<span class="lib-ph">${icon(item.kind === 'audio' ? 'music' : item.kind === 'photo' ? 'image' : 'play')}</span>`;
         if (style === 'list') {
             const [where, cls] = itemWhere(item);
             const devs = syncOn() && (!item.server || item.synced) ? deviceBadges(item) : '';
             return `<button class="lib-row${ui.selected === item.id ? ' sel' : ''}${ui.picking && ui.picked.has(item.id) ? ' picked' : ''}" data-l="open" data-id="${escapeHtml(item.id)}">
                 ${ui.picking ? `<span class="lib-pick row${ui.picked.has(item.id) ? ' on' : ''}">${ui.picked.has(item.id) ? '✓' : ''}</span>` : ''}
-                <span class="lib-row-th" style="${thumbStyle(item)}">${icon}${item.rec ? '<span class="lib-dot"></span>' : ''}</span>
+                <span class="lib-row-th" style="${thumbStyle(item)}">${mark}${item.rec ? '<span class="lib-dot"></span>' : ''}</span>
                 <span class="lib-row-main"><span class="lib-row-n">${escapeHtml(item.name)}</span>
                     ${devs ? `<span class="lib-devs">${devs}<small>${item.size ? formatSize(item.size) : ''}</small></span>` : `<span class="lib-row-m">${escapeHtml(itemMeta(item))}</span>`}</span>
                 ${item.synced ? `<span class="btn-ac lib-take" data-l="take" data-id="${escapeHtml(item.id)}">${fetching.has(item.id) ? `%${fetching.get(item.id)}` : 'Bu cihaza al'}</span>` : `<span class="lib-where ${cls}">${where}</span>`}</button>`;
         }
         const ratio = style === 'wall' && item.width && item.height ? Math.min(1.9, Math.max(0.5, item.height / item.width)) : 1;
         return `<button class="lib-tile${ui.selected === item.id ? ' sel' : ''}" data-l="open" data-id="${escapeHtml(item.id)}" style="${thumbStyle(item)};aspect-ratio:1/${ratio.toFixed(3)}">
-            ${icon}<span class="lib-badges">${tileBadges(item)}</span><span class="lib-dur">${escapeHtml(tileLabel(item))}</span>
+            ${mark}<span class="lib-badges">${tileBadges(item)}</span><span class="lib-dur">${escapeHtml(tileLabel(item))}</span>
             ${ui.picking ? `<span class="lib-pick${ui.picked.has(item.id) ? ' on' : ''}">${ui.picked.has(item.id) ? '✓' : ''}</span>` : ''}</button>`;
     }
 
@@ -183,7 +184,7 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
                 ${tags.map((t) => `<button class="lib-chip tag${ui.collection && ui.collection.kind === 'tag' && ui.collection.value === t ? ' on' : ''}" data-l="tag" data-v="${escapeHtml(t)}">#${escapeHtml(t)}</button>`).join('')}</div>` : ''}
             ${resume.length ? `<div class="lib-group"><div class="lib-ghead"><span>Devam et</span><span>${resume.length}</span></div>
                 <div class="lib-resume">${resume.map((i) => `<button class="lib-rcard" data-l="resume" data-id="${escapeHtml(i.id)}">
-                    <span class="lib-rthumb" style="${thumbStyle(i)}"><span class="lib-rplay">▶</span>
+                    <span class="lib-rthumb" style="${thumbStyle(i)}"><span class="lib-rplay">${icon('play')}</span>
                         <span class="lib-rbar"><i style="width:${i.duration ? Math.min(100, (i.resumeAt / i.duration) * 100) : 30}%"></i></span></span>
                     <b>${escapeHtml(i.name.replace(/\.[^.]+$/, ''))}</b>
                     <small>${i.duration ? `kalan ${Math.max(1, Math.round((i.duration - i.resumeAt) / 60))} dk` : clock(i.resumeAt)}</small></button>`).join('')}</div></div>` : ''}
@@ -195,12 +196,12 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
                     <div class="lib-ghead"><span>${escapeHtml(g.label)}</span><span>${g.items.length} öğe</span></div>
                     <div class="lib-${style}">${g.items.map((i) => tileHtml(i, style)).join('')}</div>
                 </div>`).join('')}
-            ${ui.collection ? `<button class="lib-coll-chip" data-l="coll-clear">${escapeHtml(ui.collection.label)} ✕</button>` : ''}
+            ${ui.collection ? `<button class="lib-coll-chip" data-l="coll-clear">${escapeHtml(ui.collection.label)} ${icon('close')}</button>` : ''}
             ${ui.picking ? `<div class="lib-pick-actions">
                 <button class="btn-ghost" data-l="pick-coll"${ui.picked.size ? '' : ' disabled'}>Koleksiyona ekle</button>
                 <button class="btn-ghost" data-l="pick-merge"${pickedVideos().length >= 2 ? '' : ' disabled'}>Birleştir</button>
                 <button class="btn-ghost danger" data-l="pick-delete"${ui.picked.size ? '' : ' disabled'}>Sil</button></div>`
-                : anyVisual ? '<button class="lib-feed-btn" data-l="feed">▶ Akışta izle</button>' : ''}
+                : anyVisual ? `<button class="lib-feed-btn" data-l="feed">${icon('play')} Akışta izle</button>` : ''}
             </div><aside class="lib-insp">${inspectorHtml()}</aside></div>`;
         renderSide();
         if (ui.searching || focusSearch) {
@@ -296,7 +297,7 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
             ['İndirildi', new Date(it.createdAt).toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })]
         ];
         return `
-            <button class="lib-insp-prev" data-l="insp-open" style="${thumbStyle(it)}">${it.kind === 'photo' ? '' : '<span class="lib-insp-play">▶</span>'}</button>
+            <button class="lib-insp-prev" data-l="insp-open" style="${thumbStyle(it)}">${it.kind === 'photo' ? '' : `<span class="lib-insp-play">${icon('play')}</span>`}</button>
             <div class="lib-insp-t">${escapeHtml(it.name)}</div>
             <div class="lib-insp-m">${KIND_LABEL[typeOf(it)] || 'Dosya'} · ${it.server ? 'sunucunda' : 'bu cihazda'}</div>
             <div class="lib-insp-rows">${rows.map(([k, v]) => `<div><span>${k}</span><b>${escapeHtml(v)}</b></div>`).join('')}</div>
@@ -656,7 +657,7 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
             const srv = getRenderServer();
             el.innerHTML = `
                 <div class="st">
-                    <div class="wz-top"><button class="back-btn" data-s="close" aria-label="Geri">←</button><span>Depolama</span></div>
+                    <div class="wz-top"><button class="back-btn" data-s="close" aria-label="Geri">${icon('back')}</button><span>Depolama</span></div>
                     <div class="st-total"><b>${formatSize(u.total)}</b><span>bu cihazda${u.free ? ` · ~${formatSize(u.free)} boş` : ''}</span></div>
                     <div class="lib-bar st-bar">${legend.map(([k, , c]) => u.by[k] ? `<span class="${c}" style="width:${(u.by[k] / total) * 100}%"></span>` : '').join('')}</div>
                     <div class="st-legend">${legend.map(([k, l, c]) => `<div><i class="${c}"></i><span>${l}</span><b>${formatSize(u.by[k])}</b></div>`).join('')}</div>

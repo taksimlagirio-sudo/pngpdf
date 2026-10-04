@@ -166,6 +166,88 @@ async function followCapture(job, start, { createSinkFor, why = '' }) {
     }
 }
 
+/* ---------------- Sunucuda indir ("arka planda indir") ---------------- */
+
+/**
+ * Dosya kendi sunucuna indirilir: uygulama kapansa, geri tuşuna basılsa ya da telefon kilitlense de
+ * sürer. Bitince bu cihaza normal bir indirme gibi alınır; uygulama o sırada kapalıysa yeniden
+ * açılınca kendiliğinden alınır.
+ */
+export async function serverDownloadIntoJob(job, { url, audioUrl = '', name, hls = false, page = '', createSinkFor }) {
+    job.setDetail('Sunucuna devrediliyor');
+    const start = await renderApi('/record/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url, audioUrl, name, hls, page })
+    }, 30000);
+    setPendingTransfer(start.id, { kind: 'record', saveMode: job.saveMode === 'disk' ? 'downloads' : job.saveMode, at: Date.now() });
+    return followDownload(job, start, { createSinkFor });
+}
+
+async function followDownload(job, start, { createSinkFor }) {
+    const id = start.id;
+    job.serverDl = id;
+    job.captureId = id;
+    job.hooks.cancel = () => {
+        setPendingTransfer(id, null);
+        renderApi(`/record/${id}`, { method: 'DELETE' }, 10000).catch(() => {});
+    };
+    const hint = 'sunucunda iniyor · uygulamayı kapatabilirsin';
+    job.setDetail(hint);
+    let state = start;
+    let failures = 0;
+    while (state.state === 'recording' || state.state === 'stopping') {
+        await sleep(1500);
+        if (job.status !== 'active') return;
+        try {
+            state = await renderApi(`/record/${id}`, {}, 10000);
+            failures = 0;
+        } catch (err) {
+            if (err.status === 404) {
+                setPendingTransfer(id, null);
+                throw new Error('İndirme sunucuda bulunamadı');
+            }
+            if (document.visibilityState === 'visible' && ++failures >= 40) {
+                throw new Error('Sunucuya ulaşılamıyor; indirme orada sürüyor olabilir, uygulamayı yeniden açınca görünür');
+            }
+            continue;
+        }
+        if (state.bytes > job.bytes) job.addBytes(state.bytes - job.bytes);
+        job.progress(state.bytes, state.total || 0);
+        job.detail = hint;
+    }
+    if (state.state !== 'done') {
+        setPendingTransfer(id, null);
+        throw new Error(state.error || 'İndirme iptal edildi');
+    }
+
+    // Dosyayı bu cihaza al.
+    job.bytes = 0;
+    job.samples = [];
+    job.setDetail('Sunucudan telefona alınıyor');
+    const server = getRenderServer();
+    const res = await fetch(`${server.url}/record/${id}/file?token=${encodeURIComponent(server.token)}`, { signal: job.signal });
+    if (!res.ok) throw new Error(`Dosya alınamadı (HTTP ${res.status})`);
+    const sink = await createSinkFor(state.fileName, res.headers.get('content-type') || 'video/mp4');
+    job.name = sink.name || state.fileName;
+    let last = 0;
+    try {
+        const received = await pumpToSink(res, sink, (got, total) => {
+            job.addBytes(got - last);
+            last = got;
+            job.progress(got, total);
+        }, job.signal);
+        const blob = await sink.close();
+        if (blob) job.attachResult(blob);
+        setPendingTransfer(id, null);
+        renderApi(`/record/${id}`, { method: 'DELETE' }, 10000).catch(() => {});
+        job.done(`${formatSize(received)} · sunucunda indi`);
+    } catch (err) {
+        await sink.abort();
+        throw err;
+    }
+}
+
 /**
  * Sunucuda süren veya biten kayıtları uygulamaya bağlar: uygulama yeniden açıldığında ve alttan
  * öne geldiğinde çağrılır. Zaten izlenenler atlanır; telefona aktarılacak "açıp kaydet" işleri
@@ -190,6 +272,20 @@ async function doRestore() {
         }
         for (const state of items) {
             if (getJobs().some((j) => j.serverRec === state.id || j.captureId === state.id)) continue;
+            // Sunucuda indirme: bitince (ya da sürüyorsa bitince) telefona alınır.
+            if (state.download) {
+                const transfer = pending[state.id];
+                if (!transfer || !['recording', 'stopping', 'done'].includes(state.state)) continue;
+                const saveMode = transfer.saveMode || 'downloads';
+                addJob({
+                    name: state.fileName,
+                    kind: 'video',
+                    now: true,
+                    saveMode,
+                    run: (job) => followDownload(job, state, { createSinkFor: (n, t) => createSink(n, { mode: saveMode, mime: t }) })
+                }).captureId = state.id;
+                continue;
+            }
             const transfer = kind === 'capture' && pending[state.id];
             if (transfer && ['capturing', 'waiting', 'done'].includes(state.state)) {
                 const saveMode = transfer.saveMode || 'downloads';
@@ -212,7 +308,8 @@ async function doRestore() {
     }
     // Sunucuda artık olmayan bekleyen aktarımlar unutulur.
     try {
-        const { items = [] } = await renderApi('/capture', {}, 8000);
+        const [caps, recs] = await Promise.all([renderApi('/capture', {}, 8000), renderApi('/record', {}, 8000)]);
+        const items = [...(caps.items || []), ...(recs.items || [])];
         for (const id of Object.keys(pendingTransfers())) {
             if (!items.some((i) => i.id === id)) setPendingTransfer(id, null);
         }

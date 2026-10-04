@@ -5,6 +5,7 @@ import { getPrefs, setPref, onPrefs } from './prefs.js';
 import { openRemoteOverlay } from './remote.js';
 import { libAdd, libUpdate } from './library.js';
 import { siteSettingFor } from './sitesettings.js';
+import { icon } from './icons.js';
 
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -267,7 +268,7 @@ function setStatus(job, status, detail) {
 /** Kuyruk: sınır dolmadıkça sıradaki işi başlatır. Arka plan (sistem) indirmeleri ve sunucudaki kayıtlar sayılmaz. */
 function pump() {
     const limit = getPrefs().concurrency || 3;
-    const running = () => [...jobs.values()].filter((j) => j.status === 'active' && !j.bgId && !j.serverRec).length;
+    const running = () => [...jobs.values()].filter((j) => j.status === 'active' && !j.bgId && !j.serverRec && !j.serverDl).length;
     const queued = [...jobs.values()].filter((j) => j.status === 'queued')
         .sort((a, b) => (b.now - a.now) || (a.createdAt - b.createdAt));
     for (const job of queued) {
@@ -448,8 +449,8 @@ export async function startBackgroundDownload({ urls, name, total = 0, thumb = n
 
     try {
         const bgFetch = await registration.backgroundFetch.fetch(bgId, urls, {
+            // Toplam boyut verilmez: tahmin gerçek boyuttan küçükse tarayıcı indirmeyi durdurur.
             title: name,
-            downloadTotal: total || undefined,
             icons: [{ src: 'assets/icons/icon-192.png', sizes: '192x192', type: 'image/png' }]
         });
         job.hooks.cancel = () => {
@@ -490,7 +491,9 @@ function checkStalls() {
         if (job.status !== 'active' || !job.bgId || job.stalled) continue;
         if (Date.now() - job.lastProgressAt > STALL_MS) {
             job.stalled = true;
-            job.detail = 'Arka planda ilerleme yok — "Normal indir" ile deneyebilirsiniz.';
+            // Hiç başlamadıysa (tarayıcı izin vermedi, ağ türü vb.) kendiliğinden normal indirmeye geçilir.
+            if (!job.bytes && job.fallback) runFallback(job);
+            else job.detail = 'Arka planda ilerleme yok — "Normal indir" ile deneyebilirsiniz.';
         }
     }
 }
@@ -631,7 +634,7 @@ export function initDownloads({ onNavigate, onDetect } = {}) {
 
     // Süren kayıt/indirme varken sayfa yanlışlıkla kapatılmasın.
     window.addEventListener('beforeunload', (e) => {
-        if ([...jobs.values()].some((j) => j.status === 'active' && !j.bgId && !j.serverRec)) {
+        if ([...jobs.values()].some((j) => j.status === 'active' && !j.bgId && !j.serverRec && !j.serverDl)) {
             e.preventDefault();
             e.returnValue = '';
         }
@@ -691,7 +694,7 @@ function renderNow() {
     if (aside && getComputedStyle(aside).display !== 'none') setHtml(aside, renderAside(list));
     renderStrip(active, queued);
 
-    const keepAwake = getPrefs().keepAwake && active.some((j) => !j.bgId && !j.serverRec);
+    const keepAwake = getPrefs().keepAwake && active.some((j) => !j.bgId && !j.serverRec && !j.serverDl);
     updateWakeLock(keepAwake);
 
     // Kayıt süreleri ve hızlar her saniye tazelensin.
@@ -1038,7 +1041,7 @@ function renderQueuedJob(job, n) {
                 <span class="hint">Sırada · bir indirme bitince başlar</span>
             </div>
             ${btn(job, 'now', 'Şimdi başlat', 'text" style="color:var(--act)')}
-            ${btn(job, 'cancel', '✕', 'text')}
+            ${btn(job, 'cancel', icon('close'), 'text')}
         </div>`;
 }
 
@@ -1066,7 +1069,7 @@ function renderFinished(job) {
     } else if (job.status === 'cancelled' && job.run) {
         btns.push(btn(job, 'retry', 'Tekrar dene'));
     }
-    btns.push(btn(job, 'dismiss', '✕', 'text'));
+    btns.push(btn(job, 'dismiss', icon('close'), 'text'));
     const thumb = job.status === 'error'
         ? '<span class="thumb err" style="width:52px;height:52px;border-radius:11px">!</span>'
         : thumbHtml(job);
@@ -1096,7 +1099,7 @@ function renderAside(list) {
         }
         if (job.rec) {
             const elapsed = recElapsed(job);
-            return `<button class="mini-card rec" data-view="downloads"><div class="mini-top"><span>● ${escapeHtml(job.name)}</span>
+            return `<button class="mini-card rec" data-view="downloads"><div class="mini-top"><span>${icon('record')} ${escapeHtml(job.name)}</span>
                 <span class="mono" style="color:var(--er)">${hms(elapsed)}</span></div>
                 <span class="mini-sub">${formatSize(job.bytes)}${job.rec.limitSec ? ' · ' + hms(job.rec.limitSec - elapsed) + ' kaldı' : ''}</span></button>`;
         }

@@ -3130,7 +3130,8 @@ kbd { font: 600 11px/1 var(--mono); padding: 3px 6px; border-radius: 5px; border
 .fw-when-box .fw-when-time { font: 500 26px/1.1 var(--mono); padding: 0; letter-spacing: -.02em; }
 
 /* Toplu ekle */
-.paste-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.paste-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; }
+.paste-row .recent-btn { width: 52px; padding: 0; font-size: 18px; }
 .paste-row .bulk-btn { width: auto; padding: 0 14px; }
 .bulk { padding: 0; display: flex; flex-direction: column; }
 .bk { flex: 1; width: 100%; max-width: 640px; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 12px) 16px 110px; display: flex; flex-direction: column; gap: 12px; }
@@ -3442,3 +3443,79 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
     .sv-wide { display: grid; } .sv-sec.sv-wide { display: flex; }
     .sv-head { max-width: none; }
 }
+
+/* ---- Akış: yalnızca video, sürüklenebilir şerit, ipuçları ---- */
+.fd-clean-btn { margin-left: auto; order: 3; }
+.vw-feed .fd-rail, .vw-feed .fd-info, .vw-feed .fd-hint, .vw-feed .fd-seg, .vw-feed .fd-prog { transition: opacity .25s; }
+.vw-feed.clean .fd-rail, .vw-feed.clean .fd-info, .vw-feed.clean .fd-hint, .vw-feed.clean .fd-seg { opacity: 0; pointer-events: none; }
+.vw-feed.clean .fd-top .fd-x { opacity: .35; }
+.vw-feed.clean .fd-prog { opacity: 0; }
+.vw-feed.clean .fd-slide.scrubbing .fd-prog, .vw-feed.clean .fd-slide.paused .fd-prog { opacity: 1; }
+.fd-scrub { position: absolute; left: 0; right: 0; bottom: 14px; height: 40px; z-index: 2; touch-action: none; cursor: pointer; }
+.fd-scrub .fd-prog { left: 16px; right: 16px; bottom: 16px; transition: height .15s, opacity .25s; }
+.fd-slide.scrubbing .fd-prog { height: 6px; bottom: 14px; }
+.fd-paused { position: absolute; left: 50%; top: 50%; width: 72px; height: 72px; margin: -36px 0 0 -36px; border-radius: 50%; background: rgba(0,0,0,.45); color: #fff; display: grid; place-items: center; font-size: 28px; opacity: 0; pointer-events: none; transition: opacity .2s; }
+.fd-slide.paused .fd-paused { opacity: 1; }
+.fd-flash { position: absolute; top: 50%; transform: translateY(-50%); padding: 10px 16px; border-radius: 999px; background: rgba(0,0,0,.6); color: #fff; font: 600 15px/1 inherit; opacity: 0; pointer-events: none; transition: opacity .2s; white-space: nowrap; z-index: 2; }
+.fd-flash.show { opacity: 1; }
+.fd-flash.center, .fd-flash.time { left: 50%; transform: translate(-50%, -50%); }
+.fd-flash.time { top: auto; bottom: 70px; transform: translateX(-50%); font-family: var(--mono); }
+.fd-flash.left { left: 12%; } .fd-flash.right { right: 12%; }
+.fd-slide.paused .fd-flash.center { opacity: 0; }
+/* Oynatıcı: dokununca yalnızca video (tam ekran), alttan sarma */
+.vw-scrub { bottom: 0; }
+.vw-scrub .fd-prog { opacity: 0; }
+.vw-stage.scrubbing .fd-prog { opacity: 1; }
+.viewer.vw-player.chrome-hidden .vw-body { display: none; }
+.viewer.vw-player.chrome-hidden .vw-stage { position: fixed; inset: 0; max-height: none; aspect-ratio: auto; z-index: 5; }
+.viewer.chrome-hidden .vw-stage > .fd-flash.show, .viewer.chrome-hidden .vw-stage > .fd-scrub { opacity: 1; }
+.viewer.chrome-hidden:not(.playing) .vw-stage > .vw-play { opacity: 1; }
+.viewer.chrome-hidden:not(.playing) .vw-scrub .fd-prog { opacity: .7; }
+
+/* ---- Yapıştırma kutusu (pano izni yoksa) ---- */
+.paste-sheet { position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,.5); display: flex; align-items: flex-start; justify-content: center; padding: calc(env(safe-area-inset-top) + 70px) 16px 16px; }
+.paste-box { width: 100%; max-width: 480px; padding: 18px 16px; border-radius: 20px; background: var(--bg); border: 1px solid var(--ln); display: flex; flex-direction: column; gap: 12px; }
+.paste-box b { font-size: 17px; }
+.paste-hint { font-size: 12.5px; color: var(--mt); line-height: 1.45; }
+.recent-head { display: flex; align-items: center; justify-content: space-between; }
+.follow-entry { margin-top: 2px; }
+
+/* ---- İkonlar (assets/js/icons.js) ---- */
+.ic { display: inline-block; width: 1.15em; height: 1.15em; flex: none; vertical-align: -0.2em; }
+.back-btn .ic, .vw-x .ic, .fd-x .ic { width: 20px; height: 20px; vertical-align: middle; }
+.vw-play .ic { width: 26px; height: 26px; }
+.vw-skip { display: grid; place-items: center; padding: 8px; }
+.vw-skip .ic { width: 32px; height: 32px; grid-area: 1 / 1; filter: drop-shadow(0 1px 3px rgba(0,0,0,.6)); }
+.vw-skip span { grid-area: 1 / 1; font: 700 9.5px/1 inherit; margin-top: 3px; }
+.vw-tv { display: inline-flex; align-items: center; gap: 6px; }
+.vw-tv .ic { width: 16px; height: 16px; }
+.vw-audio-art .ic { width: 64px; height: 64px; stroke-width: 1.25; }
+.vw-chips button b .ic, .ed-tools button b .ic, .km-main b .ic, .km-extra b .ic { width: 22px; height: 22px; }
+.vw-actions button span .ic, .fd-rail span .ic { width: 20px; height: 20px; }
+.km-main .km-play .ic { width: 30px; height: 30px; }
+.cs-ic .ic { width: 20px; height: 20px; }
+.lib-ph .ic { width: 30px; height: 30px; stroke-width: 1.5; }
+.lib-rplay .ic, .lib-insp-play .ic { width: 16px; height: 16px; margin-left: 2px; }
+.lib-feed-btn { display: inline-flex; align-items: center; gap: 8px; }
+.fd-paused .ic { width: 30px; height: 30px; margin-left: 3px; }
+.fd-flash { display: inline-flex; align-items: center; gap: 8px; }
+.fd-flash .ic { width: 20px; height: 20px; }
+.rp-ic .ic, .sv-err-ic .ic { width: 14px; height: 14px; stroke-width: 2.25; }
+.sv-err-ic.file .ic { width: 13px; height: 13px; stroke-width: 1.75; }
+.mg-grip .ic { width: 18px; height: 18px; vertical-align: middle; }
+.mg-arrows button { display: grid; place-items: center; }
+.mg-arrows button .ic { width: 14px; height: 14px; stroke-width: 2.25; }
+.ph-btns .ic { width: 18px; height: 18px; }
+.clip-badge .ic { width: 12px; height: 12px; }
+.dl-btn.text .ic { width: 18px; height: 18px; vertical-align: middle; }
+.paste-row .recent-btn { display: grid; place-items: center; }
+.paste-row .recent-btn .ic { width: 20px; height: 20px; }
+.follow-entry-label { display: flex; flex-direction: column; padding-left: 48px; position: relative; }
+.row-ic { position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; border-radius: 10px; background: var(--acs); color: var(--act); display: grid; place-items: center; }
+.row-ic .ic { width: 20px; height: 20px; }
+[data-theme-toggle] .ic { width: 18px; height: 18px; }
+.theme-btn-side { display: inline-flex; align-items: center; gap: 8px; }
+
+/* Takip: bakış sıklığı bilgisi */
+.fw-hint { margin: 0; padding: 10px 14px 12px; font-size: 12px; line-height: 1.45; color: var(--mt); border-top: 1px solid var(--ln); }
+.fw-hint.warn { color: var(--wr); }

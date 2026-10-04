@@ -47,6 +47,7 @@ import { createLibStore } from './libstore.mjs';
 import { createTv } from './tv.mjs';
 import { findFfmpeg, analyzeAudio, createAudioJobs } from './audio.mjs';
 import { createInbox } from './inbox.mjs';
+import { mergeFmp4 } from './fmp4.mjs';
 import qrcode from './vendor/qrcode.mjs';
 import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd, installPageGuards, disarmOverlays } from './adblock.mjs';
 
@@ -1100,6 +1101,86 @@ async function downloadEntry(entry, { maxHeight = 0, keepMs = 0, source = '' } =
     throw new Error('Sesli tek dosya ya da akış bulunamadı');
 }
 
+/* ---------------- Sunucuda indir ("arka planda indir") ---------------- */
+
+/**
+ * Bağlantıyı sunucudaki dosyaya indirir; bağlantı koparsa kaldığı yerden sürdürür. Sunucunun kendi
+ * "/stream/…" adresleri (gelişmiş bulma) sunucunun kendisinden okunur.
+ */
+async function fetchToFile(src, file, onBytes, signal, onTotal = () => {}) {
+    const own = String(src).match(/\/stream\/([0-9a-f]{24})(?:[?#]|$)/);
+    let url;
+    let headers = { 'user-agent': DESKTOP_UA, accept: '*/*' };
+    if (own) {
+        url = `http://${HOST === '0.0.0.0' || HOST === '::' ? '127.0.0.1' : HOST}:${PORT}/stream/${own[1]}`;
+        headers = { authorization: `Bearer ${TOKEN}` };
+    } else {
+        url = new URL(src).href;
+        const referer = refererByUrl.get(url) || refererByHost.get(new URL(url).host);
+        if (referer) headers.referer = referer;
+    }
+    let offset = 0;
+    for (let tries = 0; ; tries++) {
+        try {
+            const h = offset ? { ...headers, range: `bytes=${offset}-` } : headers;
+            const up = own ? await fetch(url, { headers: h, signal }) : await fetchUpstream(url, h, { signal });
+            if (!up.ok) {
+                up.body?.cancel().catch(() => {});
+                throw Object.assign(new Error(`Dosya alınamadı (HTTP ${up.status})`), { fatal: up.status < 500 && up.status !== 429 });
+            }
+            if (offset && up.status !== 206) offset = 0; // kaynak sürdürmeyi desteklemiyor: baştan
+            const total = Number((up.headers.get('content-range') || '').split('/')[1]) || (Number(up.headers.get('content-length')) || 0) + offset;
+            if (total) onTotal(total);
+            const out = fs.createWriteStream(file, { flags: offset ? 'a' : 'w' });
+            try {
+                for await (const c of up.body) {
+                    offset += c.length;
+                    onBytes(c.length);
+                    if (!out.write(c)) await new Promise((r) => out.once('drain', r));
+                }
+            } finally {
+                await new Promise((r) => out.end(r));
+            }
+            if (total && offset < total) throw new Error('Bağlantı yarıda kesildi');
+            return;
+        } catch (err) {
+            if (signal.aborted || err.fatal || tries >= 6) throw err;
+            await new Promise((r) => setTimeout(r, 2000 * (tries + 1)));
+        }
+    }
+}
+
+/** İstemcinin "arka planda indir"i: dosya (ayrı sesiyle) ya da HLS sunucuda iner. */
+async function startServerDownload({ url, audioUrl = '', name = 'video', hls = false, page = '' }) {
+    if (!/^https?:\/\//i.test(url || '')) throw new Error('Geçersiz adres');
+    const base = String(name).replace(/\.[a-z0-9]{2,4}$/i, '') || 'video';
+    if (page) rememberReferer(url, page);
+    if (hls) return { ...await recorder.start({ url, audioUrl: audioUrl || undefined, name: base, vod: true, source: page || url }), download: true };
+    const ext = audioUrl ? 'mp4' : ((String(name).match(/\.([a-z0-9]{2,4})$/i) || [])[1] || 'mp4').toLowerCase();
+    return recorder.importFile({
+        name: base, ext, source: page || url, download: true,
+        fetchTo: async (file, onBytes, signal, onTotal) => {
+            if (!audioUrl) return fetchToFile(url, file, onBytes, signal, onTotal);
+            // Ayrı görüntü + ses: ikisi de indirilip tek MP4'te birleştirilir.
+            const v = `${file}.v`;
+            const a = `${file}.a`;
+            let vt = 0;
+            let at = 0;
+            try {
+                await Promise.all([
+                    fetchToFile(url, v, onBytes, signal, (t) => { vt = t; onTotal(vt + at); }),
+                    fetchToFile(audioUrl, a, onBytes, signal, (t) => { at = t; onTotal(vt + at); })
+                ]);
+                const r = await mergeFmp4([{ file: v, mime: 'video/mp4' }, { file: a, mime: 'audio/mp4' }], file);
+                return { ext: r.ext };
+            } finally {
+                fs.rm(v, { force: true }, () => {});
+                fs.rm(a, { force: true }, () => {});
+            }
+        }
+    });
+}
+
 const watcher = createWatcher({
     file: process.env.WATCH_FILE || path.join(HERE, '.watches.json'),
     recorder,
@@ -1481,6 +1562,9 @@ async function handleLibrary(req, res, url) {
 async function handleJobs(req, res, url) {
     const [, kind] = url.pathname.match(/^\/(record|capture)/) || [];
     const manager = kind === 'capture' ? capturer : recorder;
+    if (kind === 'record' && url.pathname === '/record/import' && req.method === 'POST') {
+        return sendJson(res, 200, await startServerDownload(await readJson(req)));
+    }
     if (url.pathname === `/${kind}`) {
         if (req.method === 'GET') return sendJson(res, 200, { items: manager.list() });
         if (req.method === 'POST') {

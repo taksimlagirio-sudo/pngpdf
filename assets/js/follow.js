@@ -2,6 +2,7 @@
 // yapılır (telefon kapalıyken de); burası listeyi, ayarları ve gelen uyarıları gösterir.
 import { $, escapeHtml, formatSize, clock, getRenderServer, renderApi, isHttpUrl } from './util.js';
 import { downloadsTabs, setFollowCount } from './downloads.js';
+import { icon } from './icons.js';
 
 const QUALITIES = [['best', 'En iyi'], ['1080', '1080p'], ['720', '720p']];
 const EVERY_LIVE = [1, 5, 15, 30];
@@ -57,6 +58,7 @@ function occurrences(w, n = 5) {
 function statusOf(w) {
     if (!w.enabled) return ['Kapalı · bakılmıyor', 'off'];
     if (w.state === 'recording') return ['Yayında · kaydediliyor', 'rec'];
+    if ((w.backoff || 1) > 1 && w.state !== 'unreachable') return [`Site yanıt vermiyor · ${w.effectiveEvery || ''} dk'da bir bakılıyor`, 'warn'];
     if (w.type === 'channel') {
         if (w.state === 'login') return [`Giriş gerekiyor · son bakış ${ago(w.lastCheck) || '—'}`, 'warn'];
         if (w.state === 'error') return [w.error || 'Liste alınamadı', 'warn'];
@@ -72,6 +74,23 @@ function statusOf(w) {
     if (w.note) return [w.note, 'idle'];
     if (w.state === 'done' && w.lastResult) return [`Kaydedildi · ${ago(w.lastResult.endedAt)}`, 'ok'];
     return [`Bekliyor · her ${w.every || 5} dk`, 'idle'];
+}
+
+/** Bakış sıklığı: site yanıt vermiyorsa uzatılmış aralık, aynı siteye sıra bekleme. */
+function intervalText(w) {
+    const every = w.every || (w.type === 'channel' ? 30 : 5);
+    let t = (w.backoff || 1) > 1
+        ? `site yanıt vermediği için ${w.effectiveEvery || every * w.backoff} dk'da bir bakılıyor (normalde ${every} dk)`
+        : `her ${every} dakikada bir bakılıyor`;
+    if (w.siteWait) t += ' · aynı siteye başka takip de bakıyor, sırayla gidiliyor';
+    return t;
+}
+
+/** Sıklık seçiminin altındaki bilgi. */
+function everyHint(w) {
+    const every = w.every || (w.type === 'channel' ? 30 : 5);
+    if (every <= 1) return '<p class="fw-hint warn">1 dakikada bir bakmak siteye yük bindirir ve engellenme riskini artırır. Yayın saatini biliyorsan "Zamanla" daha iyi; bilmiyorsan 5 dk önerilir.</p>';
+    return '<p class="fw-hint">Bakışlar sayfanın normal bir ziyareti gibidir ve saat başına denk gelmesin diye biraz kaydırılır. Site yanıt vermezse aralık kendiliğinden uzar, düzelince geri döner; ikisinde de haber verilir.</p>';
 }
 
 const kindTag = (w) => (w.type === 'channel' ? w.kind || 'kanal' : w.type === 'schedule' ? 'zamanlı' : 'yayın');
@@ -174,7 +193,7 @@ export function initFollow({ navigate, toast }) {
             <div class="fw-card-top"><span class="stage-badge">${w.enabled ? (w.checking ? 'BAKILIYOR' : w.type === 'schedule' ? 'ZAMANLANDI' : 'BEKLİYOR') : 'KAPALI'}</span><span class="fw-card-mono">${escapeHtml(next)}</span></div>${name}
             <p class="fw-card-t">${w.type === 'schedule'
                 ? `${hhmm(w.start)} – ${hhmm(w.end)} · ${REPEATS.find(([k]) => k === (w.repeat || 'once'))[1].toLowerCase()}`
-                : `${w.lastCheck ? `Son bakış ${ago(w.lastCheck)}` : 'Henüz bakılmadı'} · her ${w.every || 5} dakikada bir bakılıyor`}${w.note ? `<br>${escapeHtml(w.note)}` : ''}</p>
+                : `${w.lastCheck ? `Son bakış ${ago(w.lastCheck)}` : 'Henüz bakılmadı'} · ${intervalText(w)}`}${w.note ? `<br>${escapeHtml(w.note)}` : ''}</p>
             ${w.type === 'live' ? `<div class="stage-bar"><div style="width:${progress}%;background:var(--mt)"></div></div>` : ''}
             <div class="fw-card-btns"><button class="btn-ghost" data-f="check" data-id="${w.id}"${w.enabled ? '' : ' disabled'}>Şimdi bak</button>
                 <button class="btn-ghost" data-f="toggle" data-id="${w.id}">${w.enabled ? 'Durdur' : 'Başlat'}</button></div></div>`;
@@ -243,6 +262,7 @@ export function initFollow({ navigate, toast }) {
                 <button class="row" data-set="auto" data-v="${w.auto ? '' : '1'}"><span class="row-value" style="font-weight:400">Yeni videoları kendiliğinden indir</span><span class="toggle${w.auto ? ' on' : ''}"></span></button>
                 <div class="row"><span class="row-value" style="font-weight:400">Kalite</span>${seg('quality', QUALITIES, w.quality)}</div>
                 <div class="row"><span class="row-value" style="font-weight:400">Ne sıklıkla bakılsın</span>${seg('every', EVERY_CHANNEL.map((m) => [m, m < 60 ? `${m} dk` : `${m / 60} sa`]), w.every)}</div>
+                ${everyHint(w)}
                 <button class="row" data-set="keep" data-v="${w.keep ? 0 : 10}"><span class="row-value" style="font-weight:400">Yalnızca son 10 videoyu sakla<span class="muted row-sub">Eskiler sunucundan silinir</span></span><span class="toggle${w.keep ? ' on' : ''}"></span></button>
                 <button class="row" data-set="notify" data-v="${w.notify === false ? '1' : ''}"><span class="row-value" style="font-weight:400">Bildirim gönder<span class="muted row-sub">Yeni video gelince</span></span><span class="toggle${w.notify !== false ? ' on' : ''}"></span></button>
             </div>`;
@@ -256,6 +276,7 @@ export function initFollow({ navigate, toast }) {
         const win = w.window || { on: false, days: [1, 2, 3, 4, 5], from: '19:00', to: '23:00' };
         return `<div class="rows filled fw-settings">
             <div class="row"><span class="row-value" style="font-weight:400">${compact ? 'Sıklık' : 'Ne sıklıkla bakılsın'}</span>${seg('every', EVERY_LIVE.map((m) => [m, `${m} dk`]), w.every)}</div>
+            ${everyHint(w)}
             <div class="row"><span class="row-value" style="font-weight:400">${compact ? 'En fazla' : 'En fazla kayıt'}</span>${seg('maxSec', MAX, w.maxSec)}</div>
             <div class="row"><span class="row-value" style="font-weight:400">Kalite</span>${seg('quality', QUALITIES, w.quality)}</div>
             <div class="row"><span class="row-value" style="font-weight:400">${compact ? 'Kaydet' : 'Ne kaydedilsin'}</span>${seg('mode', [['each', 'Her yayını'], ['next', 'Yalnız sonrakini']], w.mode)}</div>
@@ -302,7 +323,7 @@ export function initFollow({ navigate, toast }) {
             return render();
         }
         root.innerHTML = `<div class="fw-detail">
-            <div class="wz-top"><button class="back-btn" data-f="back" aria-label="Geri">←</button><span>${escapeHtml(w.name)}</span></div>
+            <div class="wz-top"><button class="back-btn" data-f="back" aria-label="Geri">${icon('back')}</button><span>${escapeHtml(w.name)}</span></div>
             ${isStream(w) ? streamCard(w) : ''}
             ${panelHtml(w, { head: !isStream(w) })}
             ${w.newCount ? `<button class="btn-ghost" data-f="seen" data-id="${w.id}">Yenileri görüldü say</button>` : ''}</div>`;
@@ -369,7 +390,7 @@ export function initFollow({ navigate, toast }) {
             form = settingsRows({ type: a.type, ...a.draft });
         }
         root.innerHTML = `<div class="fw-add">
-            <div class="wz-top"><button class="back-btn" data-f="cancel-add" aria-label="Geri">←</button><span>${titles[a.type]}</span></div>
+            <div class="wz-top"><button class="back-btn" data-f="cancel-add" aria-label="Geri">${icon('back')}</button><span>${titles[a.type]}</span></div>
             <input class="input fw-url" type="url" data-add-url placeholder="Yayın ya da kanal sayfasının adresi" value="${escapeHtml(a.url)}" autocomplete="off">
             <div class="seg">${[['live', 'Yayını bekle'], ['schedule', 'Zamanla'], ['channel', 'Kanal']].map(([k, l]) => `<button class="${a.type === k ? 'on' : ''}" data-f="add-type" data-v="${k}">${l}</button>`).join('')}</div>
             ${banner}
@@ -578,13 +599,13 @@ export function initFollow({ navigate, toast }) {
             });
         }
         for (const ev of fresh.reverse()) {
-            const action = { 'live-start': 'Aç', 'new-videos': 'Gör', 'rec-done': 'İzle', unreachable: 'Gör' }[ev.kind] || 'Aç';
+            const action = { 'live-start': 'Aç', 'new-videos': 'Gör', 'rec-done': 'İzle', unreachable: 'Gör', backoff: 'Gör', recovered: 'Gör' }[ev.kind] || 'Aç';
             const el = document.createElement('div');
-            el.className = `fw-alert ${ev.kind === 'live-start' ? 'rec' : ev.kind === 'unreachable' ? 'warn' : 'ok'}`;
+            el.className = `fw-alert ${ev.kind === 'live-start' ? 'rec' : ev.kind === 'unreachable' || ev.kind === 'backoff' ? 'warn' : 'ok'}`;
             el.dataset.kind = ev.kind;
             el.dataset.watch = ev.watchId;
             el.innerHTML = `<i></i><span><b>${escapeHtml(ev.title)}</b><small>${escapeHtml(ev.body)}</small></span>
-                <button data-a="go">${action}</button><button data-a="x" aria-label="Kapat">✕</button>`;
+                <button data-a="go">${action}</button><button data-a="x" aria-label="Kapat">${icon('close')}</button>`;
             alertBox.prepend(el);
             setTimeout(() => el.remove(), 12000);
         }

@@ -6,18 +6,19 @@ import { downloadFile } from './video.js';
 import { downloadMerged } from './merge.js';
 import { downloadHlsVod, recordHlsLive, loadPlaylist, audioFor, baseNameFor } from './hls.js';
 import { dashPlaylist } from './dash.js';
-import { recentList, addRecent, updateRecent, persistThumb } from './recent.js';
+import { recentList, addRecent, updateRecent, persistThumb, clearRecent } from './recent.js';
 import {
     addJob, createSink, effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch,
     askNotificationPermission
 } from './downloads.js';
 import { getPrefs, setPref, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { canRemote, openRemoteOverlay } from './remote.js';
-import { canServerRecord, startServerRecording, captureIntoJob } from './serverrec.js';
+import { canServerRecord, startServerRecording, captureIntoJob, serverDownloadIntoJob } from './serverrec.js';
 import { attachPreview, grabFrame, probePreview } from './preview.js';
 import { subLabel, subCode, loadCues, toSrt, toVtt, shiftCues } from './subs.js';
 import { embedSubtitles } from './mp4edit.js';
 import { siteSettingFor, setSiteSetting, variantIndexFor } from './sitesettings.js';
+import { icon } from './icons.js';
 
 // yt-dlp'nin en güçlü olduğu büyük platformlar: bunlarda "nasıl bakalım?" diye sorulur.
 const BIG_SITES = [
@@ -143,6 +144,49 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         start(url);
     }
 
+    /**
+     * Pano okunamazsa (izin verilmedi / tarayıcı desteklemiyor): bağlantının yapıştırılacağı bir
+     * kutu açılır; klavyenin pano önerisine ya da uzun basıp "Yapıştır"a dokunmak yeter.
+     */
+    async function pasteFallback() {
+        let denied = false;
+        try {
+            const st = await navigator.permissions.query({ name: 'clipboard-read' });
+            denied = st.state === 'denied';
+        } catch (_) { /* bu tarayıcıda sorgulanamıyor */ }
+        const el = document.createElement('div');
+        el.className = 'sheet-backdrop paste-sheet';
+        el.innerHTML = `<div class="paste-box">
+            <b>Bağlantıyı buraya yapıştır</b>
+            <input class="input" type="url" inputmode="url" placeholder="Uzun bas → Yapıştır" autocomplete="off">
+            <span class="paste-hint">${denied
+                ? 'Pano izni kapalı. Açmak için: adres çubuğundaki ⓘ (ya da ⋮ → ⓘ) → İzinler → Pano → İzin ver. Sonra "Yapıştır ve algıla" tek dokunuşla çalışır.'
+                : 'Tarayıcı panoyu okumaya izin vermedi. Klavyenin üstündeki pano önerisine dokunabilir ya da kutuya uzun basıp Yapıştır diyebilirsin.'}</span>
+            <div class="btn-row"><button class="btn-ghost" data-p="cancel">Vazgeç</button><button class="btn-ac" data-p="go">Algıla</button></div></div>`;
+        document.body.appendChild(el);
+        const input = el.querySelector('input');
+        const close = () => el.remove();
+        const go = () => {
+            const text = input.value;
+            if (onBulk && countLinks(text) > 1) {
+                close();
+                return onBulk(text);
+            }
+            const url = firstUrl(text);
+            if (!isHttpUrl(url)) return;
+            close();
+            urlInput.value = url;
+            start(url);
+        };
+        input.addEventListener('input', () => { if (isHttpUrl(firstUrl(input.value))) go(); });
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+        el.addEventListener('click', (e) => {
+            if (e.target === el || e.target.closest('[data-p="cancel"]')) close();
+            if (e.target.closest('[data-p="go"]')) go();
+        });
+        setTimeout(() => input.focus(), 50);
+    }
+
     /** Panodaki bağlantıyı yapıştırıp hemen algılar. */
     async function pasteAndAnalyze() {
         showShared('');
@@ -150,19 +194,31 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         try {
             text = await readClipboard();
         } catch (_) {
-            setError('Panoya erişilemedi. Bağlantıyı kutuya basılı tutup yapıştırın (tarayıcı pano izni isterse "İzin ver").');
-            urlInput.focus();
-            return;
+            return pasteFallback();
         }
         if (onBulk && countLinks(text) > 1) return onBulk(text);
         const url = firstUrl(text);
         if (!isHttpUrl(url)) {
-            setError('Panoda bir bağlantı yok. Önce paylaşılacak bağlantıyı kopyalayın.');
-            return;
+            // Pano boş görünüyorsa (bazı telefonlar boş döndürür) yapıştırma kutusu açılır.
+            return pasteFallback();
         }
         urlInput.value = url;
         start(url);
     }
+
+    /** Son algılananlar: istendiğinde (sonuç ekranındayken de) açılır. */
+    function showRecent() {
+        seq++;
+        if (controller) controller.abort();
+        closePreview();
+        stopProgress();
+        statusBox.innerHTML = '';
+        showShared('');
+        info = null;
+        renderIdle({ forceRecent: true });
+        analyzeBtn.disabled = false;
+    }
+    $('detectRecentBtn').addEventListener('click', showRecent);
 
     // Sunucuda yt-dlp kurulu mu (bir kez sorulur).
     let ytdlpCheck = null;
@@ -299,13 +355,26 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     /* ---------------- Boş ekran: ilk açılış ya da son algılananlar ---------------- */
 
-    function renderIdle() {
+    function followRow() {
+        if (!onFollow || !getRenderServer()) return '';
+        return `<button class="row follow-entry" data-act="open-follow"><span class="row-value follow-entry-label" style="font-weight:600"><span class="row-ic">${icon('broadcast')}</span>Yayın takibi
+            <span class="muted" style="display:block;font-size:12px;font-weight:400">Bir yayın açıldıkça kendiliğinden kaydet · zamanla · kanal takibi</span></span>
+            <span class="row-chev">›</span></button>`;
+    }
+
+    function renderIdle({ forceRecent = false } = {}) {
         if (info) return;
         const recent = recentList();
+        if (forceRecent && !recent.length) {
+            resultBox.innerHTML = `<div class="recent"><span class="sec-label">Son algılananlar</span>
+                <p class="muted" style="margin:0;font-size:13.5px">Henüz algılanan bir şey yok.</p></div>
+                <div class="rows filled">${followRow()}</div>`;
+            return;
+        }
         if (recent.length) {
             resultBox.innerHTML = `
                 <div class="recent">
-                    <span class="sec-label">Son algılananlar</span>
+                    <div class="recent-head"><span class="sec-label">Son algılananlar</span><button class="link-btn" data-act="recent-clear">Temizle</button></div>
                     ${recent.map((r) => `
                         <button class="recent-row" data-act="recent" data-url="${escapeHtml(r.url)}">
                             <span class="thumb recent-thumb">${r.thumb ? `<img src="${escapeHtml(r.thumb)}" alt="">` : ''}${r.duration
@@ -314,7 +383,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                                 <span class="recent-meta">${escapeHtml(r.meta || '')}</span></span>
                             <span class="recent-act">İndir</span>
                         </button>`).join('')}
-                </div>`;
+                </div>
+                ${followRow() ? `<div class="rows filled">${followRow()}</div>` : ''}`;
             return;
         }
         const canInstall = install && install.available && install.available();
@@ -325,6 +395,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 <div class="welcome-sub">Video, canlı yayın, sayfa ya da galeri.</div>
             </div>
             <div class="rows filled">
+                ${followRow()}
                 <button class="row" data-act="how-share"><span class="row-value" style="font-weight:600">Başka uygulamadan paylaş
                     <span class="muted" style="display:block;font-size:12px;font-weight:400">Paylaş → İndirici, otomatik algılanır</span></span>
                     <span class="row-chev">›</span></button>
@@ -394,7 +465,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
      * `pair`: sayfada ayrı bulunan ses playlist'i (görüntüyle birleştirilecek).
      * `page`: bağlantının bulunduğu sayfa — bağlantı inmezse video o sayfayla açılıp kaydedilir.
      */
-    async function analyze(url, { pair = null, page = null, title = '', noExtract = false, useExtract = false, fromYtdlp = false, subtitles = null } = {}) {
+    async function analyze(url, { pair = null, page = null, title = '', noExtract = false, useExtract = false, fromYtdlp = false, subtitles = null, formats = null } = {}) {
         if (!isHttpUrl(url)) {
             setError('Geçerli bir http(s) adresi girin.');
             return;
@@ -429,6 +500,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             if (subtitles && subtitles.length && !(result.details.subtitles || []).length) result.details.subtitles = subtitles;
             ui = initialUi(result, pair);
             ui.sourcePage = page;
+            ui.formats = formats;
             // Sayfadan açılan videoya sayfanın başlığı ad olur ("videoplayback" yerine).
             if (title && result.target !== 'page') ui.name = cleanTitle(title);
             setBusy('');
@@ -442,9 +514,13 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             const links = result.details.links || [];
             if (result.target === 'page' && links.length === 1 && autoHops < 2) {
                 autoHops++;
-                return analyze(links[0].url, {
-                    pair: links[0].audioUrl || null, page: result.url, title: result.details.title || '', fromYtdlp: Boolean(links[0].fromYtdlp),
-                    subtitles: links[0].subtitles || result.details.subtitles || null
+                // Kaliteler varsa site ayarındaki kalite (yoksa en iyisi) açılır.
+                const fmts = links[0].formats || null;
+                const site = siteSettingFor(entryUrl || url);
+                const pick = fmts && site && site.quality !== 'best' ? fmts[variantIndexFor(fmts, site.quality)] : links[0];
+                return analyze(pick.url, {
+                    pair: pick.audioUrl || null, page: result.url, title: result.details.title || '', fromYtdlp: Boolean(pick.fromYtdlp),
+                    subtitles: pick.subtitles || result.details.subtitles || null, formats: fmts
                 });
             }
             autoHops = 0;
@@ -475,6 +551,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 info = unreachableInfo(url, err);
                 ui = initialUi(info, pair);
                 ui.sourcePage = page;
+                ui.formats = formats;
                 if (title) ui.name = cleanTitle(title);
                 render();
                 rememberResult(entryUrl);
@@ -716,6 +793,15 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         return variants[ui.variant] || null;
     }
 
+    /** Gelişmiş bulmanın verdiği kaliteler (her biri ayrı dosya). */
+    function formatsHtml() {
+        const list = ui.formats;
+        if (!list || list.length < 2 || (info.details.variants || []).length) return '';
+        return `<div class="sec"><span class="sec-label">Kalite</span><div class="qcards">${list.map((f, i) =>
+            `<button class="qcard${f.url === info.url ? ' on' : ''}" data-act="format" data-i="${i}">
+                <div class="qcard-label">${f.kind === 'hls' ? 'Yayın' : f.height ? `${f.height}p` : 'Kalite'}</div>${f.size ? `<div class="qcard-sub">~${formatSize(f.size)}</div>` : ''}</button>`).join('')}</div></div>`;
+    }
+
     function qualityHtml() {
         const variants = info.details.variants || [];
         if (!variants.length) return '';
@@ -742,7 +828,11 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     function optionRows({ background = true } = {}) {
         const prefs = getPrefs();
         const save = effectiveSaveMode(prefs.save);
-        const bgSupported = canBackgroundFetch && save !== 'disk';
+        // Kendi sunucun varsa arka planda indirme sunucuda yapılır (her türde); yoksa tarayıcının
+        // arka plan indirmesi (yalnızca tek dosya).
+        const viaServer = canServerRecord();
+        if (viaServer) background = !info.unreachable && info.target !== 'dash';
+        const bgSupported = viaServer || (canBackgroundFetch && save !== 'disk');
         return `
             <div class="rows">
                 <label class="row"><span class="row-label">Ad</span>
@@ -753,8 +843,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 <button class="row" data-act="cycle-conn"><span class="row-label">Bağlantı</span>
                     <span class="row-value">${CONN_LABELS[prefs.conn]}</span><span class="row-chev">›</span></button>
                 ${background ? `<button class="row${bgSupported ? '' : ' disabled'}" data-act="toggle-bg" ${bgSupported ? '' : 'disabled title="Bu tarayıcıda/kaydetme yönteminde desteklenmiyor"'}>
-                    <span class="row-value">Arka planda indir</span>
-                    <span class="toggle${prefs.background && bgSupported ? ' on' : ''}"></span></button>` : ''}
+                    <span class="row-value">Arka planda indir${viaServer ? '<span class="muted row-sub">Sunucunda iner; uygulama kapansa da sürer</span>' : ''}</span>
+                    <span class="toggle${(viaServer ? prefs.serverBackground !== false : prefs.background) && bgSupported ? ' on' : ''}"></span></button>` : ''}
             </div>`;
     }
 
@@ -862,6 +952,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             const size = downloadSize();
             body = `
                 <div class="card-pad">
+                    ${formatsHtml()}
                     ${qualityHtml()}
                     ${rangeHtml()}
                     ${subsHtml()}
@@ -1117,7 +1208,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
         resultBox.innerHTML = `
             <div class="pr-top">
-                <button class="back-btn" data-act="back" aria-label="Geri">←</button>
+                <button class="back-btn" data-act="back" aria-label="Geri">${icon('back')}</button>
                 <span class="pr-top-label">Sonuç</span>
             </div>
             <div class="pr-titlebox">
@@ -1174,7 +1265,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         ].filter(Boolean);
         return `<div class="rp">
             <div class="rp-steps">${steps.map((t) => `<div class="rp-step ${t.state}">
-                <span class="rp-ic">${t.state === 'ok' ? '✓' : t.state === 'fail' ? '✕' : '–'}</span>
+                <span class="rp-ic">${icon(t.state === 'ok' ? 'check' : t.state === 'fail' ? 'close' : 'minus')}</span>
                 <span class="rp-main"><b>${escapeHtml(t.label)}</b><small>${[t.ms ? secText(t.ms) : '', escapeHtml(t.note)].filter(Boolean).join(' · ')}</small></span></div>`).join('')}</div>
             <span class="sec-label">Önerilen adımlar</span>
             <div class="rows filled">${tips.map(([act, l, sub]) => `<button class="row" data-act="${act}"><span class="row-value" style="font-weight:400">${l}<span class="muted row-sub">${sub}</span></span><span class="row-chev">›</span></button>`).join('')}</div>
@@ -1276,6 +1367,14 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 subtitles: (link && link.subtitles) || (fromPage ? info.details.subtitles : null)
             });
         }
+        if (act === 'format' && info && ui.formats) {
+            const f = ui.formats[Number(btn.dataset.i)];
+            if (!f || f.url === info.url) return;
+            return analyze(f.url, {
+                pair: f.audioUrl || null, page: ui.sourcePage, title: ui.name, fromYtdlp: true,
+                subtitles: info.details.subtitles || null, formats: ui.formats
+            });
+        }
         if (act === 'capture') return startCapture(btn.dataset.url || info.url);
         if (act === 'recent') {
             urlInput.value = btn.dataset.url;
@@ -1291,6 +1390,11 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             return;
         }
         if (act === 'setup') return openSetup ? openSetup(1) : navigate('settings');
+        if (act === 'open-follow') return navigate('follow');
+        if (act === 'recent-clear') {
+            clearRecent();
+            return renderIdle({ forceRecent: true });
+        }
         if (!info) return;
         if (act === 'rescan') return analyze(info.url, { noExtract: true });
         if (act === 'focus-url') {
@@ -1347,7 +1451,10 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (act === 'toggle-awake') setPref('keepAwake', !prefs.keepAwake);
         if (act === 'cycle-save') setPref('save', nextSaveMode(prefs.save));
         if (act === 'cycle-conn') setPref('conn', nextConn(prefs.conn));
-        if (act === 'toggle-bg') setPref('background', !prefs.background);
+        if (act === 'toggle-bg') {
+            if (canServerRecord()) setPref('serverBackground', prefs.serverBackground === false);
+            else setPref('background', !prefs.background);
+        }
         if (act === 'download') return startDownload(false);
         if (act === 'queue') return startDownload(true);
         if (act === 'record') return startRecording();
@@ -1445,6 +1552,9 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         const prefs = getPrefs();
         const isHls = info.target === 'hls' || (info.unreachable && info.kind === 'hls');
         const name = cleanName();
+        // "Arka planda indir" + kendi sunucun: dosya sunucuda iner, bitince telefona alınır.
+        const viaServer = prefs.serverBackground !== false && canServerRecord() && !info.unreachable && info.target !== 'dash' && !ui.rangeOpen;
+        const serverJob = (opts, createSinkFor) => (job) => serverDownloadIntoJob(job, { ...opts, page: jobSource().page, createSinkFor });
         try {
             if (info.target === 'dash') {
                 const mpd = info.details.mpd;
@@ -1481,6 +1591,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 const range = ui.rangeOpen ? rangeSeconds() : null;
                 const videoPlaylist = ui.media ? ui.media.playlist : null;
                 const audioUrl = ui.audioUrl;
+                if (viaServer && !isServerStream(videoUrl) && !(ui.media && ui.media.live)) {
+                    addJob({ name: name + ext, kind: 'hls', thumb, saveMode, source: jobSource(), now: true,
+                        run: serverJob({ url: videoUrl, audioUrl: audioUrl || '', name: name + ext, hls: true }, createSinkFor) });
+                    if (!bulkMode) toast('Sunucunda indiriliyor · İndirmeler');
+                    return;
+                }
                 addJob({
                     name: name + ext,
                     kind: 'hls',
@@ -1498,6 +1614,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 const url = info.url;
                 // Sunucudaki yt-dlp akışı açılmazsa sunucu kendi adresini açamaz; sayfa açılıp kaydedilir.
                 const mediaUrl = isServerStream(url) ? '' : url;
+                if (viaServer) {
+                    addJob({ name: fileName, kind: 'video', thumb, saveMode, source: jobSource(), now: true,
+                        run: serverJob({ url, audioUrl: ui.audioUrl || '', name: fileName }, createSinkFor) });
+                    if (!bulkMode) toast('Sunucunda indiriliyor · İndirmeler');
+                    return;
+                }
                 if (ui.audioUrl) {
                     const audioUrl = ui.audioUrl;
                     addJob({
@@ -1605,12 +1727,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
      * Toplu ekleme: analiz edilmiş bir sonucu (Algıla ekranını değiştirmeden) sıraya ekler.
      * quality: 'best' | '1080' | '720' | 'audio'
      */
-    async function enqueueResult(result, { quality = 'best', page = '', title = '' } = {}) {
+    async function enqueueResult(result, { quality = 'best', page = '', title = '', pair = null } = {}) {
         const saved = { info, ui, entryUrl };
         bulkMode = true;
         try {
             info = result;
-            ui = initialUi(result, null);
+            ui = initialUi(result, pair);
             ui.sourcePage = page || null;
             entryUrl = page || result.url;
             if (title && result.target !== 'page') ui.name = cleanTitle(title);

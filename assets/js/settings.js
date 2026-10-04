@@ -110,9 +110,12 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
                 <span class="muted">${SAVE_LABELS[save]} ›</span></button>
             <button class="row" data-set="conn"><span class="row-value" style="font-weight:400">Bağlantı yöntemi</span>
                 <span class="muted">${CONN_LABELS[prefs.conn]} ›</span></button>
-            <button class="row${bgOk ? '' : ' disabled'}" data-set="background" ${bgOk ? '' : 'disabled'}>
+            ${getRenderServer() ? `<button class="row" data-set="serverBackground"><span class="row-value" style="font-weight:400">Arka planda indir
+                ${sub('Sunucunda iner; uygulama kapansa, geri tuşuna bassan da sürer')}</span>
+                <span class="toggle${prefs.serverBackground !== false ? ' on' : ''}"></span></button>`
+            : `<button class="row${bgOk ? '' : ' disabled'}" data-set="background" ${bgOk ? '' : 'disabled'}>
                 <span class="row-value" style="font-weight:400">Arka planda indir${canBackgroundFetch ? '' : ' (bu tarayıcıda yok)'}</span>
-                <span class="toggle${prefs.background && bgOk ? ' on' : ''}"></span></button>
+                <span class="toggle${prefs.background && bgOk ? ' on' : ''}"></span></button>`}
             <button class="row" data-set="storage"><span class="row-value" style="font-weight:400">Kitaplık ve depolama</span>
                 <span class="row-chev">›</span></button>
             <button class="row" data-set="keepAwake"><span class="row-value" style="font-weight:400">İndirirken ekranı açık tut</span>
@@ -150,6 +153,7 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             setPref('conn', order[(order.indexOf(prefs.conn) + 1) % order.length] || 'auto');
         }
         if (key === 'background') setPref('background', !prefs.background);
+        if (key === 'serverBackground') setPref('serverBackground', prefs.serverBackground === false);
         if (key === 'keepAwake') setPref('keepAwake', !prefs.keepAwake);
         if (key === 'useYtdlp') setPref('useYtdlp', !prefs.useYtdlp);
         if (key === 'fullGalleries') setPref('fullGalleries', prefs.fullGalleries === false);
@@ -235,6 +239,7 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
         chip.textContent = on ? `Bağlı${version ? ' · v' + version : ''}` : 'Kapalı';
         chip.classList.toggle('on', on);
         $('serverTools').classList.toggle('hidden', !on);
+        renderPrefs();
         if (text !== undefined) status.textContent = text;
         onServerChange(on ? getRenderServer() : null, version);
     };

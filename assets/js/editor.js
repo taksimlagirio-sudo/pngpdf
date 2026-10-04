@@ -5,6 +5,7 @@ import { uploadItem } from './sync.js';
 import { libFile, libAdd } from './library.js';
 import { encodeGif, encodeWebp } from './anim.js';
 import { readMp4, editMp4, estimateSize, snapStart, toProgressive, rotationOf, checkConcat, concatMp4 } from './mp4edit.js';
+import { icon } from './icons.js';
 
 function overlay(cls) {
     const el = document.createElement('div');
@@ -178,7 +179,7 @@ export function createEditor({ toast, onSaved = () => {} }) {
 
         el.innerHTML = `
             <div class="ed ed-v">
-                <div class="ed-top"><button class="back-btn" data-e="close" aria-label="Kapat">←</button>
+                <div class="ed-top"><button class="back-btn" data-e="close" aria-label="Kapat">${icon('back')}</button>
                     <span class="ed-title"><span class="ed-mob">Düzenle</span><span class="ed-desk">${escapeHtml(baseName(item.name))} · düzenleniyor</span></span>
                     <button class="link-btn" data-e="undo">Geri al</button><button class="link-btn ed-desk" data-e="redo">Yinele</button></div>
                 <div class="ed-stage"><video playsinline src="${url}"></video><span class="ed-now">0:00</span></div>
@@ -193,12 +194,12 @@ export function createEditor({ toast, onSaved = () => {} }) {
                     <div class="range-box ed-dur"><span>Süre</span><b data-e-dur></b></div>
                 </div>
                 <div class="ed-tools">
-                    <button data-e="split"><b>✂</b>Böl</button>
-                    <button data-e="frame"${isAudio ? ' disabled' : ''}><b>◫</b>Kare al</button>
-                    <button data-e="extract"${isAudio ? ' disabled' : ''}><b>♪</b>Sesi çıkar</button>
-                    <button data-e="mute"${isAudio ? ' disabled' : ''}><b>∅</b>Sessiz</button>
-                    <button data-e="rotate"${isAudio ? ' disabled' : ''}><b>⟲</b>Döndür</button>
-                    <button data-e="clip"${isAudio ? ' disabled' : ''}><b>GIF</b>Klip</button>
+                    <button data-e="split"><b>${icon('scissors')}</b>Böl</button>
+                    <button data-e="frame"${isAudio ? ' disabled' : ''}><b>${icon('camera')}</b>Kare al</button>
+                    <button data-e="extract"${isAudio ? ' disabled' : ''}><b>${icon('music')}</b>Sesi çıkar</button>
+                    <button data-e="mute"${isAudio ? ' disabled' : ''}><b>${icon('mute')}</b>Sessiz</button>
+                    <button data-e="rotate"${isAudio ? ' disabled' : ''}><b>${icon('rotate')}</b>Döndür</button>
+                    <button data-e="clip"${isAudio ? ' disabled' : ''}><b>${icon('film')}</b>Klip</button>
                 </div>
                 <div class="ed-side">
                     <span class="ed-side-t ed-desk">Dışa aktar</span>
@@ -244,7 +245,7 @@ export function createEditor({ toast, onSaved = () => {} }) {
             el.querySelector('[data-e-dur]').textContent = clock(st.end - snapped);
             el.querySelector('[data-e="mute"]').classList.toggle('on', st.mute);
             el.querySelector('[data-e="rotate"]').classList.toggle('on', st.rotate !== 0);
-            el.querySelector('[data-e="rotate"] b').textContent = st.rotate ? `${st.rotate}°` : '⟲';
+            el.querySelector('[data-e="rotate"] b').innerHTML = st.rotate ? `${st.rotate}°` : icon('rotate');
             el.querySelector('.ed-ll').classList.toggle('on', st.lossless);
             el.querySelector('.ed-ll .toggle').classList.toggle('on', st.lossless);
             el.querySelector('[data-e-llhint]').textContent = !info
@@ -646,12 +647,12 @@ export function createEditor({ toast, onSaved = () => {} }) {
         const batch = new Set();
         el.innerHTML = `
             <div class="ed ed-p">
-                <div class="ed-top"><button class="back-btn" data-e="close" aria-label="Kapat">←</button>
+                <div class="ed-top"><button class="back-btn" data-e="close" aria-label="Kapat">${icon('back')}</button>
                     <span class="ed-title"><span class="ed-mob">Düzenle</span><span class="ed-desk">${escapeHtml(item.name)}</span></span>
                     <span class="ph-cmp-hint">Karşılaştırmak için resme dokun</span>
                     <button class="link-btn" data-e="reset">Sıfırla</button></div>
                 <div class="ph-ed-stage"><div class="ph-ed-wrap"><canvas class="ph-ed-canvas"></canvas><canvas class="ph-ed-before"></canvas>
-                    <span class="ph-cmp-line"><i>⇔</i></span><span class="ph-tag before">ÖNCE</span><span class="ph-tag after">SONRA</span>
+                    <span class="ph-cmp-line"><i>${icon('compare')}</i></span><span class="ph-tag before">ÖNCE</span><span class="ph-tag after">SONRA</span>
                     <div class="ph-ed-crop"><i></i><i></i><i></i><i></i></div></div></div>
                 <div class="ed-side">
                     <div class="seg" data-tabs>${[['crop', 'Kırp'], ['adjust', 'Ayarla'], ['filter', 'Filtre'], ['size', 'Boyut']].map(([k, l]) =>
@@ -728,7 +729,7 @@ export function createEditor({ toast, onSaved = () => {} }) {
             const size = outSize();
             if (st.tab === 'crop') {
                 panel.innerHTML = `<div class="ph-ratios">${RATIOS.map(([l], i) => `<button class="lib-chip${st.ratio === i ? ' on' : ''}" data-e="ratio" data-v="${i}">${l}</button>`).join('')}</div>
-                    <div class="ph-btns"><button class="btn-ghost" data-e="rotate">⟲ Döndür</button><button class="btn-ghost" data-e="flip">⇋ Çevir</button></div>
+                    <div class="ph-btns"><button class="btn-ghost" data-e="rotate">${icon('rotate')} Döndür</button><button class="btn-ghost" data-e="flip">${icon('flip')} Çevir</button></div>
                     <p class="wz-note">Kırpma alanını sürükleyerek kaydır; köşelerden boyutlandır.</p>`;
             } else if (st.tab === 'adjust') {
                 panel.innerHTML = slider('b', 'Parlaklık', 0.5, 1.5) + slider('c', 'Kontrast', 0.5, 1.5) + slider('s', 'Doygunluk', 0, 2);
@@ -1008,10 +1009,10 @@ export function createEditor({ toast, onSaved = () => {} }) {
         let duration = item.duration || 0;
         const history = [];
         el.innerHTML = `<div class="ed clip">
-            <div class="ed-top"><button class="back-btn" data-k="close" aria-label="Kapat">←</button><span class="ed-title">Klip oluştur</span>
+            <div class="ed-top"><button class="back-btn" data-k="close" aria-label="Kapat">${icon('back')}</button><span class="ed-title">Klip oluştur</span>
                 <button class="link-btn" data-k="undo">Geri al</button></div>
             <div class="ed-stage"><video playsinline muted src="${url}"></video>
-                <span class="clip-badge loop">↻ DÖNGÜ</span><span class="clip-badge fmt"></span><span class="clip-prog"><i></i></span></div>
+                <span class="clip-badge loop">${icon('loop')} DÖNGÜ</span><span class="clip-badge fmt"></span><span class="clip-prog"><i></i></span></div>
             <div class="ed-strip" data-strip><div class="ed-thumbs"></div><div class="ed-sel"></div></div>
             <div class="clip-times"><span data-k-a></span><b data-k-len></b><span data-k-b></span></div>
             <div class="rows filled clip-rows"></div>
@@ -1242,7 +1243,7 @@ export function createEditor({ toast, onSaved = () => {} }) {
             const cutA = dur ? lead / dur : 0;
             const cutB = dur ? 1 - tail / dur : 1;
             el.innerHTML = `<div class="ed au">
-                <div class="ed-top"><button class="back-btn" data-a="close" aria-label="Kapat">←</button><span class="ed-title">Ses araçları</span></div>
+                <div class="ed-top"><button class="back-btn" data-a="close" aria-label="Kapat">${icon('back')}</button><span class="ed-title">Ses araçları</span></div>
                 <div><div class="au-name">${escapeHtml(baseName(item.name))}</div>
                     <div class="au-meta">${[dur ? clock(dur) : '', i && i.channels, i && i.codec ? `kaynak ${(item.name.split('.').pop() || '').toUpperCase()}` : ''].filter(Boolean).join(' · ')}</div></div>
                 <div class="au-wave">${bars.length ? bars.map((v, k) => {
@@ -1401,13 +1402,13 @@ export function createEditor({ toast, onSaved = () => {} }) {
                 : st.check && st.check.ok ? `<div class="mg-card ok">✓ <span><b>Kayıpsız birleştirilebilir</b>Hepsi ${h ? `${h}p · ` : ''}${ext(list[0].item)}. Yeniden kodlanmaz, saniyeler sürer.</span></div>`
                 : st.check ? `<div class="mg-card warn">! <span><b>Kayıpsız birleştirilemiyor</b>${escapeHtml(st.check.reason || '')}. Aynı kaynaktan, aynı kalitede kaydedilmiş parçalar birleştirilebilir.</span></div>` : '';
             el.innerHTML = `<div class="ed mg">
-                <div class="ed-top"><button class="back-btn" data-m="close" aria-label="Kapat">←</button><span class="ed-title">Birleştir</span></div>
+                <div class="ed-top"><button class="back-btn" data-m="close" aria-label="Kapat">${icon('back')}</button><span class="ed-title">Birleştir</span></div>
                 <div class="mg-head"><b>${list.length} parça · sürükleyerek sırala</b><span class="mono">${clock(total)}</span></div>
                 <div class="mg-list">${rows.map((r, i) => `<div class="mg-row${r.on ? '' : ' off'}" data-i="${i}">
-                    <span class="mg-grip" data-m="grip">⋮⋮</span><span class="mg-n">${i + 1}</span>
+                    <span class="mg-grip" data-m="grip">${icon('grip')}</span><span class="mg-n">${i + 1}</span>
                     <span class="mg-th" style="${r.item.thumb ? `background-image:url('${r.item.thumb}')` : ''}"></span>
                     <span class="mg-main"><b>${escapeHtml(r.item.name)}</b><small>${escapeHtml(meta(r.item))}</small></span>
-                    <span class="mg-arrows"><button data-m="up" data-i="${i}"${i === 0 ? ' disabled' : ''}>▲</button><button data-m="down" data-i="${i}"${i === rows.length - 1 ? ' disabled' : ''}>▼</button></span>
+                    <span class="mg-arrows"><button data-m="up" data-i="${i}"${i === 0 ? ' disabled' : ''}>${icon('chevronUp')}</button><button data-m="down" data-i="${i}"${i === rows.length - 1 ? ' disabled' : ''}>${icon('chevronDown')}</button></span>
                     <button class="mg-check${r.on ? ' on' : ''}" data-m="toggle" data-i="${i}">${r.on ? '✓' : ''}</button></div>`).join('')}</div>
                 <div class="mg-bar">${list.map((r, k) => `<span style="flex:${Math.max(1, r.item.duration || 1)}" title="${escapeHtml(r.item.name)}">${k + 1} · ${clock(r.item.duration)}</span>`).join('')}</div>
                 ${card}

@@ -2,6 +2,7 @@
 // sayfa. Her iki durumda telefon "kumanda" olur.
 import { escapeHtml, clock, getRenderServer, renderApi } from './util.js';
 import { uploadItem } from './sync.js';
+import { icon } from './icons.js';
 
 function overlay() {
     const el = document.createElement('div');
@@ -40,8 +41,8 @@ export function openCast(item, { toast }) {
     const el = overlay();
     const canRemote = 'remote' in HTMLMediaElement.prototype;
     const options = [
-        ...(canRemote ? [['remote', '▭', 'Chromecast / akıllı TV', 'Telefonun yayın menüsü açılır']] : []),
-        ['browser', '⌘', 'Tarayıcıda aç', 'Herhangi bir TV ya da bilgisayar']
+        ...(canRemote ? [['remote', icon('cast'), 'Chromecast / akıllı TV', 'Telefonun yayın menüsü açılır']] : []),
+        ['browser', icon('globe'), 'Tarayıcıda aç', 'Herhangi bir TV ya da bilgisayar']
     ];
     let choice = options[0][0];
     let stopPolling = null;
@@ -58,7 +59,7 @@ export function openCast(item, { toast }) {
 
     function drawChoice(status = '') {
         el.innerHTML = `<div class="cs">
-            <div class="wz-top"><button class="back-btn" data-c="close" aria-label="Kapat">←</button><span>TV'de oynat</span><small class="cs-note">Aynı Wi-Fi'dakiler</small></div>
+            <div class="wz-top"><button class="back-btn" data-c="close" aria-label="Kapat">${icon('back')}</button><span>TV'de oynat</span><small class="cs-note">Aynı Wi-Fi'dakiler</small></div>
             <div class="cs-title">${escapeHtml(item.name)}</div>
             <div class="cs-opts">${options.map(([k, ic, l, sub]) => `<button class="cs-opt${choice === k ? ' on' : ''}" data-c="pick" data-v="${k}">
                 <span class="cs-ic">${ic}</span><span class="cs-main"><b>${l}</b><small>${sub}</small></span><span class="cs-radio"></span></button>`).join('')}</div>
@@ -119,7 +120,7 @@ export function openCast(item, { toast }) {
         const main = session.urls.find((u) => u.label !== 'Bu cihaz') || session.urls[0];
         const qr = `${server.url}/tv/${session.id}/qr?u=${encodeURIComponent(main.url)}&token=${encodeURIComponent(server.token)}`;
         el.innerHTML = `<div class="cs">
-            <div class="wz-top"><button class="back-btn" data-c="close" aria-label="Kapat">←</button><span>TV'nin tarayıcısında aç</span></div>
+            <div class="wz-top"><button class="back-btn" data-c="close" aria-label="Kapat">${icon('back')}</button><span>TV'nin tarayıcısında aç</span></div>
             <p class="cs-note2">TV'nin (ya da bilgisayarın) tarayıcısına bu adresi yaz ya da QR'ı okut. Açılınca kumanda burada çıkar.</p>
             <div class="cs-qr"><img src="${escapeHtml(qr)}" alt="QR"></div>
             <div class="cs-urls">${session.urls.map((u) => `<div><small>${escapeHtml(u.label)}</small><b>${escapeHtml(u.url)}</b></div>`).join('')}</div>
@@ -146,7 +147,7 @@ export function openCast(item, { toast }) {
         let state = { t: 0, d: item.duration || 0, paused: false, volume: 0.6 };
         let connected = true;
         el.innerHTML = `<div class="cs km">
-            <div class="wz-top"><button class="back-btn" data-c="close" aria-label="Kapat">←</button><span>Kumanda</span>
+            <div class="wz-top"><button class="back-btn" data-c="close" aria-label="Kapat">${icon('back')}</button><span>Kumanda</span>
                 <small class="km-dev"><i></i>${escapeHtml(adapter.name)}</small></div>
             <div class="km-prev" style="${item.thumb ? `background-image:url('${item.thumb}')` : ''}"><span>TV'de oynatılıyor</span></div>
             <div class="cs-title">${escapeHtml(item.name)}</div>
@@ -154,12 +155,12 @@ export function openCast(item, { toast }) {
             <div class="km-seek"><div class="km-track"><span class="km-fill"></span></div><input type="range" min="0" max="1000" value="0" aria-label="Konum"></div>
             <div class="km-times"><span data-k="t">0:00</span><span data-k="d">${clock(state.d)}</span></div>
             <div class="km-main">
-                <button data-k="back"><b>«</b>10 sn</button>
-                <button class="km-play" data-k="play">❚❚</button>
-                <button data-k="fwd"><b>»</b>10 sn</button></div>
+                <button data-k="back"><b>${icon('back10')}</b>10 sn</button>
+                <button class="km-play" data-k="play">${icon('pause')}</button>
+                <button data-k="fwd"><b>${icon('fwd10')}</b>10 sn</button></div>
             <div class="km-vol-head"><span>Ses</span><span data-k="vol">60%</span></div>
             <div class="km-vol"><button data-k="vdown">−</button><span class="km-bars">${Array.from({ length: 10 }, (_, i) => `<i style="height:${8 + i * 2}px"></i>`).join('')}</span><button data-k="vup">+</button></div>
-            <div class="km-extra"><button data-k="subs"><b>CC</b>Altyazı</button><button data-k="restart"><b>↺</b>Baştan</button><button class="danger" data-k="end"><b>✕</b>Bağlantıyı kes</button></div>
+            <div class="km-extra"><button data-k="subs"><b>${icon('subtitles')}</b>Altyazı</button><button data-k="restart"><b>${icon('rotate')}</b>Baştan</button><button class="danger" data-k="end"><b>${icon('close')}</b>Bağlantıyı kes</button></div>
         </div>`;
         const range = el.querySelector('.km-seek input');
         let seeking = false;
@@ -169,7 +170,7 @@ export function openCast(item, { toast }) {
             el.querySelector('[data-k="d"]').textContent = clock(state.d);
             el.querySelector('.km-fill').style.width = `${state.d ? (state.t / state.d) * 100 : 0}%`;
             if (!seeking) range.value = state.d ? Math.round((state.t / state.d) * 1000) : 0;
-            el.querySelector('.km-play').textContent = state.paused ? '▶' : '❚❚';
+            el.querySelector('.km-play').innerHTML = icon(state.paused ? 'play' : 'pause');
             el.querySelector('[data-k="vol"]').textContent = `${Math.round(state.volume * 100)}%`;
             el.querySelectorAll('.km-bars i').forEach((b, i) => b.classList.toggle('on', i < Math.round(state.volume * 10)));
             el.querySelector('.km-dev').classList.toggle('off', !connected);

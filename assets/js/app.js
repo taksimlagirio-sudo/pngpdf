@@ -14,6 +14,7 @@ import { createViewer } from './viewer.js';
 import { createEditor } from './editor.js';
 import { restoreServerRecordings } from './serverrec.js';
 import { canFloat, toggleFloatingBar, onFloatStateChange } from './floatbar.js';
+import { icon } from './icons.js';
 
 let settingsTab = null; // Ayarlar açılınca sayaçları tazelemek için
 let libraryTab = null;
@@ -29,9 +30,9 @@ function applyTheme(theme) {
     else delete document.documentElement.dataset.theme;
     document.querySelector('meta[name="theme-color"]').content = light ? '#F3F1EC' : '#121110';
     document.querySelectorAll('[data-theme-toggle]').forEach((btn) => {
-        btn.textContent = btn.classList.contains('theme-btn-side')
-            ? `${light ? '☾' : '☀'}  Tema: ${light ? 'Açık' : 'Koyu'}`
-            : light ? '☾' : '☀';
+        btn.innerHTML = btn.classList.contains('theme-btn-side')
+            ? `${icon(light ? 'moon' : 'sun')} Tema: ${light ? 'Açık' : 'Koyu'}`
+            : icon(light ? 'moon' : 'sun');
     });
 }
 applyTheme(getPrefs().theme);
@@ -63,7 +64,7 @@ function navigate(name) {
     // Takip, telefonda İndirmeler'in bir sekmesidir; alt çubukta İndirmeler seçili görünür.
     document.querySelectorAll('.tab, .nav-item').forEach((el) => el.classList.toggle('active',
         el.dataset.view === name || (name === 'follow' && el.classList.contains('tab') && el.dataset.view === 'downloads')));
-    if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
+    if (location.hash.slice(1) !== name) history.replaceState(history.state, '', `#${name}`);
     setCurrentView(name);
     if (name === 'settings' && settingsTab) settingsTab.refresh();
     if (name === 'library' && libraryTab) libraryTab.refresh();
@@ -209,10 +210,19 @@ if (canFloat) {
 
 /* ---- Paylaşım hedefi: başka uygulamadan paylaşılan bağlantı ---- */
 const params = new URLSearchParams(location.search);
-const shared = [params.get('url'), params.get('text'), params.get('title')]
+let shared = [params.get('url'), params.get('text'), params.get('title')]
     .filter(Boolean)
     .map((value) => (value.match(/https?:\/\/\S+/) || [])[0])
     .find(Boolean);
+// Paylaşımdan hemen sonra sayfa (güncelleme yüzünden) yenilenirse bağlantı kaybolmasın.
+try {
+    if (shared) sessionStorage.setItem('indirici.share', JSON.stringify({ url: shared, at: Date.now() }));
+    else {
+        const saved = JSON.parse(sessionStorage.getItem('indirici.share') || 'null');
+        if (saved && Date.now() - saved.at < 20000) shared = saved.url;
+        sessionStorage.removeItem('indirici.share');
+    }
+} catch (_) { /* depolama kapalı */ }
 
 // QR ile bağlanma: sunucunun "/baglan" QR'ı telefon kamerasıyla okutulunca …/?pair=KOD açılır.
 const pairLink = params.get('pair') ? parsePairLink(location.href) : null;
@@ -229,6 +239,71 @@ if (pairLink) {
     detectTab.prefill(shared, true, { shared: true });
 } else {
     navigate(location.hash.slice(1) || 'detect');
+}
+
+/* ---- Geri tuşu: uygulamadan çıkmak yerine açık ekranı kapatır ---- */
+// Geçmişe bir "bekçi" kaydı eklenir; geri tuşu onu tüketince önce en üstteki pencere/sayfa kapanır,
+// sonra Algıla'ya dönülür. Algıla'da süren indirme varsa çıkmak için iki kez basmak gerekir.
+let exitArmed = 0;
+function handleBack() {
+    const layers = [...document.querySelectorAll('.remote-overlay, .sheet-backdrop, .ss-sheet')];
+    const top = layers[layers.length - 1];
+    if (top) {
+        if (top.matches('.remote-overlay')) {
+            const btn = ['.back-btn', '[aria-label="Kapat"]', '[data-r="close"]', '[data-a="close"]']
+                .map((sel) => top.querySelector(sel)).find(Boolean);
+            if (btn) btn.click();
+            if (top.isConnected && !btn) {
+                top.remove();
+                if (!document.querySelector('.remote-overlay')) document.documentElement.classList.remove('remote-open');
+            }
+        } else {
+            top.click(); // arka plana dokunmak sayfayı kapatır
+            if (top.isConnected) top.remove();
+        }
+        return true;
+    }
+    const view = document.querySelector('.view.active');
+    const inner = view && [...view.querySelectorAll('.back-btn')].find((b) => b.offsetParent !== null);
+    if (inner) {
+        inner.click();
+        return true;
+    }
+    if (document.body.dataset.view !== 'detect') {
+        navigate('detect');
+        return true;
+    }
+    const busy = getJobs().some((j) => j.status === 'active' && !j.bgId && !j.serverRec && !j.serverDl);
+    if (busy && Date.now() - exitArmed > 2500) {
+        exitArmed = Date.now();
+        toast('İndirme sürüyor; çıkarsan durur. Çıkmak için bir daha bas');
+        return true;
+    }
+    return false;
+}
+history.replaceState({ root: true }, '', location.href);
+history.pushState({ guard: true }, '', location.href);
+window.addEventListener('popstate', (e) => {
+    // Yalnızca bekçinin altına inildiyse (geri tuşu) ele alınır; #sekme değişimleri kendi yolunda.
+    if (!e.state || !e.state.root) return;
+    // Kök kaydın adresi eski sekmeyi gösterebilir; bekçi şu anki sekmeyle yeniden eklenir.
+    if (handleBack()) history.pushState({ guard: true }, '', `${location.pathname}${location.search}#${document.body.dataset.view}`);
+    else history.back();
+});
+
+/* ---- Paylaşım uygulama açıkken gelirse sayfa yeniden yüklenmez (launch_handler) ---- */
+if ('launchQueue' in window) {
+    let lastShared = shared || '';
+    window.launchQueue.setConsumer((launch) => {
+        if (!launch || !launch.targetURL) return;
+        const p = new URL(launch.targetURL).searchParams;
+        const link = [p.get('url'), p.get('text'), p.get('title')].filter(Boolean)
+            .map((v) => (v.match(/https?:\/\/\S+/) || [])[0]).find(Boolean);
+        if (!link || link === lastShared) return;
+        lastShared = link;
+        navigate('detect');
+        detectTab.prefill(link, true, { shared: true });
+    });
 }
 
 /* ---- Service worker ---- */
