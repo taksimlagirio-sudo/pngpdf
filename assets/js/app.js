@@ -1,7 +1,7 @@
 // Uygulama kabuğu: bölümler (alt sekme / kenar çubuğu), tema, PWA kurulumu, paylaşım hedefi.
 import { $, autoConfigureLocalServer } from './util.js';
 import { getPrefs, setPref, onPrefs } from './prefs.js';
-import { initDownloads, setCurrentView, setFloatOpen, getJobs } from './downloads.js';
+import { initDownloads, setCurrentView, setFloatOpen, getJobs, interruptedCount } from './downloads.js';
 import { initDetectTab } from './detect-tab.js';
 import { initImagesTab } from './images.js';
 import { initSettings } from './settings.js';
@@ -99,8 +99,10 @@ initDownloads({
     onDetect: (url) => {
         navigate('detect');
         detectTab.prefill(url, true);
-    }
+    },
+    onResume: (recipe) => detectTab.resumeFrom(recipe)
 });
+if (interruptedCount()) toast(`${interruptedCount()} indirme yarıda kaldı · İndirmeler'den yeniden başlat`);
 
 // Kendi sunucundan açıldıysa token'ı kendiliğinden al.
 await autoConfigureLocalServer();

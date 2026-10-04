@@ -11,6 +11,8 @@ const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
 const MAX_HISTORY = 30;
 const SPEED_WINDOW_MS = 5000;
+const INTERRUPTED_KEY = 'indirici.interrupted';
+const INTERRUPTED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const jobs = new Map();
 const listeners = new Set();
@@ -20,6 +22,9 @@ let renderQueued = false;
 let ticker = null;
 let currentView = 'detect';
 let floatOpen = false;
+let interrupted = []; // önceki açılışta telefonda inerken yarıda kalan işler
+let lastPersisted = '';
+let resumeHandler = async () => {};
 
 export const canSaveToDisk = typeof window.showSaveFilePicker === 'function';
 export const canShareFiles = typeof navigator.canShare === 'function' && typeof navigator.share === 'function';
@@ -147,7 +152,7 @@ export async function createSink(name, { mode = effectiveSaveMode(), mime = 'app
  * Yeni bir iş kaydeder. `run(job)` verilirse iş kuyruğa girer ve sırası gelince çalışır;
  * `now: true` sınırı beklemeden hemen başlatır. `run` olmadan çağrılırsa iş hemen "aktif" sayılır.
  */
-export function addJob({ name, kind = 'file', thumb = null, run = null, now = false, saveMode = null, source = null } = {}) {
+export function addJob({ name, kind = 'file', thumb = null, run = null, now = false, saveMode = null, source = null, resume = null } = {}) {
     const id = 'j' + Math.random().toString(36).slice(2, 10);
     const controller = new AbortController();
     const job = {
@@ -158,6 +163,7 @@ export function addJob({ name, kind = 'file', thumb = null, run = null, now = fa
         run,
         now,
         source, // { media, page }: hata kartında "Yeniden algıla" / "Dene" için
+        resume, // sayfa yeniden yüklenirse işi yeniden kurma tarifi (detect-tab resumeRecipe)
         pageInput: '',
         saveMode: saveMode || effectiveSaveMode(),
         status: run ? 'queued' : 'active',
@@ -302,7 +308,7 @@ function startNow(job) {
 function retry(job) {
     if (!job.run || !['error', 'cancelled'].includes(job.status)) return;
     jobs.delete(job.id);
-    addJob({ name: job.name, kind: job.kind, thumb: job.thumb, run: job.run, now: true, saveMode: job.saveMode, source: job.source });
+    addJob({ name: job.name, kind: job.kind, thumb: job.thumb, run: job.run, now: true, saveMode: job.saveMode, source: job.source, resume: job.resume });
 }
 
 function removeJob(job) {
@@ -552,9 +558,76 @@ async function savePending(job) {
 let navigate = () => {};
 let detect = () => {};
 
-export function initDownloads({ onNavigate, onDetect } = {}) {
+/* ---------------- Yarıda kalanlar ----------------
+ * Telefonda (sunucusuz) inen iş sayfayla birlikte yaşar: paylaşımla gelen bağlantı, güncelleme ya da
+ * Android'in uygulamayı kapatması sayfayı yeniden yüklerse iş kaybolur. Süren işlerin tarifi sürekli
+ * saklanır; sonraki açılışta "N indirme yarıda kaldı · Yeniden başlat" çıkar. Sunucudaki indirme ve
+ * kayıtlar, arka plan (sistem) indirmeleri kendileri sürdüğünden saklanmaz. */
+function persistRunning() {
+    const list = [...jobs.values()]
+        .filter((j) => ['active', 'queued'].includes(j.status) && j.resume && !j.bgId && !j.serverRec && !j.serverDl && !j.captureId)
+        .map((j) => ({ name: j.name, kind: j.kind, resume: j.resume, since: j.createdAt }));
+    const text = JSON.stringify(list);
+    if (text === lastPersisted) return;
+    lastPersisted = text;
+    try {
+        if (list.length) localStorage.setItem(INTERRUPTED_KEY, text);
+        else localStorage.removeItem(INTERRUPTED_KEY);
+    } catch (_) { /* depolama kapalı */ }
+}
+
+function loadInterrupted() {
+    try {
+        const list = JSON.parse(localStorage.getItem(INTERRUPTED_KEY) || '[]');
+        localStorage.removeItem(INTERRUPTED_KEY);
+        interrupted = (Array.isArray(list) ? list : [])
+            .filter((x) => x && x.resume && Date.now() - (x.since || 0) < INTERRUPTED_MAX_AGE_MS);
+    } catch (_) {
+        interrupted = [];
+    }
+}
+
+/** Önceki açılışta yarıda kalan indirme sayısı (açılışta bildirmek için). */
+export function interruptedCount() {
+    return interrupted.length;
+}
+
+async function resumeInterrupted() {
+    const list = interrupted;
+    interrupted = [];
+    render();
+    const failed = [];
+    for (const item of list) {
+        try {
+            await resumeHandler(item.resume);
+        } catch (err) {
+            failed.push({ ...item, error: (err && err.message) || 'bulunamadı' });
+        }
+    }
+    // Bulunamayanlar kartta kalır (yeniden denenebilir ya da vazgeçilir).
+    interrupted = failed;
+    render();
+}
+
+function renderInterrupted() {
+    if (!interrupted.length) return '';
+    const names = interrupted.slice(0, 3).map((x) => `<li>${escapeHtml(x.name)}${x.error ? ` <span class="muted">· ${escapeHtml(x.error)}</span>` : ''}</li>`).join('');
+    const more = interrupted.length > 3 ? `<li class="muted">ve ${interrupted.length - 3} tane daha</li>` : '';
+    return `<div class="dl-interrupted">
+        <div class="dli-head">${icon('alert')}<span><b>${interrupted.some((x) => x.error) ? `${interrupted.length} indirme yeniden başlatılamadı` : `${interrupted.length} indirme yarıda kaldı`}</b>
+            <small>Uygulama yeniden açıldı (paylaşım, güncelleme ya da telefon kapattı). Telefona inenler baştan indirilir.</small></span></div>
+        <ul>${names}${more}</ul>
+        <div class="dli-btns"><button class="btn-ac" data-job-act="resume-interrupted">Yeniden başlat</button>
+            <button class="btn-ghost" data-job-act="dismiss-interrupted">Vazgeç</button></div>
+    </div>`;
+}
+
+export function initDownloads({ onNavigate, onDetect, onResume } = {}) {
     navigate = onNavigate || navigate;
     detect = onDetect || detect;
+    resumeHandler = onResume || resumeHandler;
+    loadInterrupted();
+    window.addEventListener('pagehide', persistRunning);
 
     // Hata kartındaki sayfa adresi: yazılanı iş üzerinde tut (yeniden çizimde kaybolmasın).
     document.addEventListener('input', (e) => {
@@ -579,6 +652,16 @@ export function initDownloads({ onNavigate, onDetect } = {}) {
         if (act === 'conc') {
             setPref('concurrency', Number(btn.dataset.value));
             return pump();
+        }
+        if (act === 'resume-interrupted') {
+            btn.disabled = true;
+            btn.textContent = 'Bulunuyor...';
+            resumeInterrupted();
+            return;
+        }
+        if (act === 'dismiss-interrupted') {
+            interrupted = [];
+            return render();
         }
         if (!job) return;
         if (act === 'cancel') job.cancel();
@@ -670,6 +753,7 @@ export function render() {
 }
 
 function renderNow() {
+    persistRunning();
     const list = [...jobs.values()];
     for (const job of list) job.speed = jobSpeed(job);
     checkStalls();
@@ -789,6 +873,7 @@ function renderFull(list) {
         html = html.replace('<div class="dl-list">', `<div class="net-banner"><i></i>İnternet yok${waiting ? ` · ${waiting} indirme bekliyor` : ''}</div><div class="dl-list">`);
     }
     if (filter !== 'done') {
+        html += renderInterrupted();
         html += active.map(renderActive).join('');
         html += queued.map((job, i) => renderQueuedJob(job, active.length + i + 1)).join('');
         html += pending.map(renderFinished).join('');
@@ -797,7 +882,7 @@ function renderFull(list) {
             html += failed.map(renderFailed).join('');
         }
         if (paused.length) html += '<p class="net-note">İnen parçalar saklanır. Bağlantı gelince kaldığı parçadan sürer; baştan inmez.</p>';
-        if (!active.length && !queued.length && !failed.length && !pending.length) {
+        if (!active.length && !queued.length && !failed.length && !pending.length && !interrupted.length) {
             html += `<div class="empty">Süren indirme yok.<br>Algıla'ya bir bağlantı yapıştırın; videolar, yayınlar ve canlı kayıtlar burada görünür.</div>`;
         }
     } else {
