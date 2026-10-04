@@ -6,6 +6,7 @@ import { itemWhere, deleteServerItems, confirmServerDelete } from './library-tab
 import { openCast } from './cast.js';
 import { icon } from './icons.js';
 import { getPrefs } from './prefs.js';
+import { confirmSheet } from './sheet.js';
 
 const SPEEDS = [0.5, 1, 1.5, 2, 4];
 const speedLabel = (v) => `${String(v).replace('.', ',')}×`;
@@ -209,13 +210,14 @@ export function createViewer({ toast, edit = null }) {
 
     async function remove(item) {
         if (item.server) {
-            if (!confirmServerDelete([item])) return false;
+            if (!(await confirmServerDelete([item]))) return false;
             await deleteServerItems([item]);
             toast('Sunucudan silindi');
             return true;
         }
-        const note = item.exportedAt ? '' : '\nBu dosya yalnızca burada; silinirse geri gelmez.';
-        if (!confirm(`"${item.name}" kitaplıktan silinsin mi?${note}`)) return false;
+        const ok = await confirmSheet({ title: 'Kitaplıktan silinsin mi?', items: [item], danger: true, confirm: 'Sil',
+            text: item.exportedAt ? 'Galeriye ya da İndirilenler’e kaydettiğin kopya kalır.' : 'Bu dosya yalnızca burada; silinirse geri gelmez.' });
+        if (!ok) return false;
         await libRemove(item.id);
         toast('Silindi');
         return true;

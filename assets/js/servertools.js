@@ -2,6 +2,7 @@
 // "Sunucu durumu" (disk, süren kayıt, takipler, son hatalar, bakım, yeniden başlatma).
 import { escapeHtml, formatSize, clock, getRenderServer, renderApi } from './util.js';
 import { icon } from './icons.js';
+import { confirmSheet } from './sheet.js';
 
 function overlay(cls) {
     const el = document.createElement('div');
@@ -276,7 +277,7 @@ export function openServerStatus({ toast = () => {} } = {}) {
             return draw();
         }
         if (v === 'restart') {
-            if (st && st.running.length && !confirm('Süren kayıt yarıda kalır. Yine de yeniden başlatılsın mı?')) return;
+            if (st && st.running.length && !(await confirmSheet({ title: 'Sunucu yeniden başlatılsın mı?', text: 'Süren kayıt yarıda kalır ve kaydedilmez.', confirm: 'Yeniden başlat', danger: true }))) return;
             restarting = true;
             draw();
             try {

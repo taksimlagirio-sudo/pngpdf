@@ -3,6 +3,7 @@
 import { $, escapeHtml, formatSize, clock, getRenderServer, renderApi, isHttpUrl } from './util.js';
 import { downloadsTabs, setFollowCount } from './downloads.js';
 import { icon } from './icons.js';
+import { confirmSheet } from './sheet.js';
 
 const QUALITIES = [['best', 'En iyi'], ['1080', '1080p'], ['720', '720p']];
 const EVERY_LIVE = [1, 5, 15, 30];
@@ -505,7 +506,7 @@ export function initFollow({ navigate, toast }) {
         }
         if (f === 'seen' && w) api(`/watch/${id}`, { seenAll: true }).then(load).catch(() => {});
         if (f === 'remove' && w) {
-            if (!confirm(`"${w.name}" takipten çıkarılsın mı?`)) return;
+            if (!(await confirmSheet({ title: 'Takipten çıkarılsın mı?', text: `"${w.name}" artık izlenmez. Daha önce kaydedilenler kitaplıkta kalır.`, danger: true, confirm: 'Takipten çıkar' }))) return;
             await api(`/watch/${id}`, null, 'DELETE').catch((err) => toast(err.message));
             ui.detail = null;
             ui.selected = null;

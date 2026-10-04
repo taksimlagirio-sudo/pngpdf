@@ -19,6 +19,7 @@ import { subLabel, subCode, loadCues, toSrt, toVtt, shiftCues } from './subs.js'
 import { embedSubtitles, editMp4, toProgressive } from './mp4edit.js';
 import { siteSettingFor, setSiteSetting, variantIndexFor } from './sitesettings.js';
 import { icon } from './icons.js';
+import { openBookmarklet } from './servertools.js';
 
 // yt-dlp'nin en güçlü olduğu büyük platformlar: bunlarda "nasıl bakalım?" diye sorulur.
 const BIG_SITES = [
@@ -75,6 +76,10 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     const analyzeBtn = $('detectBtn');
     const statusBox = $('detectStatus');
     const previewBox = $('detectPreview');
+    // Sonuç ekranının üst satırı (geri, adres): önizlemenin üstünde durur.
+    const resTop = document.createElement('div');
+    resTop.className = 'rd-topbox';
+    previewBox.insertAdjacentElement('beforebegin', resTop);
     const resultBox = $('detectResult');
 
     let info = null;      // analyzeUrl sonucu
@@ -157,14 +162,14 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         } catch (_) { /* bu tarayıcıda sorgulanamıyor */ }
         const el = document.createElement('div');
         el.className = 'sheet-backdrop paste-sheet';
-        el.innerHTML = `<div class="paste-box">
-            <b>Bağlantıyı buraya yapıştır</b>
-            <input class="input" type="url" inputmode="url" placeholder="Uzun bas → Yapıştır" autocomplete="off">
-            <span class="paste-hint">${denied
-                ? 'Pano izni kapalı. Açmak için: adres çubuğundaki ⓘ (ya da ⋮ → ⓘ) → İzinler → Pano → İzin ver. Sonra "Yapıştır ve algıla" tek dokunuşla çalışır.'
-                : 'Tarayıcı panoyu okumaya izin vermedi. Klavyenin üstündeki pano önerisine dokunabilir ya da kutuya uzun basıp Yapıştır diyebilirsin.'}</span>
-            <div class="btn-row"><button class="btn-ghost" data-p="cancel">Vazgeç</button><button class="btn-ac" data-p="go">Algıla</button></div></div>`;
+        el.innerHTML = `<div class="paste-box" role="dialog" aria-modal="true" aria-label="Bağlantıyı yapıştır">
+            <span class="cf-grip"></span>
+            <div class="cf-text"><b>Bağlantıyı yapıştır</b><span>Kutuya uzun basıp <strong>Yapıştır</strong>’a dokun ya da klavyenin üstündeki pano önerisini seç. Bağlantı girince algılama kendiliğinden başlar.</span></div>
+            <label class="paste-field">${icon('paste')}<input type="url" inputmode="url" placeholder="https://" autocomplete="off" aria-label="Bağlantı"></label>
+            ${denied ? `<div class="paste-note">${icon('info')}<span><b>Pano izni kapalı</b><small>Adres çubuğundaki ⓘ (ya da ⋮ → ⓘ) → İzinler → Pano → İzin ver. Sonra tek dokunuşla yapıştırılır.</small></span></div>` : ''}
+            <div class="paste-btns"><button class="cf-no" data-p="cancel">Vazgeç</button><button class="cf-ok" data-p="go">Algıla</button></div></div>`;
         document.body.appendChild(el);
+        requestAnimationFrame(() => el.classList.add('in'));
         const input = el.querySelector('input');
         const close = () => el.remove();
         const go = () => {
@@ -207,19 +212,6 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         start(url);
     }
 
-    /** Son algılananlar: istendiğinde (sonuç ekranındayken de) açılır. */
-    function showRecent() {
-        seq++;
-        if (controller) controller.abort();
-        closePreview();
-        stopProgress();
-        statusBox.innerHTML = '';
-        showShared('');
-        info = null;
-        renderIdle({ forceRecent: true });
-        analyzeBtn.disabled = false;
-    }
-    $('detectRecentBtn').addEventListener('click', showRecent);
 
     // Sunucuda yt-dlp kurulu mu (bir kez sorulur).
     let ytdlpCheck = null;
@@ -356,60 +348,43 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     /* ---------------- Boş ekran: ilk açılış ya da son algılananlar ---------------- */
 
-    function followRow() {
-        if (!onFollow || !getRenderServer()) return '';
-        return `<button class="row follow-entry" data-act="open-follow"><span class="row-value follow-entry-label" style="font-weight:600"><span class="row-ic">${icon('broadcast')}</span>Yayın takibi
-            <span class="muted" style="display:block;font-size:12px;font-weight:400">Bir yayın açıldıkça kendiliğinden kaydet · zamanla · kanal takibi</span></span>
-            <span class="row-chev">›</span></button>`;
+    /** Kısayollar: yayın takibi, toplu ekle, bilgisayardan gönder, paylaşım / ana ekrana ekle. */
+    function shortcutsHtml() {
+        const server = Boolean(getRenderServer());
+        const canInstall = install && ((install.available && install.available()) || install.iosHint);
+        const list = [
+            onFollow && server ? ['open-follow', 'broadcast', 'Yayın takibi', 'Açıldıkça kaydet', true] : null,
+            onBulk ? ['bulk', 'list', 'Toplu ekle', 'Birden çok bağlantı'] : null,
+            server ? ['bookmark', 'laptop', 'Bilgisayardan', 'Tek tıkla gönder'] : null,
+            ['how-share', 'share', 'Paylaş ile gel', 'Diğer uygulamalardan'],
+            canInstall ? ['install', 'download', 'Ana ekrana ekle', 'Tam ekran açılır'] : null,
+            server ? null : ['setup', 'server', 'Kendi sunucun', 'Daha çok site, kayıt']
+        ].filter(Boolean).slice(0, 4);
+        return `<div class="sc-grid">${list.map(([act, ic, label, sub, hl]) => `<button class="sc-item" data-act="${act}">
+            <span class="sc-ic${hl ? ' hl' : ''}">${icon(ic)}</span><span class="sc-t"><b>${label}</b><small>${sub}</small></span></button>`).join('')}</div>`;
     }
 
-    function renderIdle({ forceRecent = false } = {}) {
+    function renderIdle() {
         if (info) return;
+        resTop.innerHTML = '';
         const recent = recentList();
-        if (forceRecent && !recent.length) {
-            resultBox.innerHTML = `<div class="recent"><span class="sec-label">Son algılananlar</span>
-                <p class="muted" style="margin:0;font-size:13.5px">Henüz algılanan bir şey yok.</p></div>
-                <div class="rows filled">${followRow()}</div>`;
-            return;
-        }
-        if (recent.length) {
-            resultBox.innerHTML = `
-                <div class="recent">
-                    <div class="recent-head"><span class="sec-label">Son algılananlar</span><button class="link-btn" data-act="recent-clear">Temizle</button></div>
-                    ${recent.map((r) => `
-                        <button class="recent-row" data-act="recent" data-url="${escapeHtml(r.url)}">
-                            <span class="thumb recent-thumb">${r.thumb ? `<img src="${escapeHtml(r.thumb)}" alt="">` : ''}${r.duration
-                                ? `<span class="thumb-badge">${escapeHtml(r.duration)}</span>` : ''}</span>
-                            <span class="recent-text"><span class="recent-title">${escapeHtml(r.title || shortUrl(r.url))}</span>
-                                <span class="recent-meta">${escapeHtml(r.meta || '')}</span></span>
-                            <span class="recent-act">İndir</span>
-                        </button>`).join('')}
-                </div>
-                ${followRow() ? `<div class="rows filled">${followRow()}</div>` : ''}`;
-            return;
-        }
-        const canInstall = install && install.available && install.available();
         resultBox.innerHTML = `
-            <div class="welcome">
+            ${shortcutsHtml()}
+            ${recent.length ? `<div class="recent">
+                <div class="recent-head"><span class="sec-label">Son algılananlar</span><button class="link-btn" data-act="recent-clear">Temizle</button></div>
+                ${recent.map((r) => `
+                    <button class="recent-row" data-act="recent" data-url="${escapeHtml(r.url)}">
+                        <span class="thumb recent-thumb">${r.thumb ? `<img src="${escapeHtml(r.thumb)}" alt="">` : ''}${r.duration
+                            ? `<span class="thumb-badge">${escapeHtml(r.duration)}</span>` : ''}</span>
+                        <span class="recent-text"><span class="recent-title">${escapeHtml(r.title || shortUrl(r.url))}</span>
+                            <span class="recent-meta">${escapeHtml(r.meta || '')}</span></span>
+                        <span class="recent-act" aria-label="İndir">${icon('download')}</span>
+                    </button>`).join('')}
+            </div>` : `<div class="welcome">
                 <img src="assets/icons/icon.svg" alt="" class="welcome-icon">
-                <div class="welcome-title">Bir bağlantı yapıştırın, gerisini biz bulalım</div>
+                <div class="welcome-title">Bir bağlantı yapıştır, gerisini biz bulalım</div>
                 <div class="welcome-sub">Video, canlı yayın, sayfa ya da galeri.</div>
-            </div>
-            <div class="rows filled">
-                ${followRow()}
-                <button class="row" data-act="how-share"><span class="row-value" style="font-weight:600">Başka uygulamadan paylaş
-                    <span class="muted" style="display:block;font-size:12px;font-weight:400">Paylaş → İndirici, otomatik algılanır</span></span>
-                    <span class="row-chev">›</span></button>
-                ${canInstall || (install && install.iosHint) ? `<button class="row" data-act="install"><span class="row-value" style="font-weight:600">Ana ekrana ekle
-                    <span class="muted" style="display:block;font-size:12px;font-weight:400">Tam ekran, çevrimdışı açılır</span></span>
-                    <span class="row-chev">›</span></button>` : ''}
-            </div>
-            ${getRenderServer() ? '' : `
-            <button class="server-promo" data-act="setup">
-                <span class="server-promo-title">Daha çok site için kendi sunucun</span>
-                <span class="server-promo-sub">Kapalı siteler, giriş isteyenler ve kilitliyken kayıt. 5 dakikada kurulur.</span>
-                <span class="server-promo-act">Kurulumu başlat ›</span>
-            </button>`}`;
+            </div>`}`;
     }
 
     /** Algılanan sonucu "Son algılananlar"a yazar; küçük resim gelince günceller. */
@@ -724,6 +699,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     /* ---------------- Çizim ---------------- */
 
     function render() {
+        resTop.innerHTML = '';
         if (!info) return;
         if (info.target === 'page') renderPage();
         else if (info.target === 'hls' && ui.media && ui.media.live) renderLive();
@@ -806,8 +782,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     function audioChoiceHtml() {
         if (!canAudioOnly()) return '';
         return `<div class="sec"><span class="sec-label">Ne indirilsin</span>
-            <div class="seg">${[['', 'Video'], ['1', 'Yalnızca ses']].map(([v, l]) =>
-                `<button class="${Boolean(ui.audioOnly) === Boolean(v) ? 'on' : ''}" data-act="audio-only" data-v="${v}">${l}</button>`).join('')}</div>
+            <div class="kind-cards">${[['', 'film', 'Video'], ['1', 'music', 'Yalnızca ses']].map(([v, ic, l]) =>
+                `<button class="kind-card${Boolean(ui.audioOnly) === Boolean(v) ? ' on' : ''}" data-act="audio-only" data-v="${v}">${icon(ic)}${l}</button>`).join('')}</div>
             ${ui.audioOnly ? `<span class="sec-hint">${ui.audioUrl ? 'Sitenin ayrı ses dosyası indirilir' : 'Video indirilir, sesi kalite kaybı olmadan ayrılır'} · M4A, telefonlarda ve arabada çalar.</span>` : ''}</div>`;
     }
 
@@ -881,11 +857,15 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (!bulkMode) toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'Ses indiriliyor · İndirmeler');
     }
 
+    function qualityHead() {
+        return `<div class="sec-head"><span class="sec-label">Kalite</span>${ui.audioUrl && !ui.audioOnly ? '<span class="sec-note">görüntü + ses birleştirilir</span>' : ''}</div>`;
+    }
+
     /** Gelişmiş bulmanın verdiği kaliteler (her biri ayrı dosya). */
     function formatsHtml() {
         const list = ui.formats;
         if (!list || list.length < 2 || (info.details.variants || []).length) return '';
-        return `<div class="sec"><span class="sec-label">Kalite</span><div class="qcards">${list.map((f, i) =>
+        return `<div class="sec">${qualityHead()}<div class="qcards">${list.map((f, i) =>
             `<button class="qcard${f.url === info.url ? ' on' : ''}" data-act="format" data-i="${i}">
                 <div class="qcard-label">${f.kind === 'hls' ? 'Yayın' : f.height ? `${f.height}p` : 'Kalite'}</div>${f.size ? `<div class="qcard-sub">~${formatSize(f.size)}</div>` : ''}</button>`).join('')}</div></div>`;
     }
@@ -895,7 +875,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (!variants.length) return '';
         const live = ui.media && ui.media.live;
         const seconds = ui.media && !live ? ui.media.duration : 0;
-        return `<div class="sec"><span class="sec-label">Kalite</span><div class="qcards">${variants.map((v, i) => {
+        return `<div class="sec">${qualityHead()}<div class="qcards">${variants.map((v, i) => {
             const size = estimate(v, seconds);
             const sub = live
                 ? (v.bandwidth ? `${(v.bandwidth / 1e6).toLocaleString('tr-TR', { maximumFractionDigits: 1 })} Mbps` : '')
@@ -914,7 +894,51 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         return '.' + (info.suggestedName.split('.').pop() || info.ext || 'bin');
     }
 
-    function optionRows({ background = true } = {}) {
+    function connRowHtml() {
+        return `<button class="row" data-act="cycle-conn"><span class="row-label">Bağlantı</span>
+            <span class="row-value">${CONN_LABELS[getPrefs().conn]}</span><span class="row-chev">›</span></button>`;
+    }
+
+    /** Başlıktaki tek satır özet: site · süre · kalite sayısı. */
+    function summaryLine() {
+        if (info.unreachable) return metaLine();
+        const d = info.details || {};
+        const from = ui.sourcePage || entryUrl || info.url;
+        let site = '';
+        try {
+            const big = bigSiteOf(from);
+            site = big ? big[1] : new URL(from).hostname.replace(/^www\./, '');
+        } catch (_) { /* geçersiz */ }
+        const live = (ui.media && ui.media.live) || d.live;
+        const secs = (ui.media && ui.media.duration) || d.duration || 0;
+        const n = ui.formats && ui.formats.length > 1 ? ui.formats.length : (d.variants || []).length;
+        return [site, live ? 'Canlı' : secs ? shortDur(secs) : '', n > 1 ? `${n} kalite` : info.size ? formatSize(info.size) : '',
+            d.drm ? `DRM (${d.drm})` : d.encryption ? 'AES-128 şifreli' : ''].filter(Boolean).join(' · ');
+    }
+
+    /** "Daha fazla": bölüm, altyazı, bağlantı yöntemi (seçili bir şey varsa açık gelir). */
+    function moreHtml() {
+        const range = rangeHtml();
+        const subs = subsHtml();
+        const nSubs = ((info.details && info.details.subtitles) || []).length;
+        const open = ui.moreOpen || ui.rangeOpen || (ui.subs && ui.subs.size) || info.unreachable;
+        const parts = [range ? 'Bir bölümünü indir' : '', nSubs ? `altyazı (${nSubs})` : ''].filter(Boolean);
+        const label = parts.length ? [...parts, 'bağlantı'].join(' · ') : 'Diğer seçenekler';
+        if (!open) return `<button class="more-btn" data-act="more">${icon(range ? 'scissors' : 'more')}<span>${label}</span>${icon('chevronDown')}</button>`;
+        return `<div class="more-box">${range}${subs}
+            ${info.unreachable ? `<label class="field"><span class="field-label">Videonun bulunduğu sayfa (isteğe bağlı) —
+                verirsen o sayfanın çerez/oturumuyla denenir</span>
+                <input class="input" type="url" data-input="sourcePage" value="${escapeHtml(ui.sourcePage || '')}"
+                    placeholder="https://site.com/video-sayfasi" autocomplete="off"></label>` : ''}
+            <div class="rows">${connRowHtml()}</div></div>`;
+    }
+
+    function dlButtonHtml() {
+        const size = downloadSize();
+        return `${icon('download')}<span>${ui.rangeOpen ? 'Bu bölümü indir' : 'İndir'}${size ? ' · ~' + formatSize(size) : ''}</span>`;
+    }
+
+    function optionRows({ background = true, conn = true } = {}) {
         const prefs = getPrefs();
         const save = effectiveSaveMode(prefs.save);
         // Kendi sunucun varsa arka planda indirme sunucuda yapılır (her türde); yoksa tarayıcının
@@ -929,10 +953,11 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                     <span class="row-ext">${escapeHtml(currentExt())}</span></label>
                 <button class="row" data-act="cycle-save"><span class="row-label">Kaydet</span>
                     <span class="row-value">${SAVE_LABELS[save]}</span><span class="row-chev">›</span></button>
-                <button class="row" data-act="cycle-conn"><span class="row-label">Bağlantı</span>
-                    <span class="row-value">${CONN_LABELS[prefs.conn]}</span><span class="row-chev">›</span></button>
-                ${background ? `<button class="row${bgSupported ? '' : ' disabled'}" data-act="toggle-bg" ${bgSupported ? '' : 'disabled title="Bu tarayıcıda/kaydetme yönteminde desteklenmiyor"'}>
-                    <span class="row-value">Arka planda indir${viaServer ? '<span class="muted row-sub">Sunucunda iner; uygulama kapansa da sürer</span>' : ''}</span>
+                ${conn ? connRowHtml() : ''}
+                ${background ? `<button class="row bg-row${bgSupported ? '' : ' disabled'}" data-act="toggle-bg" ${bgSupported ? '' : 'disabled title="Bu tarayıcıda/kaydetme yönteminde desteklenmiyor"'}>
+                    <span class="row-tile">${icon(viaServer ? 'server' : 'download')}</span>
+                    <span class="row-value">${viaServer ? 'Sunucunda indir' : 'Arka planda indir'}<span class="muted row-sub">${viaServer
+                        ? 'Uygulama kapansa da sürer, bitince telefona gelir' : 'Uygulama kapansa da sürer'}</span></span>
                     <span class="toggle${(viaServer ? prefs.serverBackground !== false : prefs.background) && bgSupported ? ' on' : ''}"></span></button>` : ''}
             </div>`;
     }
@@ -1039,35 +1064,37 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         const isHls = info.target === 'hls' || info.target === 'dash';
         let body = '';
         if (info.downloadable) {
-            const size = downloadSize();
             body = `
-                <div class="card-pad">
+                <div class="rd-body">
                     ${audioChoiceHtml()}
                     ${formatsHtml()}
                     ${qualityHtml()}
-                    ${rangeHtml()}
-                    ${subsHtml()}
-                    ${info.unreachable ? `<label class="field"><span class="field-label">Videonun bulunduğu sayfa (isteğe bağlı) —
-                        verirsen o sayfanın çerez/oturumuyla denenir</span>
-                        <input class="input" type="url" data-input="sourcePage" value="${escapeHtml(ui.sourcePage || '')}"
-                            placeholder="https://site.com/video-sayfasi" autocomplete="off"></label>` : ''}
-                    ${optionRows({ background: !isHls && !info.unreachable && !ui.audioUrl })}
-                    <div class="dl-actions">
-                        <button class="btn-big" data-act="download">İndir${size ? ' · ~' + formatSize(size) : ''}</button>
-                        <button class="btn-ghost" data-act="queue" title="Sıraya ekle">Sıraya ekle</button>
-                    </div>
+                    ${optionRows({ background: !isHls && !info.unreachable && !ui.audioUrl, conn: false })}
+                    ${moreHtml()}
+                </div>
+                <div class="dl-actions dl-sticky">
+                    <button class="btn-big" data-act="download">${dlButtonHtml()}</button>
+                    <button class="btn-ghost dl-queue" data-act="queue" aria-label="Sıraya ekle" title="Sıraya ekle">${icon('list')}</button>
                 </div>`;
         }
-        const thumb = !previewBox.innerHTML && info.previewUrl
-            ? `<span class="thumb" style="width:96px;height:60px"><img src="${info.previewUrl}" alt=""></span>` : '';
+        const d = info.details || {};
+        const thumbSrc = info.previewUrl || d.thumbnail || '';
+        const secs = (ui.media && !ui.media.live && ui.media.duration) || d.duration || 0;
+        const badge = ui.media && ui.media.live ? 'CANLI' : secs ? shortDur(secs) : '';
+        // Önizleme oynatıcısı görünüyorsa küçük resim tekrar edilmez.
+        const showThumb = !previewBox.innerHTML;
+        resTop.innerHTML = `<div class="rd-top">
+                    <button class="back-btn" data-act="back" aria-label="Geri">${icon('back')}</button>
+                    <span class="rd-url">${escapeHtml(shortUrl(ui.sourcePage || entryUrl || info.url))}</span>
+                    ${d.fromYtdlp || (ui.formats && ui.formats.length) ? `<span class="chip-ok">${icon('check')} Gelişmiş bulma</span>` : ''}
+                </div>`;
         resultBox.innerHTML = `
-            <div class="card">
-                <div class="res-head">
-                    ${thumb}
-                    <div style="flex:1;min-width:0">
+            <div class="rd">
+                <div class="rd-head">
+                    ${showThumb ? `<span class="rd-th">${thumbSrc ? `<img src="${escapeHtml(thumbSrc)}" alt="" referrerpolicy="no-referrer">` : icon(info.kind === 'audio' ? 'music' : 'film')}${badge ? `<i>${badge}</i>` : ''}</span>` : ''}
+                    <div class="rd-t">
                         <div class="res-title">${escapeHtml(ui.name || info.suggestedName)}</div>
-                        <div class="res-meta">${escapeHtml(metaLine())}</div>
-                        <div class="res-url">${escapeHtml(isServerStream(info.url) ? (ui.sourcePage || 'gelişmiş bulma') : info.url)}</div>
+                        <div class="res-meta">${escapeHtml(summaryLine())}</div>
                     </div>
                 </div>
                 ${body}
@@ -1405,7 +1432,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         const dlBtn = resultBox.querySelector('[data-act="download"]');
         if (dlBtn) {
             const size = downloadSize();
-            dlBtn.textContent = `${ui.rangeOpen ? 'Bu bölümü indir' : 'İndir'}${size ? ' · ~' + formatSize(size) : ''}`;
+            dlBtn.innerHTML = dlButtonHtml();
         }
         const recHint = resultBox.querySelector('[data-rec-hint]');
         if (recHint) recHint.textContent = recHintText();
@@ -1443,6 +1470,17 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         else setRange(a, Math.max(v, a + 1));
     }
 
+    function goIdle() {
+        closePreview();
+        info = null;
+        photosPage = null;
+        showShared('');
+        renderIdle();
+    }
+    resTop.addEventListener('click', (e) => {
+        if (e.target.closest('[data-act="back"]')) goIdle();
+    });
+
     resultBox.addEventListener('click', async (e) => {
         const btn = e.target.closest('[data-act]');
         if (!btn || btn.disabled) return;
@@ -1457,6 +1495,10 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 fromYtdlp: btn.dataset.ytdlp === '1',
                 subtitles: (link && link.subtitles) || (fromPage ? info.details.subtitles : null)
             });
+        }
+        if (act === 'more') {
+            ui.moreOpen = true;
+            return render();
         }
         if (act === 'audio-only') {
             ui.audioOnly = stickyAudio = Boolean(btn.dataset.v);
@@ -1488,8 +1530,10 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (act === 'open-follow') return navigate('follow');
         if (act === 'recent-clear') {
             clearRecent();
-            return renderIdle({ forceRecent: true });
+            return renderIdle();
         }
+        if (act === 'bulk' && onBulk) return onBulk(urlInput.value);
+        if (act === 'bookmark') return openBookmarklet({ toast });
         if (!info) return;
         if (act === 'rescan') return analyze(info.url, { noExtract: true });
         if (act === 'focus-url') {
@@ -1519,14 +1563,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (act === 'variant') return pickVariant(Number(btn.dataset.i));
         if (act === 'show-hidden') ui.showHidden = true;
         if (act === 'hide-hidden') ui.showHidden = false;
-        if (act === 'back') {
-            closePreview();
-            info = null;
-            photosPage = null;
-            showShared('');
-            renderIdle();
-            return;
-        }
+        if (act === 'back') return goIdle();
         if (act === 'sub-toggle') {
             const i = Number(btn.dataset.i);
             if (ui.subs.has(i)) ui.subs.delete(i); else ui.subs.add(i);
