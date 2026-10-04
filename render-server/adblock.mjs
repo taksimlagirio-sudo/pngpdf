@@ -8,6 +8,17 @@
 //   2) "video aç ve kaydet" oynatıcı sayfasında, başka kökenden gelen yayın istekleri sunucu
 //      tarafında alınıp CORS izniyle sayfaya verilir (sitenin kendi oynatıcısı gibi oynasın diye).
 
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Hazır listeler bir kez indirilip derlenmiş halde diske yazılır: sunucu her açılışta GitHub'dan
+// indirmek zorunda kalmaz, internet o an yoksa da engelleyici çalışır. 3 günde bir tazelenir.
+const ENGINE_CACHE = process.env.ADBLOCK_CACHE || path.join(path.dirname(fileURLToPath(import.meta.url)), '.adblock-engine.bin');
+const ENGINE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+// Bölgesel liste: Türk sitelerindeki yerli reklam ağları (hosts biçimi; kurala çevrilir).
+const EXTRA_HOST_LISTS = ['https://raw.githubusercontent.com/bkrucarci/turk-adlist/master/hosts'];
+
 // Yerleşik liste: en yaygın reklam ağları ve video reklam (VAST/IMA) sunucuları.
 const AD_HOSTS = [
     'doubleclick.net', 'googlesyndication.com', 'googleadservices.com', 'adservice.google.com',
@@ -62,11 +73,12 @@ function getEngine() {
     if (!enginePromise) {
         enginePromise = (async () => {
             try {
-                const { FiltersEngine, Request } = await import('@ghostery/adblocker');
-                const engine = await FiltersEngine.fromPrebuiltAdsAndTracking(fetch);
+                const lib = await import('@ghostery/adblocker');
+                const { Request } = lib;
+                const engine = await loadEngine(lib);
                 rawEngine = engine;
                 engineKind = 'lists';
-                console.log('Reklam engelleyici hazır (EasyList tabanlı listeler).');
+                console.log('Reklam engelleyici hazır (EasyList, uBlock Origin ve Türk reklam listeleri).');
                 return (url, sourceUrl, type) => engine.match(Request.fromRawDetails({ url, sourceUrl, type })).match;
             } catch (err) {
                 engineKind = 'builtin';
@@ -76,6 +88,45 @@ function getEngine() {
         })();
     }
     return enginePromise;
+}
+
+/** hosts dosyasını ("0.0.0.0 alan.adi") ağ kuralına ("||alan.adi^") çevirir. */
+function hostsToFilters(text) {
+    const out = [];
+    for (const line of String(text).split(/\r?\n/)) {
+        const m = /^\s*(?:0\.0\.0\.0|127\.0\.0\.1|::1?)\s+([a-z0-9.-]+\.[a-z]{2,})\s*(?:#.*)?$/i.exec(line);
+        if (m && m[1] !== 'localhost') out.push(`||${m[1].toLowerCase()}^`);
+    }
+    return out.join('\n');
+}
+
+async function buildEngine({ FiltersEngine, adsAndTrackingLists, fetchLists, fetchResources }) {
+    const [lists, resources, extra] = await Promise.all([
+        fetchLists(fetch, adsAndTrackingLists),
+        fetchResources(fetch),
+        Promise.all(EXTRA_HOST_LISTS.map((url) => fetch(url).then((r) => (r.ok ? r.text() : '')).catch(() => '')))
+    ]);
+    const engine = FiltersEngine.parse([...lists, ...extra.map(hostsToFilters)].join('\n'));
+    if (resources) engine.updateResources(resources, String(resources.length));
+    return engine;
+}
+
+/** Diskteki derlenmiş motor tazeyse onu kullanır; değilse listeleri indirir. İndirilemezse eskisi de olur. */
+async function loadEngine(lib) {
+    let cached = null;
+    try {
+        const [stat, buffer] = await Promise.all([fs.stat(ENGINE_CACHE), fs.readFile(ENGINE_CACHE)]);
+        cached = { engine: lib.FiltersEngine.deserialize(new Uint8Array(buffer)), fresh: Date.now() - stat.mtimeMs < ENGINE_MAX_AGE_MS };
+    } catch (_) { /* önbellek yok ya da eski sürüm */ }
+    if (cached && cached.fresh) return cached.engine;
+    try {
+        const engine = await buildEngine(lib);
+        fs.writeFile(ENGINE_CACHE, engine.serialize()).catch(() => {});
+        return engine;
+    } catch (err) {
+        if (cached) return cached.engine;
+        throw err;
+    }
 }
 
 const TYPE_MAP = {
@@ -113,6 +164,11 @@ export async function installRouting(context, { onBlocked = () => {}, needsCors 
         const request = route.request();
         const url = request.url();
         if (!/^https?:/i.test(url)) return route.fallback();
+        if (url.startsWith(EARLY_URL)) {
+            const pageUrl = new URL(url).searchParams.get('u') || '';
+            return route.fulfill({ status: 200, contentType: 'application/javascript', headers: { 'access-control-allow-origin': '*' },
+                body: earlyCode(request, pageUrl) }).catch(() => {});
+        }
         let frameUrl = '';
         let isTopDocument = false;
         try {
@@ -289,6 +345,126 @@ const POPUP_GUARD = `(() => {
 
 const domainOf = (host) => siteOf('http://' + host);
 
+// Sitenin kendi betikleri çalışmadan önce: o siteye özel gizleme kuralları ve reklam karşıtı
+// betikler (uBlock Origin scriptlet'leri, ör. reklam engelleyici tespitini bozanlar). Sayfa
+// eklenen ilk betikte (EARLY) kuralları eşzamanlı bir istekle sorar; istek ağa çıkmaz, yönlendirici
+// cevaplar. Belge yüklendikten sonra eklemek geç kalır; belge isteği sırasında betik eklemek ise
+// tarayıcıyı kilitliyor.
+const EARLY_URL = 'https://indirici-kurallar.invalid/early';
+const earlyDone = new WeakMap(); // page → Set(hostname)
+
+const EARLY = `(() => {
+    if (window.__indiriciEarly || !/^https?:$/.test(location.protocol)) return;
+    window.__indiriciEarly = true;
+    try {
+        const x = new XMLHttpRequest();
+        x.open('GET', '${EARLY_URL}?u=' + encodeURIComponent(location.href), false);
+        x.send();
+        if (x.status === 200 && x.responseText) (0, eval)(x.responseText);
+    } catch (_) {}
+})();`;
+
+function earlyCode(request, pageUrl) {
+    const hostname = hostOf(pageUrl);
+    if (!rawEngine || !hostname) return '';
+    try {
+        const page = request.frame().page();
+        const done = earlyDone.get(page) || new Set();
+        earlyDone.set(page, done);
+        done.add(hostname);
+    } catch (_) { /* çerçeve gitmiş */ }
+    try {
+        const { styles, scripts } = rawEngine.getCosmeticsFilters({
+            url: pageUrl, hostname, domain: domainOf(hostname), getBaseRules: true, getInjectionRules: true,
+            getExtendedRules: false, getRulesFromHostname: true, getRulesFromDOM: false
+        });
+        if (!styles && !(scripts && scripts.length)) return '';
+        return `${(scripts || []).map((sc) => `try { ${sc}\n} catch (_) {}`).join('\n')}
+            (() => {
+                const css = ${JSON.stringify(styles || '')};
+                if (!css) return;
+                const add = () => {
+                    const st = document.createElement('style');
+                    st.textContent = css;
+                    (document.head || document.documentElement).appendChild(st);
+                };
+                if (document.documentElement) return add();
+                // Belge henüz boş: kök öğe oluşur oluşmaz eklenir (sayfanın ilk betiğinden önce).
+                const mo = new MutationObserver(() => {
+                    if (!document.documentElement) return;
+                    mo.disconnect();
+                    add();
+                });
+                mo.observe(document, { childList: true });
+            })();`;
+    } catch (_) {
+        return '';
+    }
+}
+
+/** Erken eklenmiş mi (sayfa yüklenince aynı kurallar yeniden çalıştırılmasın)? */
+function earlyApplied(frame, hostname) {
+    try {
+        const set = earlyDone.get(frame.page());
+        return Boolean(set && set.has(hostname));
+    } catch (_) {
+        return false;
+    }
+}
+
+// Sayfaya sonradan eklenen öğeler (geç yüklenen reklam alanları) izlenir: yeni sınıf/kimlikler
+// sunucuya bildirilir, onlara uyan gizleme kuralları sayfaya eklenir.
+const DOM_WATCH = `(() => {
+    if (window.__indiriciDomWatch || typeof window.__indiriciDom !== 'function') return;
+    window.__indiriciDomWatch = true;
+    const seen = new Set();
+    let classes = [], ids = [], hrefs = [], timer = 0;
+    const take = (el) => {
+        if (!el || el.nodeType !== 1) return;
+        if (el.classList) el.classList.forEach((c) => { if (!seen.has('.' + c)) { seen.add('.' + c); classes.push(c); } });
+        if (el.id && !seen.has('#' + el.id)) { seen.add('#' + el.id); ids.push(el.id); }
+        if (el.tagName === 'A' && el.href && hrefs.length < 200 && !seen.has(el.href)) { seen.add(el.href); hrefs.push(el.href); }
+    };
+    const flush = () => {
+        timer = 0;
+        if (!classes.length && !ids.length && !hrefs.length) return;
+        const data = { classes, ids, hrefs };
+        classes = []; ids = []; hrefs = [];
+        try { window.__indiriciDom(data); } catch (_) {}
+    };
+    new MutationObserver((records) => {
+        for (const r of records) {
+            for (const node of r.addedNodes) {
+                if (node.nodeType !== 1) continue;
+                take(node);
+                if (seen.size < 20000) node.querySelectorAll('[class], [id], a[href]').forEach(take);
+            }
+            if (r.type === 'attributes') take(r.target);
+        }
+        if (!timer) timer = setTimeout(flush, 400);
+    }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'id'] });
+})();`;
+
+async function cosmeticsForDom(frame, dom) {
+    if (!rawEngine || !dom) return;
+    let url;
+    try {
+        url = frame.url();
+    } catch (_) {
+        return;
+    }
+    if (!/^https?:/i.test(url)) return;
+    const hostname = hostOf(url);
+    try {
+        const { styles } = rawEngine.getCosmeticsFilters({
+            url, hostname, domain: domainOf(hostname),
+            classes: (dom.classes || []).slice(0, 4000), ids: (dom.ids || []).slice(0, 4000), hrefs: (dom.hrefs || []).slice(0, 500),
+            getBaseRules: false, getInjectionRules: false, getExtendedRules: false, getRulesFromHostname: false, getRulesFromDOM: true
+        });
+        if (styles) await frame.addStyleTag({ content: styles }).catch(() => {});
+    } catch (_) { /* kural alınamadı */ }
+}
+
 /** Sayfadaki reklam alanlarını gizler (EasyList kozmetik kuralları); hazır listeler yoksa bir şey yapmaz. */
 async function applyCosmetics(frame) {
     if (!rawEngine) return;
@@ -302,12 +478,15 @@ async function applyCosmetics(frame) {
     const hostname = hostOf(url);
     const domain = domainOf(hostname);
     try {
-        const base = rawEngine.getCosmeticsFilters({
-            url, hostname, domain, getBaseRules: true, getInjectionRules: true, getExtendedRules: false,
-            getRulesFromHostname: true, getRulesFromDOM: false
-        });
-        if (base.styles) await frame.addStyleTag({ content: base.styles }).catch(() => {});
-        for (const script of base.scripts || []) await frame.evaluate(script).catch(() => {});
+        // Siteye özel kurallar belge isteğinde erken eklendiyse yeniden çalıştırılmaz.
+        if (!earlyApplied(frame, hostname)) {
+            const base = rawEngine.getCosmeticsFilters({
+                url, hostname, domain, getBaseRules: true, getInjectionRules: true, getExtendedRules: false,
+                getRulesFromHostname: true, getRulesFromDOM: false
+            });
+            if (base.styles) await frame.addStyleTag({ content: base.styles }).catch(() => {});
+            for (const script of base.scripts || []) await frame.evaluate(script).catch(() => {});
+        }
         const dom = await frame.evaluate(() => {
             const classes = new Set();
             const ids = new Set();
@@ -339,6 +518,9 @@ export async function installPageGuards(context, { allowPopups = false } = {}) {
     await context.addInitScript(POPUP_GUARD);
     if (process.env.ADBLOCK === '0') return;
     await getEngine();
+    await context.exposeBinding('__indiriciDom', (source, dom) => cosmeticsForDom(source.frame, dom)).catch(() => {});
+    await context.addInitScript(EARLY);
+    await context.addInitScript(DOM_WATCH);
     const hook = (page) => {
         page.on('domcontentloaded', () => applyCosmetics(page.mainFrame()));
         page.on('frameattached', (frame) => {

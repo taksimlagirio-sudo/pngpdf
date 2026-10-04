@@ -252,7 +252,7 @@ const PLAY_SELECTORS = [
  */
 async function openRecordedPage(pageUrl, contextOptions, { interactive = false } = {}) {
     const browser = await getBrowser();
-    const context = logins.attach(await browser.newContext({ storageState: logins.storageState(), ...contextOptions }));
+    const context = logins.attach(await browser.newContext({ storageState: logins.storageState(), bypassCSP: true, ...contextOptions }));
     await context.addInitScript(CODEC_SPOOF);
     // Reklamlar engellenir: reklam videoları listeye düşmesin, oynatıcı reklamla oyalanmasın.
     const state0 = { blockedAds: 0 };

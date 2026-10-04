@@ -1,1 +1,4 @@
 .testfixtures/
+
+# reklam engelleyicinin derlenmiş listeleri
+render-server/.adblock-engine.bin
