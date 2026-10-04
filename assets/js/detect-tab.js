@@ -66,7 +66,7 @@ const KIND_LABEL = {
 };
 const REC_LIMITS = [['Sınırsız', 0], ['30 dk', 1800], ['1 sa', 3600], ['2 sa', 7200], ['Özel', -1]];
 
-export function initDetectTab({ navigate, toast, openImages, photos = null, install = null, openSetup = null }) {
+export function initDetectTab({ navigate, toast, openImages, photos = null, install = null, openSetup = null, onFollow = null }) {
     const urlInput = $('detectUrl');
     const analyzeBtn = $('detectBtn');
     const statusBox = $('detectStatus');
@@ -873,6 +873,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 <input value="${escapeHtml(ui.name)}" data-input="name" spellcheck="false">
                 <span class="row-ext">${escapeHtml(currentExt())}</span></label></div>`}
             <button class="btn-rec" data-act="record">Kaydı şimdi başlat</button>` : ''}
+            ${onFollow && canRemote() ? '<button class="btn-ghost" data-act="follow" style="height:46px">Bu yayını takibe al · her açılışta kaydet</button>' : ''}
             ${warningsHtml()}`;
     }
 
@@ -963,6 +964,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             ${warningsHtml()}
             ${captureHtml(!links.length)}
             ${canRemote() ? `<button class="btn-ghost" data-act="remote" style="height:46px">Sayfayı aç, kendim dokunayım</button>` : ''}
+            ${onFollow && canRemote() ? '<button class="btn-ghost" data-act="follow" style="height:46px">Bu sayfayı takibe al</button>' : ''}
             ${first || photosPage ? `<div class="result-bar">
                 <button class="btn-ghost" data-act="photos-all" data-bar-photos hidden></button>
                 ${first ? `<button class="btn-big" data-act="analyze-link" data-url="${escapeHtml(first.url)}" data-pair="${escapeHtml(first.audioUrl || '')}" data-ytdlp="${first.fromYtdlp ? 1 : 0}">${escapeHtml(shortTitle(linkTitle(first, 0)))} indir</button>` : ''}
@@ -1086,6 +1088,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (act === 'setup') return openSetup ? openSetup(1) : navigate('settings');
         if (!info) return;
         if (act === 'rescan') return analyze(info.url, { noExtract: true });
+        if (act === 'follow' && onFollow) return onFollow(entryUrl || info.url);
         if (act === 'photos-all' && photos) {
             photos.downloadAll();
             return;

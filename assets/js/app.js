@@ -7,6 +7,7 @@ import { initImagesTab } from './images.js';
 import { initSettings } from './settings.js';
 import { openSetup, parsePairLink, redeemPair } from './setup.js';
 import { initLibraryTab } from './library-tab.js';
+import { initFollow } from './follow.js';
 import { createViewer } from './viewer.js';
 import { createEditor } from './editor.js';
 import { restoreServerRecordings } from './serverrec.js';
@@ -14,7 +15,8 @@ import { canFloat, toggleFloatingBar, onFloatStateChange } from './floatbar.js';
 
 let settingsTab = null; // Ayarlar açılınca sayaçları tazelemek için
 let libraryTab = null;
-const VIEWS = ['detect', 'images', 'library', 'downloads', 'settings'];
+let followTab = null;
+const VIEWS = ['detect', 'images', 'library', 'downloads', 'follow', 'settings'];
 // Eski sürümlerin sekme adresleri (kısayollar, yer imleri) yeni bölümlere düşsün.
 const LEGACY = { mp4: 'detect', hls: 'detect', image: 'images', pdf: 'detect' };
 
@@ -56,11 +58,14 @@ function navigate(name) {
     if (!VIEWS.includes(name)) name = LEGACY[name] || 'detect';
     document.body.dataset.view = name;
     VIEWS.forEach((v) => $(`view-${v}`).classList.toggle('active', v === name));
-    document.querySelectorAll('.tab, .nav-item').forEach((el) => el.classList.toggle('active', el.dataset.view === name));
+    // Takip, telefonda İndirmeler'in bir sekmesidir; alt çubukta İndirmeler seçili görünür.
+    document.querySelectorAll('.tab, .nav-item').forEach((el) => el.classList.toggle('active',
+        el.dataset.view === name || (name === 'follow' && el.classList.contains('tab') && el.dataset.view === 'downloads')));
     if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
     setCurrentView(name);
     if (name === 'settings' && settingsTab) settingsTab.refresh();
     if (name === 'library' && libraryTab) libraryTab.refresh();
+    if (name === 'follow' && followTab) followTab.refresh();
     window.scrollTo(0, 0);
 }
 
@@ -138,6 +143,7 @@ const detectTab = initDetectTab({
     navigate,
     toast,
     openSetup: showSetup,
+    onFollow: (url) => followTab && followTab.add(url),
     photos: imagesTab,
     install,
     openImages(pageUrl, urls, title) {
@@ -147,6 +153,10 @@ const detectTab = initDetectTab({
 });
 
 /* ---- Ayarlar + kenar çubuğundaki sunucu kartı ---- */
+followTab = initFollow({ navigate, toast });
+document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-follow-add]')) followTab.add('', 'live');
+});
 const viewer = createViewer({ toast });
 const editor = createEditor({ toast });
 viewer.setEditor((item, list) => editor.open(item, list));

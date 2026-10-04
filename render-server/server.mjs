@@ -33,10 +33,12 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { classify, dedupKey, isSegment } from './media.mjs';
-import { createRecorder } from './recorder.mjs';
+import { createRecorder, parsePlaylist } from './recorder.mjs';
+import { createWatcher } from './watcher.mjs';
+import { createPush } from './push.mjs';
 import { createCapturer } from './capture.mjs';
 import { createLoginStore } from './logins.mjs';
-import { findYtdlp, extractInfo, normalizeInfo } from './ytdlp.mjs';
+import { findYtdlp, extractInfo, normalizeInfo, listEntries } from './ytdlp.mjs';
 import { findGalleryDl, extractImages } from './gallerydl.mjs';
 import { createCookieJar } from './cookiejar.mjs';
 import { pairPage, redeemCode } from './pairing.mjs';
@@ -1003,6 +1005,131 @@ const capturer = createCapturer({
     }
 });
 
+/* ---------------- Takip (yayın bekle, zamanla, kanal) ---------------- */
+
+const push = createPush({
+    keyFile: path.join(HERE, '.push-keys.json'),
+    subsFile: path.join(HERE, '.push-subs.json')
+});
+
+async function fetchText(url) {
+    const headers = { 'user-agent': DESKTOP_UA, accept: '*/*' };
+    const referer = refererByUrl.get(url) || refererByHost.get(new URL(url).host);
+    if (referer) headers.referer = referer;
+    const res = await fetchUpstream(url, headers, { signal: AbortSignal.timeout(20000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+}
+
+/** Sayfada (ya da doğrudan .m3u8 adresinde) şu an canlı bir yayın var mı? */
+async function findLive(pageUrl) {
+    let candidates = [];
+    let title = '';
+    if (/\.m3u8(\?|$)/i.test(pageUrl)) {
+        candidates = [pageUrl];
+    } else {
+        const r = await sniff(pageUrl, 20000);
+        if (r.main && r.main.status >= 400) return { reachable: false, error: `Sayfa HTTP ${r.main.status} döndü` };
+        title = r.title || '';
+        if (r.main && /mpegurl/.test(r.main.contentType)) candidates = [pageUrl];
+        candidates.push(...r.items.filter((i) => i.kind === 'hls').map((i) => i.url));
+    }
+    for (const url of candidates) {
+        try {
+            const list = parsePlaylist(await fetchText(url), url);
+            const media = list.type === 'master' ? parsePlaylist(await fetchText(list.variants[0].url), list.variants[0].url) : list;
+            if (media.isLive) return { reachable: true, live: { url }, title };
+        } catch (_) { /* bu aday açılmadı */ }
+    }
+    return { reachable: true, live: null, title };
+}
+
+/** /stream/... (yt-dlp biçimi) adresini sunucudaki dosyaya indirir. */
+async function saveStream(streamUrl, file, onBytes, signal) {
+    const id = (String(streamUrl).match(/^\/stream\/([0-9a-f]{24})$/) || [])[1];
+    const entry = id && streams.get(id);
+    if (!entry || (entry.fragments && entry.fragments.length)) throw new Error('Bu biçim sunucuya indirilemiyor');
+    const headers = { 'user-agent': DESKTOP_UA, accept: '*/*', ...entry.headers };
+    const out = fs.createWriteStream(file);
+    try {
+        const chunk = entry.chunk || STREAM_CHUNK;
+        let offset = 0;
+        for (;;) {
+            const up = await fetchUpstream(entry.url, { ...headers, range: `bytes=${offset}-${offset + chunk - 1}` }, { signal });
+            if (!up.ok) throw new Error(`Dosya alınamadı (HTTP ${up.status})`);
+            let got = 0;
+            for await (const c of up.body) {
+                got += c.length;
+                onBytes(c.length);
+                if (!out.write(c)) await new Promise((r) => out.once('drain', r));
+            }
+            offset += got;
+            const total = Number((up.headers.get('content-range') || '').split('/')[1]) || 0;
+            if (up.status === 200 || got < chunk || (total && offset >= total)) break;
+        }
+    } finally {
+        await new Promise((r) => out.end(r));
+    }
+}
+
+/** Kanalın yeni videosunu sunucuya indirir (en uygun kalite; sesli tek dosya ya da HLS). */
+async function downloadEntry(entry, { maxHeight = 0, keepMs = 0, source = '' } = {}) {
+    const r = await extractWithYtdlp(entry.url);
+    if (!r.ok) throw new Error(r.reason || 'Video bulunamadı');
+    const name = (r.title || entry.title || 'video').slice(0, 100);
+    const fits = (i) => !maxHeight || !i.height || i.height <= maxHeight;
+    const byHeight = (a, b) => (b.height || 0) - (a.height || 0);
+    const hls = r.items.filter((i) => i.kind === 'hls').sort(byHeight)[0];
+    const single = r.items.filter((i) => i.kind === 'video' && !i.audioUrl).sort(byHeight).find(fits);
+    const hlsBetter = hls && (!single || (hls.height || 0) > (single.height || 0));
+    if (hls && (hlsBetter || !single)) {
+        return recorder.start({ url: hls.url, name, vod: true, maxHeight, keepMs, source: source || entry.url });
+    }
+    if (single) {
+        return recorder.importFile({
+            name, ext: single.ext || 'mp4', keepMs, source: source || entry.url, quality: single.height ? `${single.height}p` : '',
+            fetchTo: (file, onBytes, signal) => saveStream(single.url, file, onBytes, signal)
+        });
+    }
+    throw new Error('Sesli tek dosya ya da akış bulunamadı');
+}
+
+const watcher = createWatcher({
+    file: process.env.WATCH_FILE || path.join(HERE, '.watches.json'),
+    recorder,
+    findLive,
+    listEntries: (url) => listEntries(url, { cookies: logins.storageState()?.cookies || [] }),
+    downloadEntry,
+    push,
+    log: (m) => console.log(m)
+});
+
+async function handleWatch(req, res, url) {
+    if (url.pathname === '/watch' && req.method === 'GET') return sendJson(res, 200, watcher.list());
+    if (url.pathname === '/watch' && req.method === 'POST') return sendJson(res, 200, watcher.add(await readJson(req)));
+    if (url.pathname === '/watch/probe' && req.method === 'POST') {
+        const body = await readJson(req);
+        const target = new URL(String(body.url || ''));
+        if (!/^https?:$/.test(target.protocol)) return sendJson(res, 400, { error: 'Adres http/https olmalı' });
+        const r = await findLive(target.href).catch((err) => ({ reachable: false, error: err.message }));
+        return sendJson(res, 200, { reachable: r.reachable, live: Boolean(r.live), title: r.title || '', error: r.error || '' });
+    }
+    if (url.pathname === '/watch/events/seen' && req.method === 'POST') {
+        const body = await readJson(req);
+        watcher.seenEvents(Array.isArray(body.ids) ? body.ids.map(String) : []);
+        return sendJson(res, 200, { ok: true });
+    }
+    const m = url.pathname.match(/^\/watch\/([0-9a-f]{16})(\/(check|stop))?$/);
+    if (!m) return sendJson(res, 404, { error: 'Bulunamadı' });
+    const [, id, , action] = m;
+    let result = null;
+    if (action === 'check' && req.method === 'POST') result = watcher.checkNow(id);
+    else if (action === 'stop' && req.method === 'POST') result = watcher.stop(id);
+    else if (!action && req.method === 'POST') result = watcher.update(id, await readJson(req));
+    else if (!action && req.method === 'DELETE') result = watcher.remove(id) ? { ok: true } : null;
+    return result ? sendJson(res, 200, result) : sendJson(res, 404, { error: 'Takip bulunamadı' });
+}
+
 /** /record (canlı HLS kaydı) ve /capture (sunucuda oynatıp kaydetme) aynı biçimde yönetilir. */
 async function handleJobs(req, res, url) {
     const [, kind] = url.pathname.match(/^\/(record|capture)/) || [];
@@ -1124,6 +1251,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
+        if (url.pathname === '/watch' || url.pathname.startsWith('/watch/')) return await handleWatch(req, res, url);
+        if (url.pathname === '/push/key' && req.method === 'GET') return sendJson(res, 200, { key: push.publicKey, subscribers: push.count() });
+        if (url.pathname === '/push/subscribe' && req.method === 'POST') {
+            push.subscribe(await readJson(req));
+            return sendJson(res, 200, { ok: true, subscribers: push.count() });
+        }
+        if (url.pathname === '/push/unsubscribe' && req.method === 'POST') {
+            push.unsubscribe((await readJson(req)).endpoint);
+            return sendJson(res, 200, { ok: true });
+        }
+        if (url.pathname === '/push/test' && req.method === 'POST') {
+            const sent = await push.send({ title: 'İndirici', body: 'Bildirimler çalışıyor', url: '#follow', kind: 'test' });
+            return sendJson(res, 200, { sent });
+        }
+
         if (url.pathname === '/health' && req.method === 'GET') {
             return sendJson(res, 200, { ok: true, name: 'indirici-render-server', version: VERSION, adblock: adblockStatus(), logins: { enabled: logins.enabled, sites: logins.sites().length },
                 ytdlp: await findYtdlp().then((t) => (t ? { version: t.version } : null)),

@@ -36,6 +36,7 @@
             <button class="nav-item" data-view="images">Resimler</button>
             <button class="nav-item" data-view="library">Kitaplık</button>
             <button class="nav-item" data-view="downloads">İndirmeler<span class="badge hidden" data-count></span></button>
+            <button class="nav-item" data-view="follow">Takip<span class="badge hidden" data-follow-count></span></button>
             <button class="nav-item" data-view="settings">Ayarlar</button>
             <div class="side-coll" id="libCollections"></div>
             <button class="side-storage" id="libSideStorage"></button>
@@ -96,6 +97,15 @@
                     <button class="pill float-only" data-float-toggle>Üstte göster</button>
                 </div>
                 <div id="downloadsView"></div>
+            </section>
+
+            <!-- ============ TAKİP ============ -->
+            <section class="view" id="view-follow">
+                <div class="view-head">
+                    <span class="view-title"><span class="fw-title-mob">İndirmeler</span><span class="fw-title-desk">Takip</span></span>
+                    <button class="pill fw-add-btn" data-follow-add>+ Takibe al</button>
+                </div>
+                <div id="followView"></div>
             </section>
 
             <!-- ============ AYARLAR ============ -->

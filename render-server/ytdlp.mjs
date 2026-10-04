@@ -89,6 +89,40 @@ export function writeCookieFile(cookies) {
  * Sayfanın video bilgisini yt-dlp'ye sorar.
  * @returns {Promise<{ok: true, info: object} | {ok: false, reason: string, unsupported?: boolean}>}
  */
+/**
+ * Kanal/profil/çalma listesindeki son videolar (yalnızca liste: başlık ve adres; video açılmaz).
+ * @returns {Promise<{ok: boolean, entries?: {id: string, url: string, title: string}[], title?: string, reason?: string, login?: boolean}>}
+ */
+export async function listEntries(url, { cookies = [], limit = 15 } = {}) {
+    const tool = await findYtdlp();
+    if (!tool) return { ok: false, reason: 'yt-dlp kurulu değil', missing: true };
+    const cookieFile = writeCookieFile(cookies);
+    try {
+        const args = [...tool.args, '-J', '--flat-playlist', '--playlist-end', String(limit), '--ignore-config',
+            '--socket-timeout', '20', '--no-cache-dir', '--ies', 'default,-generic'];
+        if (cookieFile) args.push('--cookies', cookieFile);
+        args.push('--', url);
+        const r = await run(tool.cmd, args, { timeoutMs: EXTRACT_TIMEOUT_MS, maxOutput: MAX_OUTPUT });
+        if (r.code !== 0 || !r.out.trim()) {
+            const line = (r.err.match(/ERROR:[^\n]*/) || [r.err.trim().split('\n').pop() || 'bilinmeyen hata'])[0].replace(/^ERROR:\s*/, '');
+            return { ok: false, reason: line.slice(0, 300), login: /log ?in\b|sign in|cookies|private video|age.restricted|members.only/i.test(line) };
+        }
+        const info = JSON.parse(r.out);
+        const raw = info.entries ? info.entries.flatMap((e) => (e && e.entries ? e.entries : [e])) : [info];
+        const entries = raw.filter(Boolean).map((e) => ({
+            id: String(e.id || e.url || ''),
+            url: e.webpage_url || (/^https?:/.test(e.url || '') ? e.url : '') || e.original_url || '',
+            title: String(e.title || e.id || '').slice(0, 200),
+            thumb: (e.thumbnails && e.thumbnails.length ? e.thumbnails[e.thumbnails.length - 1].url : e.thumbnail) || ''
+        })).filter((e) => e.id && e.url);
+        return { ok: true, title: info.title || info.uploader || '', entries };
+    } catch (err) {
+        return { ok: false, reason: err.message };
+    } finally {
+        if (cookieFile) fs.rm(cookieFile, { force: true }, () => {});
+    }
+}
+
 export async function extractInfo(url, { cookies = [] } = {}) {
     const tool = await findYtdlp();
     if (!tool) return { ok: false, reason: 'yt-dlp kurulu değil', missing: true };

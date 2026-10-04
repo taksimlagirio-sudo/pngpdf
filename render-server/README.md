@@ -157,6 +157,27 @@ kendiliğinden buraya geçer (`POST /capture {pageUrl, mediaUrl}`):
   (`USE_CHROME=0` ile kapatılır). Termux'taki Chromium'un H.264 desteği cihaza göre değişebilir.
 - Kayıtlar `render-server/.captures/` klasöründe tutulur (`CAPTURE_DIR`); uygulama dosyayı alınca silinir.
 
+## Takip: yayını bekle, zamanla, kanalı takip et
+
+Uygulamada İndirmeler → **Takip** (masaüstünde soldaki **Takip**). Hepsi sunucuda çalışır; telefon ya da
+uygulama kapalıyken de sürer.
+
+- **Yayını bekle:** sayfa seçtiğin sıklıkta (1–30 dk) yoklanır; canlı yayın açıldığı an kayıt başlar,
+  yayın bitince (ya da süre sınırında) dosya kaydedilir. "Her yayını" seçiliyse yayın kapanıp yeniden
+  açıldığında yine kaydedilir. İstersen yalnızca belirli gün ve saatlerde bakılır.
+- **Zamanla:** belirli saatte başlat, belirli saatte bitir (5 dk erken başlar, 10 dk geç biter); bir kez,
+  her gün, hafta içi ya da her hafta.
+- **Kanalı takip et:** kanal/profil/çalma listesindeki yeni videolar (yt-dlp gerekir) bulunur ve
+  istersen seçtiğin kalitede sunucuya indirilir. İlk bakışta eski videolar indirilmez.
+
+Kayıtlar ve inen videolar Kitaplık → **Sunucum**'da görünür, 7 gün saklanır. Takip listesi `.watches.json`
+dosyasında durur.
+
+**Bildirimler:** takip eklerken "Bildirim gönder" açıksa uygulama bildirim izni ister; sunucu yayın
+başlayınca, kayıt bitince ve yeni video gelince telefonuna bildirim gönderir (Web Push, telefon kilitliyken
+de gelir). Bunun için sunucunun internete çıkabilmesi yeterli; anahtarlar `.push-keys.json` dosyasında
+kendiliğinden oluşur.
+
 ## Reklam engelleme
 
 Sunucunun açtığı tüm sayfalarda (tarama, "kendim dokunayım", açıp kaydet) reklam ve izleme

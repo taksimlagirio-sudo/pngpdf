@@ -12,7 +12,7 @@ const SPEED_WINDOW_MS = 5000;
 
 const jobs = new Map();
 const listeners = new Set();
-let filter = 'all';
+let filter = 'running';
 let wakeLock = null;
 let renderQueued = false;
 let ticker = null;
@@ -555,6 +555,7 @@ export function initDownloads({ onNavigate, onDetect } = {}) {
         const act = btn.dataset.jobAct;
         if (act === 'filter') {
             filter = btn.dataset.value;
+            if (currentView !== 'downloads') navigate('downloads');
             return render();
         }
         if (act === 'conc') {
@@ -751,43 +752,48 @@ function renderFull(list) {
         .sort((a, b) => (b.finishedAt || b.createdAt) - (a.finishedAt || a.createdAt));
     const conc = getPrefs().concurrency || 3;
 
-    if (!list.length) {
-        return `<div class="empty">Henüz indirme yok.<br>Algıla'ya bir bağlantı yapıştırın; videolar, yayınlar ve
-            canlı kayıtlar burada görünür.</div>${concRow(conc)}`;
-    }
-
-    const segs = [
-        ['all', 'Tümü', list.length],
-        ['running', 'Sürüyor', active.length + queued.length],
-        ['done', 'Bitti', finished.length]
-    ];
+    const failed = finished.filter((j) => j.status === 'error');
+    const history = finished.filter((j) => j.status !== 'error' && j.status !== 'pending-save');
+    const pending = finished.filter((j) => j.status === 'pending-save');
     const summaryParts = [`${active.length} iş sürüyor`];
     if (queued.length) summaryParts.push(`${queued.length} sırada`);
 
-    let html = `
-        <div class="dl-summary"><span>${summaryParts.join(' · ')}</span><span class="mono">${speedText(totalSpeed(active))}</span></div>
-        <div class="seg">${segs.map(([key, label, n]) =>
-            `<button class="${filter === key ? 'on' : ''}" data-job-act="filter" data-value="${key}">${label} · ${n}</button>`).join('')}</div>
+    let html = `${downloadsTabs(filter === 'done' ? 'done' : 'running')}
+        ${active.length || queued.length ? `<div class="dl-summary"><span>${summaryParts.join(' · ')}</span><span class="mono">${speedText(totalSpeed(active))}</span></div>` : ''}
         <div class="dl-list">`;
 
     if (filter !== 'done') {
         html += active.map(renderActive).join('');
         html += queued.map((job, i) => renderQueuedJob(job, active.length + i + 1)).join('');
-        if (filter === 'running' && !active.length && !queued.length) html += '<div class="empty">Süren indirme yok.</div>';
-    }
-    const failed = finished.filter((j) => j.status === 'error');
-    const history = finished.filter((j) => j.status !== 'error');
-    if (filter !== 'running' && failed.length) {
-        html += `<div class="dl-group">İnmeyenler · ${failed.length}</div>`;
-        html += failed.map(renderFailed).join('');
-    }
-    if (filter !== 'running' && history.length) {
-        html += `<div class="dl-group">Geçmiş</div>`;
+        html += pending.map(renderFinished).join('');
+        if (failed.length) {
+            html += `<div class="dl-group">İnmeyenler · ${failed.length}</div>`;
+            html += failed.map(renderFailed).join('');
+        }
+        if (!active.length && !queued.length && !failed.length && !pending.length) {
+            html += `<div class="empty">Süren indirme yok.<br>Algıla'ya bir bağlantı yapıştırın; videolar, yayınlar ve canlı kayıtlar burada görünür.</div>`;
+        }
+    } else {
         html += history.map(renderFinished).join('');
+        if (!history.length) html += '<div class="empty">Biten indirme yok.</div>';
     }
-    if (filter === 'done' && !finished.length) html += '<div class="empty">Biten indirme yok.</div>';
     html += `</div>${concRow(conc)}`;
     return html;
+}
+
+/** İndirmeler'in üst sekmeleri: İşler · Takip · Geçmiş (Takip ayrı ekrandır). */
+let followCount = 0;
+export function setFollowCount(n) {
+    if (n === followCount) return;
+    followCount = n;
+    render();
+}
+
+export function downloadsTabs(active) {
+    return `<div class="seg dl-tabs">
+        <button class="${active === 'running' ? 'on' : ''}" data-job-act="filter" data-value="running">İşler</button>
+        <button class="${active === 'follow' ? 'on' : ''}" data-view="follow">Takip${followCount ? ` · ${followCount}` : ''}</button>
+        <button class="${active === 'done' ? 'on' : ''}" data-job-act="filter" data-value="done">Geçmiş</button></div>`;
 }
 
 function concRow(conc) {
