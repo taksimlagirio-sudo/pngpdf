@@ -3535,3 +3535,7 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
 .scrub-prev canvas { display: block; width: 168px; height: auto; border-radius: 7px; background: #111; }
 .scrub-prev.no-frame canvas { display: none; }
 .scrub-prev span { font: 600 12.5px/1 var(--mono); color: #fff; padding: 0 4px 3px; }
+/* Tam ekranda döndür düğmesi (yalnızca tam ekranda görünür) */
+.vw-rot { display: none; position: absolute; z-index: 3; right: 58px; bottom: 26px; width: 40px; height: 40px; border: 0; border-radius: 10px; background: rgba(0,0,0,.45); color: #fff; place-items: center; cursor: pointer; }
+.vw-rot .ic { width: 20px; height: 20px; }
+.viewer.vw-player.fs .vw-rot { display: grid; bottom: calc(env(safe-area-inset-bottom) + 30px); right: 62px; }

@@ -5,6 +5,7 @@ import { canShareFiles } from './downloads.js';
 import { itemWhere } from './library-tab.js';
 import { openCast } from './cast.js';
 import { icon } from './icons.js';
+import { getPrefs } from './prefs.js';
 
 const SPEEDS = [0.5, 1, 1.5, 2, 4];
 const speedLabel = (v) => `${String(v).replace('.', ',')}×`;
@@ -271,6 +272,7 @@ export function createViewer({ toast, edit = null }) {
                     <button class="vw-skip fwd" data-v="fwd10" aria-label="10 saniye ileri">${icon('fwd10')}<span>10</span></button>
                     ${isAudio ? '' : `<div class="fd-scrub vw-scrub"><div class="fd-prog"><span></span></div></div><div class="fd-flash"></div>
                         <span class="vw-stime" data-t="stime">0:00</span>
+                        <button class="vw-rot" data-v="rotate" aria-label="Ekranı döndür">${icon('rotate')}</button>
                         <button class="vw-fs" data-v="fs" aria-label="Tam ekran">${icon(el.classList.contains('fs') ? 'minimize' : 'maximize')}</button>`}
                 </div>
                 <div class="vw-body">
@@ -406,16 +408,29 @@ export function createViewer({ toast, edit = null }) {
             try {
                 if (on && !document.fullscreenElement && el.requestFullscreen) {
                     await el.requestFullscreen({ navigationUI: 'hide' });
-                    // Yatay video yatay ekranda açılır.
-                    if (video && video.videoWidth > video.videoHeight && screen.orientation && screen.orientation.lock) {
-                        await screen.orientation.lock('landscape').catch(() => {});
-                    }
+                    // Tercih açıksa yatay video yatay ekranda açılır (yoksa döndür düğmesiyle).
+                    if (getPrefs().fsLandscape && video && video.videoWidth > video.videoHeight) await lockOrientation('landscape');
                 } else if (!on && document.fullscreenElement) {
                     if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
                     await document.exitFullscreen();
                 }
             } catch (_) { /* tam ekran izni yok: sayfa içinde tam ekran sürer */ }
             showControls();
+        }
+        /** Ekran yönü yalnızca tam ekranda kilitlenebilir; olmazsa sessizce geçilir. */
+        async function lockOrientation(kind) {
+            try {
+                if (screen.orientation && screen.orientation.lock) {
+                    await screen.orientation.lock(kind);
+                    return true;
+                }
+            } catch (_) { /* tarayıcı izin vermedi */ }
+            return false;
+        }
+        async function toggleRotate() {
+            if (!el.classList.contains('fs')) await setFullscreen(true);
+            const landscape = (screen.orientation && screen.orientation.type || '').startsWith('landscape');
+            if (!(await lockOrientation(landscape ? 'portrait' : 'landscape'))) toast('Bu tarayıcı ekranı döndürmeye izin vermiyor');
         }
         const onFsChange = () => {
             // Sistem geri tuşu/kaydırma ile tam ekrandan çıkıldıysa düzen de geri döner.
@@ -492,6 +507,7 @@ export function createViewer({ toast, edit = null }) {
             if (v === 'close') return close();
             if (!video) return;
             if (v === 'fs') return setFullscreen(!el.classList.contains('fs'));
+            if (v === 'rotate') return toggleRotate();
             showControls();
             if (v === 'play') return video.paused ? video.play().catch(() => {}) : video.pause();
             if (v === 'back10') {
