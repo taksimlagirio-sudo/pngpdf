@@ -391,16 +391,28 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
         return true;
     }
 
-    // Eski bitmiş kayıtlar diski doldurmasın.
-    setInterval(() => {
+    // Eski bitmiş kayıtlar diski doldurmasın (süre "Sunucu durumu"ndan değişir; 0: silinmez).
+    let keepDefault = KEEP_FINISHED_MS;
+    const sweep = () => {
         for (const rec of recordings.values()) {
-            if (rec.state !== 'recording' && rec.state !== 'stopping' && Date.now() - (rec.endedAt || 0) > (rec.keepMs || KEEP_FINISHED_MS)) {
+            const keep = rec.keepMs || keepDefault;
+            if (keep && rec.state !== 'recording' && rec.state !== 'stopping' && Date.now() - (rec.endedAt || 0) > keep) {
                 remove(rec.id);
             }
         }
-    }, 60 * 60 * 1000).unref();
+    };
+    setInterval(sweep, 60 * 60 * 1000).unref();
 
     return {
+        setKeepDefault(ms) {
+            keepDefault = Math.max(0, Number(ms) || 0);
+            sweep();
+        },
+        /** Bu süreden eski bitmiş kayıtlar (silinecekler): adet ve boyut. */
+        olderThan(ms) {
+            const old = [...recordings.values()].filter((r) => r.state === 'done' && !r.keepMs && Date.now() - (r.endedAt || 0) > ms);
+            return { count: old.length, bytes: old.reduce((n, r) => n + (r.bytes || 0), 0) };
+        },
         list() {
             return [...recordings.values()].map(publicState).sort((a, b) => b.startedAt - a.startedAt);
         },

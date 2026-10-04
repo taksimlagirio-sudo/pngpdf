@@ -2,10 +2,12 @@
 import { $, isHttpUrl, getRenderServer, setRenderServer, checkRenderServer, renderApi, escapeHtml } from './util.js';
 import { getPrefs, setPref, onPrefs, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch } from './downloads.js';
+import { siteSettings, openSiteSettings } from './sitesettings.js';
+import { openBookmarklet, openServerStatus } from './servertools.js';
 
 const BIG_LABELS = { ask: 'Sor', ytdlp: 'Açık', ours: 'Kapalı' };
 
-export function initSettings({ onServerChange, install, openSetup = () => {}, openStorage = () => {} }) {
+export function initSettings({ onServerChange, install, toast = () => {}, openSetup = () => {}, openStorage = () => {} }) {
     const root = $('settingsView');
     root.innerHTML = `
         <div class="settings-sec"><span class="sec-label">Görünüm</span>
@@ -37,6 +39,12 @@ export function initSettings({ onServerChange, install, openSetup = () => {}, op
                     <button class="btn-ac" id="serverSaveBtn">Kaydet ve test et</button>
                 </div>
                 <p class="hint" id="serverStatus"></p>
+                <div class="rows filled hidden" id="serverTools">
+                    <button class="row" data-set="status"><span class="row-value" style="font-weight:400">Sunucu durumu
+                        <span class="muted row-sub">Disk, süren kayıtlar, son hatalar, bakım</span></span><span class="row-chev">›</span></button>
+                    <button class="row" data-set="bookmark"><span class="row-value" style="font-weight:400">Bilgisayardan gönder
+                        <span class="muted row-sub">Tarayıcıdaki sayfayı tek tıkla buraya yolla</span></span><span class="row-chev">›</span></button>
+                </div>
             </div>
         </div>
 
@@ -95,7 +103,7 @@ export function initSettings({ onServerChange, install, openSetup = () => {}, op
         themeBox.innerHTML = [['dark', 'Koyu'], ['light', 'Açık']].map(([v, l]) =>
             `<button class="${prefs.theme === v ? 'on' : ''}" data-set="theme" data-v="${v}">${l}</button>`).join('');
         const save = effectiveSaveMode(prefs.save);
-        const remembered = Object.entries(prefs.siteMethods || {});
+        const sites = Object.keys(siteSettings());
         const bgOk = canBackgroundFetch && save !== 'disk';
         defaultsBox.innerHTML = `
             <button class="row" data-set="save"><span class="row-value" style="font-weight:400">Kaydet</span>
@@ -114,9 +122,9 @@ export function initSettings({ onServerChange, install, openSetup = () => {}, op
             <button class="row" data-set="bigSites"><span class="row-value" style="font-weight:400">Bilinen sitelerde gelişmiş bulma
                 ${sub('YouTube, Instagram, TikTok, X… kalite listesiyle')}</span>
                 <span class="muted">${BIG_LABELS[prefs.bigSites] || BIG_LABELS.ask} ›</span></button>
-            ${remembered.length ? `<button class="row" data-set="resetSites"><span class="row-value" style="font-weight:400">Hatırlanan seçimler
-                ${sub(escapeHtml(remembered.map(([d, m]) => `${d}: ${m === 'ytdlp' ? 'gelişmiş bulma' : 'sayfayı aç'}`).join(', ')))}</span>
-                <span class="muted">Sıfırla</span></button>` : ''}
+            <button class="row" data-set="sites"><span class="row-value" style="font-weight:400">Site başına ayarlar
+                ${sub(sites.length ? escapeHtml(sites.slice(0, 3).join(', ') + (sites.length > 3 ? ` +${sites.length - 3}` : '')) : 'Yöntem, kalite ve klasör')}</span>
+                <span class="row-chev">›</span></button>
             <button class="row" data-set="useYtdlp"><span class="row-value" style="font-weight:400">Diğer sitelerde de gelişmiş bulma
                 ${sub('Kapalıyken diğer sayfalar doğrudan sunucunda açılıp taranır')}</span>
                 <span class="toggle${prefs.useYtdlp ? ' on' : ''}"></span></button>
@@ -149,7 +157,9 @@ export function initSettings({ onServerChange, install, openSetup = () => {}, op
             const order = ['ask', 'ytdlp', 'ours'];
             setPref('bigSites', order[(order.indexOf(prefs.bigSites) + 1) % order.length]);
         }
-        if (key === 'resetSites') setPref('siteMethods', {});
+        if (key === 'sites') return openSiteSettings({ toast });
+        if (key === 'status') return openServerStatus({ toast });
+        if (key === 'bookmark') return openBookmarklet({ toast });
     });
     onPrefs(renderPrefs);
     renderPrefs();
@@ -224,6 +234,7 @@ export function initSettings({ onServerChange, install, openSetup = () => {}, op
     const showState = (on, text, version) => {
         chip.textContent = on ? `Bağlı${version ? ' · v' + version : ''}` : 'Kapalı';
         chip.classList.toggle('on', on);
+        $('serverTools').classList.toggle('hidden', !on);
         if (text !== undefined) status.textContent = text;
         onServerChange(on ? getRenderServer() : null, version);
     };

@@ -17,6 +17,7 @@ import { canServerRecord, startServerRecording, captureIntoJob } from './serverr
 import { attachPreview, grabFrame, probePreview } from './preview.js';
 import { subLabel, subCode, loadCues, toSrt, toVtt, shiftCues } from './subs.js';
 import { embedSubtitles } from './mp4edit.js';
+import { siteSettingFor, setSiteSetting, variantIndexFor } from './sitesettings.js';
 
 // yt-dlp'nin en güçlü olduğu büyük platformlar: bunlarda "nasıl bakalım?" diye sorulur.
 const BIG_SITES = [
@@ -183,9 +184,20 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
      */
     async function start(url) {
         const big = isHttpUrl(url) ? bigSiteOf(url) : null;
+        // Site başına ayar varsa hep onunla açılır.
+        const site = isHttpUrl(url) ? siteSettingFor(url) : null;
+        if (site && site.method === 'remote' && canRemote()) {
+            entryUrl = url;
+            if (remote) remote.close();
+            remote = openRemoteOverlay(url, { onPick: (u) => analyze(u), shortUrl, onClose: () => { remote = null; } });
+            return;
+        }
+        if (site && site.method === 'page') return analyze(url, { noExtract: true });
+        if (site && (site.method === 'ytdlp' || (site.method === 'auto' && big))) return analyze(url, { useExtract: true });
+        if (site) return analyze(url);
         if (!big || !(await ytdlpAvailable())) return analyze(url);
         const prefs = getPrefs();
-        const method = (prefs.siteMethods || {})[big[0]] || prefs.bigSites;
+        const method = prefs.bigSites;
         if (method === 'ytdlp') return analyze(url, { useExtract: true });
         if (method === 'ours') return analyze(url, { noExtract: true });
         askMethod(url, big);
@@ -212,7 +224,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         resultBox.querySelectorAll('[data-method]').forEach((btn) => btn.addEventListener('click', () => {
             const method = btn.dataset.method;
             if (resultBox.querySelector('[data-remember]').checked) {
-                setPref('siteMethods', { ...(getPrefs().siteMethods || {}), [domain]: method });
+                setSiteSetting(domain, { method: method === 'ytdlp' ? 'ytdlp' : 'page' });
             }
             analyze(url, method === 'ytdlp' ? { useExtract: true } : { noExtract: true });
         }, { once: true }));
@@ -438,6 +450,13 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             autoHops = 0;
             render();
             showPreview();
+            // Site ayarındaki kalite seçilir.
+            const site = siteSettingFor(entryUrl || url);
+            const variants = result.details.variants || [];
+            if (site && site.quality !== 'best' && variants.length > 1) {
+                const idx = variantIndexFor(variants, site.quality);
+                if (idx !== ui.variant) pickVariant(idx);
+            }
             if (result.target === 'page') probeLinks(mySeq);
             rememberResult(entryUrl);
         } catch (err) {
@@ -1094,6 +1113,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         ].join('');
         const videos = rows || foot ? `<div class="pr-videos">${videosHead}<div class="pr-list">${rows}${foot}</div></div>` : '';
         const first = shown.find((l) => !l.unreachable) || shown[0];
+        const report = !links.length && (d.trace || []).length;
 
         resultBox.innerHTML = `
             <div class="pr-top">
@@ -1101,7 +1121,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 <span class="pr-top-label">Sonuç</span>
             </div>
             <div class="pr-titlebox">
-                <div class="page-title">${escapeHtml(d.title || shortUrl(info.url))}</div>
+                ${report ? `<div class="page-title">Video bulunamadı</div><div class="rp-url">${escapeHtml(shortUrl(info.url))}</div>`
+                    : `<div class="page-title">${escapeHtml(d.title || shortUrl(info.url))}</div>`}
                 <div class="chips-row">${links.length ? `<span class="chip-ok">✓ ${found}</span>` : ''}${d.blockedAds
                     ? `<span class="chip-mt">${d.blockedAds} reklam engellendi</span>` : ''}</div>
             </div>
@@ -1110,9 +1131,9 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 ${photosPage ? '<div class="photos-slot pr-photos"></div>' : ''}
             </div>
             ${d.fromYtdlp ? `<button class="btn-ghost" data-act="rescan" style="height:46px">Bulunanlar doğru değil mi? Sayfayı başka yöntemle tara</button>` : ''}
-            ${warningsHtml()}
+            ${report ? reportHtml() : warningsHtml()}
             ${captureHtml(!links.length)}
-            ${canRemote() ? `<button class="btn-ghost" data-act="remote" style="height:46px">Sayfayı aç, kendim dokunayım</button>` : ''}
+            ${canRemote() && !report ? `<button class="btn-ghost" data-act="remote" style="height:46px">Sayfayı aç, kendim dokunayım</button>` : ''}
             ${onFollow && canRemote() ? '<button class="btn-ghost" data-act="follow" style="height:46px">Bu sayfayı takibe al</button>' : ''}
             ${first || photosPage ? `<div class="result-bar">
                 <button class="btn-ghost" data-act="photos-all" data-bar-photos hidden></button>
@@ -1131,6 +1152,39 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     function shortTitle(text) {
         return text.length > 26 ? text.slice(0, 24).trim() + '…' : text;
+    }
+
+    /* ---------------- Neden bulunamadı (rapor) ---------------- */
+
+    const TRACE_ORDER = ['page', 'scripts', 'server', 'play', 'ytdlp'];
+    const secText = (ms) => `${Math.max(0.1, ms / 1000).toFixed(1).replace('.', ',')} sn`;
+
+    function traceSteps() {
+        return [...(info.details.trace || [])].sort((a, b) => TRACE_ORDER.indexOf(a.key) - TRACE_ORDER.indexOf(b.key));
+    }
+
+    function reportHtml() {
+        const steps = traceSteps();
+        const login = steps.some((t) => t.note === 'sayfa giriş istiyor');
+        const tips = [
+            canRemote() ? ['remote', 'Kendim dokunayım ile aç', 'Sayfa senin dokunuşlarınla oynatılır, istekler yakalanır'] : null,
+            canRemote() ? ['remote', 'Siteye giriş yap', login ? 'Sayfa giriş istiyor; bir kez giriş yapman yeter' : 'Video üyelere açıksa'] : null,
+            ['focus-url', 'Videonun sayfasını dene', 'Liste ya da ana sayfa değil, videonun kendi sayfası'],
+            getRenderServer() ? null : ['setup', 'Kendi sunucunu kur', 'Sayfa gerçek bir tarayıcıda açılır, çok daha fazla site çalışır']
+        ].filter(Boolean);
+        return `<div class="rp">
+            <div class="rp-steps">${steps.map((t) => `<div class="rp-step ${t.state}">
+                <span class="rp-ic">${t.state === 'ok' ? '✓' : t.state === 'fail' ? '✕' : '–'}</span>
+                <span class="rp-main"><b>${escapeHtml(t.label)}</b><small>${[t.ms ? secText(t.ms) : '', escapeHtml(t.note)].filter(Boolean).join(' · ')}</small></span></div>`).join('')}</div>
+            <span class="sec-label">Önerilen adımlar</span>
+            <div class="rows filled">${tips.map(([act, l, sub]) => `<button class="row" data-act="${act}"><span class="row-value" style="font-weight:400">${l}<span class="muted row-sub">${sub}</span></span><span class="row-chev">›</span></button>`).join('')}</div>
+            <button class="rp-copy" data-act="copy-report">Raporu kopyala</button></div>`;
+    }
+
+    function reportText() {
+        return [`İndirici · video bulunamadı`, info.url, new Date().toLocaleString('tr-TR'), '',
+            ...traceSteps().map((t) => `${t.state === 'ok' ? '✓' : t.state === 'fail' ? '✕' : '–'} ${t.label}${t.ms ? ' · ' + secText(t.ms) : ''}${t.note ? ' · ' + t.note : ''}`),
+            ...(info.warnings.length ? ['', ...info.warnings] : [])].join('\n');
     }
 
     /** Sayfada indirilebilir video bulunamadıysa: sayfadaki videoyu oynatıp kaydet. */
@@ -1239,6 +1293,18 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (act === 'setup') return openSetup ? openSetup(1) : navigate('settings');
         if (!info) return;
         if (act === 'rescan') return analyze(info.url, { noExtract: true });
+        if (act === 'focus-url') {
+            urlInput.focus();
+            urlInput.select();
+            return toast('Videonun kendi sayfasının bağlantısını yapıştır');
+        }
+        if (act === 'copy-report') {
+            navigator.clipboard.writeText(reportText()).then(() => {
+                btn.textContent = 'Rapor kopyalandı ✓';
+                btn.classList.add('done');
+            }).catch(() => toast('Kopyalanamadı'));
+            return;
+        }
         if (act === 'follow' && onFollow) return onFollow(entryUrl || info.url);
         if (act === 'photos-all' && photos) {
             photos.downloadAll();
@@ -1550,23 +1616,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             if (title && result.target !== 'page') ui.name = cleanTitle(title);
             const variants = (result.details && result.details.variants) || [];
             if (variants.length) {
-                const height = (v) => v.height || (v.resolution && Number(String(v.resolution).split('x')[1])) || 0;
-                if (quality === 'audio') {
-                    const audioOnly = variants.findIndex((v) => v.audioOnly || /mp4a|opus/.test(v.codecs || '') && !/avc|hvc|vp0|av01/.test(v.codecs || ''));
-                    ui.variant = audioOnly >= 0 ? audioOnly : variants.length - 1;
-                } else if (quality !== 'best') {
-                    const cap = Number(quality);
-                    let best = -1;
-                    variants.forEach((v, i) => {
-                        const h = height(v);
-                        if (h && h <= cap && (best < 0 || h > height(variants[best]))) best = i;
-                    });
-                    ui.variant = best >= 0 ? best : variants.length - 1;
-                } else {
-                    let best = 0;
-                    variants.forEach((v, i) => { if (height(v) > height(variants[best])) best = i; });
-                    ui.variant = best;
-                }
+                ui.variant = variantIndexFor(variants, quality);
                 // Seçilen kalite ilk varyant değilse eldeki liste ona ait değil; indirirken okunur.
                 if (ui.variant !== 0 && ui.media) ui.media = { ...ui.media, playlist: null };
             }

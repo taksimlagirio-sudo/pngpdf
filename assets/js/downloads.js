@@ -4,6 +4,7 @@ import { $, formatSize, escapeHtml, saveBlob, hms, formatLeft, waitForNetwork } 
 import { getPrefs, setPref, onPrefs } from './prefs.js';
 import { openRemoteOverlay } from './remote.js';
 import { libAdd, libUpdate } from './library.js';
+import { siteSettingFor } from './sitesettings.js';
 
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -382,8 +383,10 @@ async function keepInLibrary(job) {
     const exported = job.saveMode === 'downloads';
     job.libIds = [];
     for (const f of files) {
+        const site = siteSettingFor(src.page || src.media || f.url || '');
         const item = await libAdd(f.blob, {
-            name: f.name, rec: job.kind === 'rec' || Boolean(job.serverRec), page: src.page || '', media: src.media || f.url || '', exported
+            name: f.name, rec: job.kind === 'rec' || Boolean(job.serverRec), page: src.page || '', media: src.media || f.url || '', exported,
+            extra: site && site.folder ? { collections: [site.folder] } : {}
         }).catch(() => null);
         if (item) job.libIds.push(item.id);
     }

@@ -178,6 +178,25 @@ başlayınca, kayıt bitince ve yeni video gelince telefonuna bildirim gönderir
 de gelir). Bunun için sunucunun internete çıkabilmesi yeterli; anahtarlar `.push-keys.json` dosyasında
 kendiliğinden oluşur.
 
+## Bilgisayardan gönder (yer imi düğmesi)
+
+Uygulamada Ayarlar → Kendi sunucum → **Bilgisayardan gönder** ekranındaki adresi (`/yerimi?k=…`)
+bilgisayarda aç ve "İndirici'ye gönder" düğmesini yer imleri çubuğuna sürükle. Bir video sayfasında bu
+düğmeye tıklayınca adres sunucuya bırakılır; açık olan İndirici (telefon ya da masaüstü) birkaç saniye
+içinde alıp algılamayı başlatır, kapalıysa bildirim gelir. Düğme yalnızca bağlantı bırakabilen ayrı bir
+anahtar taşır (`.inbox.json`); sunucu token'ı yer imine yazılmaz. Bilgisayarın sunucuya ulaşması için
+sunucu `HOST=0.0.0.0` ile (aynı Wi-Fi) ya da Tailscale üzerinden açık olmalı.
+
+## Sunucu durumu ve bakım
+
+Ayarlar → Kendi sunucum → **Sunucu durumu**: disk kullanımı, süren kayıt, bekleyen takipler, bu hafta
+inenler, son hatalar ve en büyük kayıtlar. Buradan "eski kayıtları sil" süresi seçilir (kapalı / 7 / 30 /
+90 gün, `.server-settings.json`) ve sunucu yeniden başlatılabilir.
+
+**Telefon açılınca kendiliğinden başlat (Termux):** Play Store ya da F-Droid'den *Termux:Boot*
+uygulamasını kurup bir kez aç, sonra Termux'ta `sh render-server/kur-otomatik.sh` çalıştır. Sunucu her
+açılışta arka planda başlar (kayıt: `~/indirici.log`). Kaldırmak için `sh render-server/kur-otomatik.sh kaldir`.
+
 ## Reklam engelleme
 
 Sunucunun açtığı tüm sayfalarda (tarama, "kendim dokunayım", açıp kaydet) reklam ve izleme
@@ -211,6 +230,11 @@ siteye kaçarsa (tıklama ele geçirme) videonun sayfasına geri dönülür ve o
 | POST | `/capture` `{pageUrl, mediaUrl, kind, name}` | Videoyu açıp hızlandırılmış oynatarak kaydeder |
 | GET / POST | `/capture/:id/shot`, `/capture/:id/action` | Video başlamazsa sayfanın görüntüsü / kullanıcının dokunuşu |
 | GET / POST / DELETE | `/capture`, `/capture/:id`, `/capture/:id/stop`, `/capture/:id/file` | `/record` ile aynı |
+| GET | `/status` | Sunucu durumu (disk, kayıtlar, takipler, son hatalar) |
+| POST | `/status/settings` `{keepDays}` · `/status/restart` | Eski kayıt silme süresi · yeniden başlatma |
+| GET | `/inbox?after=…` | Bilgisayardan gönderilen bağlantılar |
+| GET | `/yerimi?k=…` , `/gonder?k=…&u=…` | Yer imi sayfası ve gönderme ucu (token yerine gönderme anahtarı) |
+| POST | `/audio/analyze` , `/audio/export` `{source, …}` | Ses: dalga biçimi/sessizlik, MP3/M4A dışa aktarma (ffmpeg gerekir) |
 
 Token `Authorization: Bearer <token>` başlığıyla ya da `?token=` parametresiyle gönderilir.
 

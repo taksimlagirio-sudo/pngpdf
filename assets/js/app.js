@@ -5,6 +5,7 @@ import { initDownloads, setCurrentView, setFloatOpen, getJobs } from './download
 import { initDetectTab } from './detect-tab.js';
 import { initImagesTab } from './images.js';
 import { initSettings } from './settings.js';
+import { startInbox } from './servertools.js';
 import { openSetup, parsePairLink, redeemPair } from './setup.js';
 import { initLibraryTab } from './library-tab.js';
 import { initFollow } from './follow.js';
@@ -166,6 +167,7 @@ libraryTab = initLibraryTab({ toast, viewer, onMerge: (items) => editor.merge(it
 
 settingsTab = initSettings({
     install,
+    toast,
     openStorage: () => libraryTab.openStorage(),
     openSetup: showSetup,
     onServerChange(server, version) {
@@ -184,6 +186,15 @@ settingsTab = initSettings({
 });
 
 restoreServerRecordings();
+
+// Bilgisayardan (yer imi düğmesiyle) gönderilen bağlantı gelince algılama başlar.
+startInbox({
+    onLink(url) {
+        navigate('detect');
+        detectTab.prefill(url, true, { shared: true });
+        toast('Bilgisayardan bağlantı geldi');
+    }
+});
 // Telefon uygulamayı alta alınca sayfayı dondurabilir ya da kapatabilir; kayıtlar sunucuda sürer.
 // Öne gelince sunucudaki kayıtlarla yeniden eşitlenir (eksik olanlar eklenir, bitenler iner).
 document.addEventListener('visibilitychange', () => {

@@ -13,10 +13,11 @@ const DEFAULTS = {
     libKeep: true,        // indirilenlerin bir kopyası Kitaplık'ta da tutulur
     libAutoClean: false,  // galeriye/İndirilenler'e kaydedilenler 7 gün sonra Kitaplık'tan kaldırılır
     libStyle: 'grid',
-    libSync: false,       // kitaplık kendi sunucun üzerinden cihazlar arasında eşitlenir     // Kitaplık görünümü: grid | wall | list
+    libSync: false,       // kitaplık kendi sunucun üzerinden cihazlar arasında eşitlenir
     fullGalleries: true,  // Resimler: bilinen sitelerde galerinin tamamı ve tam boyut (sunucuda gallery-dl)
     bigSites: 'ask',      // TikTok, Instagram, YouTube…: 'ask' (sor) | 'ytdlp' | 'ours' (kendi yöntemimiz)
-    siteMethods: {}       // "bu site için hatırla": { 'tiktok.com': 'ytdlp' | 'ours' }
+    siteMethods: {},      // (eski) "bu site için hatırla"; siteSettings'e taşınır
+    siteSettings: {}      // site başına: { 'ornek.com': { method, quality, folder } }
 };
 
 let prefs = { ...DEFAULTS };

@@ -9,3 +9,5 @@ node_modules/
 .watches.json
 .library/
 .audio/
+.inbox.json
+.server-settings.json
