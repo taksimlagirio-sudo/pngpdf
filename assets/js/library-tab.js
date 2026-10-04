@@ -51,7 +51,7 @@ async function serverItems() {
                 if (s.state !== 'done' || !s.fileName) continue;
                 out.push({
                     id: `s:${kind}:${s.id}`, server: true, serverKind: kind, serverId: s.id, name: s.fileName,
-                    kind: s.ext === '.m4a' ? 'audio' : 'video', rec: true, size: s.bytes || 0,
+                    kind: /m4a$/.test(s.ext || '') ? 'audio' : 'video', rec: true, size: s.bytes || 0,
                     duration: s.mediaSec || s.duration || 0, createdAt: s.endedAt || s.startedAt || Date.now(),
                     page: s.pageUrl || s.url || '', site: hostOf(s.pageUrl || s.url || ''),
                     url: `${server.url}/${kind}/${s.id}/file?token=${encodeURIComponent(server.token)}`, thumb: ''
@@ -60,6 +60,30 @@ async function serverItems() {
         } catch (_) { /* sunucu kapalı ya da eski */ }
     }
     return out;
+}
+
+/** Sunucudaki öğeleri siler (kayıt, açıp-kaydet ya da eşitlenmiş kitaplık kopyası). */
+export async function deleteServerItems(items) {
+    let ok = 0;
+    for (const it of items) {
+        const path = it.serverKind === 'library' ? `/library/item/${encodeURIComponent(it.serverId)}` : `/${it.serverKind}/${it.serverId}`;
+        try {
+            await renderApi(path, { method: 'DELETE' }, 15000);
+            ok++;
+        } catch (err) {
+            if (err.status === 404) ok++; // zaten yok
+        }
+    }
+    window.dispatchEvent(new CustomEvent('indirici:server-changed'));
+    return ok;
+}
+
+export function confirmServerDelete(items) {
+    const n = items.length;
+    const synced = items.some((i) => i.serverKind === 'library');
+    return confirm(`${n === 1 ? `"${items[0].name}"` : `${n} dosya`} sunucundan silinsin mi?\n${synced
+        ? 'Eşitlenmiş kopya diğer cihazlardan da kalkar; bu cihazda indirilmiş olanlar kalır.'
+        : 'Sunucudaki dosya geri gelmez.'}`);
 }
 
 function hostOf(url) {
@@ -72,6 +96,8 @@ function hostOf(url) {
 
 export function initLibraryTab({ toast, viewer, onMerge = null }) {
     const root = $('libraryView');
+    // Sunucudaki bir dosya silinince (oynatıcıdan da) liste tazelenir.
+    window.addEventListener('indirici:server-changed', () => refresh({ server: true }).catch(() => {}));
     const ui = { source: 'all', type: null, query: '', searching: false, selected: null, collection: null, picking: false, picked: new Set() };
     const desktop = () => window.matchMedia('(min-width: 960px)').matches;
     let items = [];
@@ -306,6 +332,7 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
                 <button class="btn-ghost" data-l="insp-edit"${it.server ? ' disabled' : ''}>Düzenle</button>
                 <button class="btn-ghost" data-l="insp-export">Klasöre aktar</button>
                 <button class="btn-ghost" data-l="insp-share">Paylaş</button>
+                <button class="btn-ghost danger" data-l="insp-delete">${it.server ? 'Sunucudan sil' : 'Sil'}</button>
             </div>
             <div class="lib-keys"><span><kbd>Boşluk</kbd> önizle</span><span><kbd>Enter</kbd> aç</span><span><kbd>E</kbd> düzenle</span><span><kbd>Del</kbd> sil</span></div>`;
     }
@@ -418,14 +445,21 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
             return onMerge(list);
         }
         if (act === 'pick-delete') {
-            const list = pickedItems().filter((i) => !i.server);
-            if (!list.length) return;
+            const picked = pickedItems();
+            const list = picked.filter((i) => !i.server);
+            const remote = picked.filter((i) => i.server);
+            if (!picked.length) return;
             const only = list.filter((i) => !i.exportedAt).length;
-            if (!confirm(`${list.length} öğe kitaplıktan silinsin mi?${only ? `\n${only} tanesi yalnızca burada; silinirse geri gelmez.` : ''}`)) return;
-            libRemove(list.map((i) => i.id)).then(() => {
+            const lines = [
+                list.length ? `${list.length} öğe bu cihazın kitaplığından${only ? ` (${only} tanesi yalnızca burada)` : ''}` : '',
+                remote.length ? `${remote.length} öğe sunucundan` : ''
+            ].filter(Boolean);
+            if (!confirm(`Silinsin mi?\n${lines.join('\n')}\nSilinenler geri gelmez.`)) return;
+            Promise.all([list.length ? libRemove(list.map((i) => i.id)) : null, remote.length ? deleteServerItems(remote) : null]).then(() => {
                 ui.picking = false;
                 ui.picked.clear();
-                toast(`${list.length} öğe silindi`);
+                toast(`${picked.length} öğe silindi`);
+                if (remote.length) refresh({ server: true });
             });
             return;
         }
@@ -447,6 +481,14 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
         if (act === 'insp-edit' && selectedItem()) return viewer.edit(selectedItem(), visible.filter((i) => i.kind === 'photo' && !i.server));
         if (act === 'insp-export' && selectedItem()) return viewer.toGallery(selectedItem());
         if (act === 'insp-share' && selectedItem()) return viewer.share(selectedItem());
+        if (act === 'insp-delete' && selectedItem()) {
+            const it = selectedItem();
+            return viewer.remove(it).then((done) => {
+                if (!done) return;
+                ui.selected = null;
+                if (it.server) refresh({ server: true });
+            });
+        }
         if (act === 'coll-clear') ui.collection = null;
         if (act === 'feed') {
             const list = filtered().filter((i) => (!ui.type || typeOf(i) === ui.type) && isVisual(i));

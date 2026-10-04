@@ -2,7 +2,7 @@
 import { escapeHtml, formatSize, clock, saveBlob } from './util.js';
 import { libFile, libRemove, libUpdate, libAdd, saveProgress } from './library.js';
 import { canShareFiles } from './downloads.js';
-import { itemWhere } from './library-tab.js';
+import { itemWhere, deleteServerItems, confirmServerDelete } from './library-tab.js';
 import { openCast } from './cast.js';
 import { icon } from './icons.js';
 import { getPrefs } from './prefs.js';
@@ -209,8 +209,10 @@ export function createViewer({ toast, edit = null }) {
 
     async function remove(item) {
         if (item.server) {
-            toast('Sunucudaki dosyayı sunucunda sil');
-            return false;
+            if (!confirmServerDelete([item])) return false;
+            await deleteServerItems([item]);
+            toast('Sunucudan silindi');
+            return true;
         }
         const note = item.exportedAt ? '' : '\nBu dosya yalnızca burada; silinirse geri gelmez.';
         if (!confirm(`"${item.name}" kitaplıktan silinsin mi?${note}`)) return false;
