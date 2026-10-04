@@ -5,6 +5,7 @@ import { getPrefs, setPref, onPrefs } from './prefs.js';
 import { openRemoteOverlay } from './remote.js';
 import { libAdd, libUpdate } from './library.js';
 import { siteSettingFor } from './sitesettings.js';
+import { icon } from './icons.js';
 
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -1040,7 +1041,7 @@ function renderQueuedJob(job, n) {
                 <span class="hint">Sırada · bir indirme bitince başlar</span>
             </div>
             ${btn(job, 'now', 'Şimdi başlat', 'text" style="color:var(--act)')}
-            ${btn(job, 'cancel', '✕', 'text')}
+            ${btn(job, 'cancel', icon('close'), 'text')}
         </div>`;
 }
 
@@ -1068,7 +1069,7 @@ function renderFinished(job) {
     } else if (job.status === 'cancelled' && job.run) {
         btns.push(btn(job, 'retry', 'Tekrar dene'));
     }
-    btns.push(btn(job, 'dismiss', '✕', 'text'));
+    btns.push(btn(job, 'dismiss', icon('close'), 'text'));
     const thumb = job.status === 'error'
         ? '<span class="thumb err" style="width:52px;height:52px;border-radius:11px">!</span>'
         : thumbHtml(job);
@@ -1098,7 +1099,7 @@ function renderAside(list) {
         }
         if (job.rec) {
             const elapsed = recElapsed(job);
-            return `<button class="mini-card rec" data-view="downloads"><div class="mini-top"><span>● ${escapeHtml(job.name)}</span>
+            return `<button class="mini-card rec" data-view="downloads"><div class="mini-top"><span>${icon('record')} ${escapeHtml(job.name)}</span>
                 <span class="mono" style="color:var(--er)">${hms(elapsed)}</span></div>
                 <span class="mini-sub">${formatSize(job.bytes)}${job.rec.limitSec ? ' · ' + hms(job.rec.limitSec - elapsed) + ' kaldı' : ''}</span></button>`;
         }

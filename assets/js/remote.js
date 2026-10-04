@@ -3,6 +3,7 @@
 // otomatik geçilemeyen adımlar böyle elle geçilir; bu sırada gelen medya canlı listelenir.
 import { escapeHtml, renderApi, renderBlob, getRenderServer } from './util.js';
 import { rememberManifests } from './detect.js';
+import { icon } from './icons.js';
 
 const FRAME_DELAY_MS = 500;
 
@@ -63,7 +64,7 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
                     <div class="rv-title-box"><div class="rv-title">Sayfaya dokun</div>
                         <div class="rv-url">${escapeHtml(where)}<span class="rv-desk"> · sunucunda açık</span></div></div>
                     <div class="rv-head-btns">
-                        <button class="rv-btn rv-desk" data-r="back">← Geri</button>
+                        <button class="rv-btn rv-desk" data-r="back">${icon('back')} Geri</button>
                         <button class="rv-btn rv-desk" data-r="reload">↻ Yenile</button>
                         <button class="rv-btn" data-r="close">Kapat</button>
                     </div>
@@ -77,7 +78,7 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
                 <div class="remote-controls rv-mob">
                     <button class="rv-btn" data-r="up" title="Yukarı kaydır">↑</button>
                     <button class="rv-btn" data-r="down" title="Aşağı kaydır">↓</button>
-                    <button class="rv-btn" data-r="back">← Geri</button>
+                    <button class="rv-btn" data-r="back">${icon('back')} Geri</button>
                     <button class="rv-btn" data-r="reload">↻ Yenile</button>
                 </div>
                 <div class="remote-type">

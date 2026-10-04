@@ -3479,3 +3479,39 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
 .paste-hint { font-size: 12.5px; color: var(--mt); line-height: 1.45; }
 .recent-head { display: flex; align-items: center; justify-content: space-between; }
 .follow-entry { margin-top: 2px; }
+
+/* ---- İkonlar (assets/js/icons.js) ---- */
+.ic { display: inline-block; width: 1.15em; height: 1.15em; flex: none; vertical-align: -0.2em; }
+.back-btn .ic, .vw-x .ic, .fd-x .ic { width: 20px; height: 20px; vertical-align: middle; }
+.vw-play .ic { width: 26px; height: 26px; }
+.vw-skip { display: grid; place-items: center; padding: 8px; }
+.vw-skip .ic { width: 32px; height: 32px; grid-area: 1 / 1; filter: drop-shadow(0 1px 3px rgba(0,0,0,.6)); }
+.vw-skip span { grid-area: 1 / 1; font: 700 9.5px/1 inherit; margin-top: 3px; }
+.vw-tv { display: inline-flex; align-items: center; gap: 6px; }
+.vw-tv .ic { width: 16px; height: 16px; }
+.vw-audio-art .ic { width: 64px; height: 64px; stroke-width: 1.25; }
+.vw-chips button b .ic, .ed-tools button b .ic, .km-main b .ic, .km-extra b .ic { width: 22px; height: 22px; }
+.vw-actions button span .ic, .fd-rail span .ic { width: 20px; height: 20px; }
+.km-main .km-play .ic { width: 30px; height: 30px; }
+.cs-ic .ic { width: 20px; height: 20px; }
+.lib-ph .ic { width: 30px; height: 30px; stroke-width: 1.5; }
+.lib-rplay .ic, .lib-insp-play .ic { width: 16px; height: 16px; margin-left: 2px; }
+.lib-feed-btn { display: inline-flex; align-items: center; gap: 8px; }
+.fd-paused .ic { width: 30px; height: 30px; margin-left: 3px; }
+.fd-flash { display: inline-flex; align-items: center; gap: 8px; }
+.fd-flash .ic { width: 20px; height: 20px; }
+.rp-ic .ic, .sv-err-ic .ic { width: 14px; height: 14px; stroke-width: 2.25; }
+.sv-err-ic.file .ic { width: 13px; height: 13px; stroke-width: 1.75; }
+.mg-grip .ic { width: 18px; height: 18px; vertical-align: middle; }
+.mg-arrows button { display: grid; place-items: center; }
+.mg-arrows button .ic { width: 14px; height: 14px; stroke-width: 2.25; }
+.ph-btns .ic { width: 18px; height: 18px; }
+.clip-badge .ic { width: 12px; height: 12px; }
+.dl-btn.text .ic { width: 18px; height: 18px; vertical-align: middle; }
+.paste-row .recent-btn { display: grid; place-items: center; }
+.paste-row .recent-btn .ic { width: 20px; height: 20px; }
+.follow-entry-label { display: flex; flex-direction: column; padding-left: 48px; position: relative; }
+.row-ic { position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; border-radius: 10px; background: var(--acs); color: var(--act); display: grid; place-items: center; }
+.row-ic .ic { width: 20px; height: 20px; }
+[data-theme-toggle] .ic { width: 18px; height: 18px; }
+.theme-btn-side { display: inline-flex; align-items: center; gap: 8px; }

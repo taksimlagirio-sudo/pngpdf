@@ -3,6 +3,7 @@ import { escapeHtml, formatSize, clock, isHttpUrl, getRenderServer, renderApi } 
 import { analyzeUrl } from './detect.js';
 import { variantIndexFor } from './sitesettings.js';
 import { getPrefs } from './prefs.js';
+import { icon } from './icons.js';
 
 const QUALITIES = [['best', 'En iyi'], ['1080', '1080p'], ['720', '720p'], ['audio', 'Sadece ses']];
 const PLAYLIST = /[?&]list=|\/playlist|\/liste\/|\/@[^/]+\/?(videos)?$|\/channel\/|\/c\/|\/user\/|\/sets\//i;
@@ -72,7 +73,7 @@ export function openBulk({ text = '', enqueue, toast, navigate }) {
         const total = ok.reduce((n, r) => n + describe(r)[1], 0);
         if (!el.querySelector('.bk')) {
             el.innerHTML = `<div class="bk">
-                <div class="wz-top"><button class="back-btn" data-b="close" aria-label="Kapat">←</button><span>Toplu ekle</span></div>
+                <div class="wz-top"><button class="back-btn" data-b="close" aria-label="Kapat">${icon('back')}</button><span>Toplu ekle</span></div>
                 <textarea class="input bk-text" data-b-text spellcheck="false" placeholder="Her satıra bir bağlantı yapıştır (video, sayfa ya da çalma listesi)"></textarea>
                 <div class="bk-dyn"></div></div><div class="ed-bar bk-bar"></div>`;
         }
@@ -84,12 +85,12 @@ export function openBulk({ text = '', enqueue, toast, navigate }) {
                 <div class="bk-rows">${st.rows.map((row, i) => {
                     const [meta] = describe(row);
                     const title = row.title || hostPath(row.url);
-                    const icon = row.state === 'ok' ? '<span class="bk-ok">✓</span>' : row.state === 'error' ? '<span class="bk-err">✕</span>' : '<span class="bk-wait"></span>';
+                    const mark = row.state === 'ok' ? `<span class="bk-ok">${icon('check')}</span>` : row.state === 'error' ? `<span class="bk-err">${icon('close')}</span>` : '<span class="bk-wait"></span>';
                     return `<div class="bk-row ${row.state}">
                         <span class="bk-th" style="${row.thumb ? `background-image:url('${escapeHtml(row.thumb)}')` : ''}"></span>
                         <span class="bk-main"><b>${row.items ? 'Çalma listesi: ' : ''}${escapeHtml(title)}</b>
                             <small>${row.state === 'error' ? escapeHtml(row.error) : row.state === 'ok' ? escapeHtml(meta) : 'Bakılıyor…'}</small></span>
-                        ${icon}<button class="bk-x" data-b="remove" data-i="${i}" aria-label="Çıkar">✕</button></div>`;
+                        ${mark}<button class="bk-x" data-b="remove" data-i="${i}" aria-label="Çıkar">${icon('close')}</button></div>`;
                 }).join('')}</div>
                 ${st.rows.length ? `<span class="sec-label">Hepsine aynı kalite</span>
                 <div class="seg">${QUALITIES.map(([k, l]) => `<button class="${st.quality === k ? 'on' : ''}" data-b="quality" data-v="${k}">${l}</button>`).join('')}</div>` : ''}`;

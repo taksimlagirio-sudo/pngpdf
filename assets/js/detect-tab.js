@@ -18,6 +18,7 @@ import { attachPreview, grabFrame, probePreview } from './preview.js';
 import { subLabel, subCode, loadCues, toSrt, toVtt, shiftCues } from './subs.js';
 import { embedSubtitles } from './mp4edit.js';
 import { siteSettingFor, setSiteSetting, variantIndexFor } from './sitesettings.js';
+import { icon } from './icons.js';
 
 // yt-dlp'nin en güçlü olduğu büyük platformlar: bunlarda "nasıl bakalım?" diye sorulur.
 const BIG_SITES = [
@@ -356,7 +357,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     function followRow() {
         if (!onFollow || !getRenderServer()) return '';
-        return `<button class="row follow-entry" data-act="open-follow"><span class="row-value" style="font-weight:600">📡 Yayın takibi
+        return `<button class="row follow-entry" data-act="open-follow"><span class="row-value follow-entry-label" style="font-weight:600"><span class="row-ic">${icon('broadcast')}</span>Yayın takibi
             <span class="muted" style="display:block;font-size:12px;font-weight:400">Bir yayın açıldıkça kendiliğinden kaydet · zamanla · kanal takibi</span></span>
             <span class="row-chev">›</span></button>`;
     }
@@ -1207,7 +1208,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
         resultBox.innerHTML = `
             <div class="pr-top">
-                <button class="back-btn" data-act="back" aria-label="Geri">←</button>
+                <button class="back-btn" data-act="back" aria-label="Geri">${icon('back')}</button>
                 <span class="pr-top-label">Sonuç</span>
             </div>
             <div class="pr-titlebox">
@@ -1264,7 +1265,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         ].filter(Boolean);
         return `<div class="rp">
             <div class="rp-steps">${steps.map((t) => `<div class="rp-step ${t.state}">
-                <span class="rp-ic">${t.state === 'ok' ? '✓' : t.state === 'fail' ? '✕' : '–'}</span>
+                <span class="rp-ic">${icon(t.state === 'ok' ? 'check' : t.state === 'fail' ? 'close' : 'minus')}</span>
                 <span class="rp-main"><b>${escapeHtml(t.label)}</b><small>${[t.ms ? secText(t.ms) : '', escapeHtml(t.note)].filter(Boolean).join(' · ')}</small></span></div>`).join('')}</div>
             <span class="sec-label">Önerilen adımlar</span>
             <div class="rows filled">${tips.map(([act, l, sub]) => `<button class="row" data-act="${act}"><span class="row-value" style="font-weight:400">${l}<span class="muted row-sub">${sub}</span></span><span class="row-chev">›</span></button>`).join('')}</div>

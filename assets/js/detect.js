@@ -445,7 +445,7 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
         if (result.details.links.length === 0 && ytdlpReason) result.warnings.push(`Gelişmiş bulma alamadı: ${ytdlpReason}`);
         if (result.details.links.length === 0) {
             result.warnings.push('Sayfa kendi sunucunda çalıştırıldı, oynat düğmesine de basıldı ama medya isteği ' +
-                'görülmedi. Sayfa birkaç tıklama ya da onay istiyorsa aşağıdaki "👆 Sayfayı aç, kendim dokunayım" ' +
+                'görülmedi. Sayfa birkaç tıklama ya da onay istiyorsa aşağıdaki "Sayfayı aç, kendim dokunayım" ' +
                 'ile kendin geç. Yayın kapalıysa, giriş gerekiyorsa, WebRTC ile geliyorsa veya DRM korumalıysa bulunamaz.');
         }
     } catch (err) {

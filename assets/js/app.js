@@ -14,6 +14,7 @@ import { createViewer } from './viewer.js';
 import { createEditor } from './editor.js';
 import { restoreServerRecordings } from './serverrec.js';
 import { canFloat, toggleFloatingBar, onFloatStateChange } from './floatbar.js';
+import { icon } from './icons.js';
 
 let settingsTab = null; // Ayarlar açılınca sayaçları tazelemek için
 let libraryTab = null;
@@ -29,9 +30,9 @@ function applyTheme(theme) {
     else delete document.documentElement.dataset.theme;
     document.querySelector('meta[name="theme-color"]').content = light ? '#F3F1EC' : '#121110';
     document.querySelectorAll('[data-theme-toggle]').forEach((btn) => {
-        btn.textContent = btn.classList.contains('theme-btn-side')
-            ? `${light ? '☾' : '☀'}  Tema: ${light ? 'Açık' : 'Koyu'}`
-            : light ? '☾' : '☀';
+        btn.innerHTML = btn.classList.contains('theme-btn-side')
+            ? `${icon(light ? 'moon' : 'sun')} Tema: ${light ? 'Açık' : 'Koyu'}`
+            : icon(light ? 'moon' : 'sun');
     });
 }
 applyTheme(getPrefs().theme);

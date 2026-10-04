@@ -2,6 +2,7 @@
 // yapılır (telefon kapalıyken de); burası listeyi, ayarları ve gelen uyarıları gösterir.
 import { $, escapeHtml, formatSize, clock, getRenderServer, renderApi, isHttpUrl } from './util.js';
 import { downloadsTabs, setFollowCount } from './downloads.js';
+import { icon } from './icons.js';
 
 const QUALITIES = [['best', 'En iyi'], ['1080', '1080p'], ['720', '720p']];
 const EVERY_LIVE = [1, 5, 15, 30];
@@ -302,7 +303,7 @@ export function initFollow({ navigate, toast }) {
             return render();
         }
         root.innerHTML = `<div class="fw-detail">
-            <div class="wz-top"><button class="back-btn" data-f="back" aria-label="Geri">←</button><span>${escapeHtml(w.name)}</span></div>
+            <div class="wz-top"><button class="back-btn" data-f="back" aria-label="Geri">${icon('back')}</button><span>${escapeHtml(w.name)}</span></div>
             ${isStream(w) ? streamCard(w) : ''}
             ${panelHtml(w, { head: !isStream(w) })}
             ${w.newCount ? `<button class="btn-ghost" data-f="seen" data-id="${w.id}">Yenileri görüldü say</button>` : ''}</div>`;
@@ -369,7 +370,7 @@ export function initFollow({ navigate, toast }) {
             form = settingsRows({ type: a.type, ...a.draft });
         }
         root.innerHTML = `<div class="fw-add">
-            <div class="wz-top"><button class="back-btn" data-f="cancel-add" aria-label="Geri">←</button><span>${titles[a.type]}</span></div>
+            <div class="wz-top"><button class="back-btn" data-f="cancel-add" aria-label="Geri">${icon('back')}</button><span>${titles[a.type]}</span></div>
             <input class="input fw-url" type="url" data-add-url placeholder="Yayın ya da kanal sayfasının adresi" value="${escapeHtml(a.url)}" autocomplete="off">
             <div class="seg">${[['live', 'Yayını bekle'], ['schedule', 'Zamanla'], ['channel', 'Kanal']].map(([k, l]) => `<button class="${a.type === k ? 'on' : ''}" data-f="add-type" data-v="${k}">${l}</button>`).join('')}</div>
             ${banner}
@@ -584,7 +585,7 @@ export function initFollow({ navigate, toast }) {
             el.dataset.kind = ev.kind;
             el.dataset.watch = ev.watchId;
             el.innerHTML = `<i></i><span><b>${escapeHtml(ev.title)}</b><small>${escapeHtml(ev.body)}</small></span>
-                <button data-a="go">${action}</button><button data-a="x" aria-label="Kapat">✕</button>`;
+                <button data-a="go">${action}</button><button data-a="x" aria-label="Kapat">${icon('close')}</button>`;
             alertBox.prepend(el);
             setTimeout(() => el.remove(), 12000);
         }

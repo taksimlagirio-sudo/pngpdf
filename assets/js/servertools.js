@@ -1,6 +1,7 @@
 // Kendi sunucunla ilgili ekranlar: "Bilgisayardan gönder" (yer imi düğmesi), gelen bağlantılar ve
 // "Sunucu durumu" (disk, süren kayıt, takipler, son hatalar, bakım, yeniden başlatma).
 import { escapeHtml, formatSize, clock, getRenderServer, renderApi } from './util.js';
+import { icon } from './icons.js';
 
 function overlay(cls) {
     const el = document.createElement('div');
@@ -40,7 +41,7 @@ export function openBookmarklet({ toast = () => {} } = {}) {
             shown = `${u.host}${u.pathname}`;
         } catch (_) { /* bekleniyor */ }
         el.innerHTML = `<div class="bm-wrap">
-            <div class="wz-top"><button class="back-btn" data-b="close" aria-label="Kapat">←</button><span>Bilgisayardan gönder</span></div>
+            <div class="wz-top"><button class="back-btn" data-b="close" aria-label="Kapat">${icon('back')}</button><span>Bilgisayardan gönder</span></div>
             <p class="bm-lead">Bilgisayarda bir video sayfasındayken tek tıkla İndirici'ye gönder. Bağlantı bu telefonda ve masaüstü uygulamada algılanır.</p>
             <div class="bm-demo"><div class="bm-bar"><span>Haberler</span><span>E-posta</span><span class="bm-chip">⇩ İndirici'ye gönder</span></div>
                 <div class="bm-page"><i></i><i></i><i></i></div></div>
@@ -205,8 +206,8 @@ export function openServerStatus({ toast = () => {} } = {}) {
 
     function errorsHtml() {
         return `<div class="sv-sec"><span class="sec-label">Son hatalar</span>${st.errors.length
-            ? `<div class="sv-list">${st.errors.map((e) => `<div class="sv-err"><span class="sv-err-ic">!</span><span><b>${escapeHtml(e.title)}</b><small>${escapeHtml([e.where, when(e.at)].filter(Boolean).join(' · '))}</small></span></div>`).join('')}</div>`
-            : '<div class="sv-list"><div class="sv-err ok"><span class="sv-err-ic">✓</span><span><b>Hata yok</b><small>Son zamanlarda sorun çıkmadı</small></span></div></div>'}</div>`;
+            ? `<div class="sv-list">${st.errors.map((e) => `<div class="sv-err"><span class="sv-err-ic">${icon('alert')}</span><span><b>${escapeHtml(e.title)}</b><small>${escapeHtml([e.where, when(e.at)].filter(Boolean).join(' · '))}</small></span></div>`).join('')}</div>`
+            : `<div class="sv-list"><div class="sv-err ok"><span class="sv-err-ic">${icon('check')}</span><span><b>Hata yok</b><small>Son zamanlarda sorun çıkmadı</small></span></div></div>`}</div>`;
     }
 
     function maintHtml() {
@@ -226,19 +227,19 @@ export function openServerStatus({ toast = () => {} } = {}) {
     function biggestHtml() {
         if (!st.biggest.length) return '';
         return `<div class="sv-sec sv-wide"><span class="sec-label">En büyük kayıtlar</span><div class="sv-list">${st.biggest.map((b) =>
-            `<div class="sv-err"><span class="sv-err-ic file">▶</span><span><b>${escapeHtml(b.name)}</b><small>${formatSize(b.bytes)} · ${ago(b.endedAt)}</small></span></div>`).join('')}</div></div>`;
+            `<div class="sv-err"><span class="sv-err-ic file">${icon('film')}</span><span><b>${escapeHtml(b.name)}</b><small>${formatSize(b.bytes)} · ${ago(b.endedAt)}</small></span></div>`).join('')}</div></div>`;
     }
 
     function draw() {
         if (!st) {
-            el.innerHTML = `<div class="sv-wrap"><div class="wz-top"><button class="back-btn" data-v="close" aria-label="Kapat">←</button><span>Sunucu durumu</span></div>
+            el.innerHTML = `<div class="sv-wrap"><div class="wz-top"><button class="back-btn" data-v="close" aria-label="Kapat">${icon('back')}</button><span>Sunucu durumu</span></div>
                 <p class="sv-hint">${escapeHtml(error || 'Yükleniyor…')}</p></div>`;
             return;
         }
         const ab = st.adblock || {};
         const abWeek = Date.now() - ab.since < 7 * 86400000;
         el.innerHTML = `<div class="sv-wrap">
-            <div class="wz-top"><button class="back-btn" data-v="close" aria-label="Kapat">←</button><span>Sunucu durumu</span>
+            <div class="wz-top"><button class="back-btn" data-v="close" aria-label="Kapat">${icon('back')}</button><span>Sunucu durumu</span>
                 <button class="btn-ghost sv-restart" data-v="restart"${restarting ? ' disabled' : ''}>${restarting ? 'Başlıyor…' : 'Yeniden başlat'}</button></div>
             <div class="sv-head${error ? ' off' : ''}"><i></i><div><b>${error ? 'Ulaşılamıyor' : 'Çalışıyor'}</b>
                 <small>${escapeHtml(error || [since(st.uptime), `v${st.version}`, st.host].join(' · '))}</small></div></div>

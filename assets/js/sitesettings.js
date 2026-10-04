@@ -3,6 +3,7 @@
 import { escapeHtml } from './util.js';
 import { getPrefs, setPref } from './prefs.js';
 import { libList } from './library.js';
+import { icon } from './icons.js';
 
 export const METHODS = [['auto', 'Otomatik'], ['ytdlp', 'Gelişmiş bulma'], ['remote', 'Kendim dokunayım']];
 export const QUALITIES = [['best', 'En iyi'], ['1080', '1080p'], ['720', '720p']];
@@ -100,7 +101,7 @@ export function openSiteSettings({ toast = () => {} } = {}) {
         if (sel && !all[sel]) sel = domains[0] || '';
         const cur = sel ? all[sel] : null;
         el.innerHTML = `<div class="ss-wrap">
-            <div class="wz-top"><button class="back-btn" data-s="close" aria-label="Kapat">←</button><span>Site başına ayarlar</span>
+            <div class="wz-top"><button class="back-btn" data-s="close" aria-label="Kapat">${icon('back')}</button><span>Site başına ayarlar</span>
                 <button class="btn-ghost ss-add" data-s="add">+ Site</button></div>
             <p class="ss-note">Bu sitelerden gelen bağlantılar hep buradaki ayarlarla açılır.</p>
             ${adding ? `<form class="ss-form" data-s-form><input class="input" name="d" placeholder="ornek.com ya da bir bağlantı" autocomplete="off" autocapitalize="off" required>
