@@ -3,6 +3,7 @@
 import { $, escapeHtml, formatSize, clock, getRenderServer, renderApi, isHttpUrl } from './util.js';
 import { downloadsTabs, setFollowCount } from './downloads.js';
 import { icon } from './icons.js';
+import { confirmSheet } from './sheet.js';
 
 const QUALITIES = [['best', 'En iyi'], ['1080', '1080p'], ['720', '720p']];
 const EVERY_LIVE = [1, 5, 15, 30];
@@ -86,11 +87,20 @@ function intervalText(w) {
     return t;
 }
 
+/** Site yanıt vermiyorsa: nedeni, yeni aralık, "Şimdi dene". */
+function backoffCard(w) {
+    if ((w.backoff || 1) <= 1 || w.state === 'unreachable') return '';
+    const every = w.every || (w.type === 'channel' ? 30 : 5);
+    return `<div class="fw-warn">${icon('alert')}<div><b>Site yanıt vermiyor</b>
+        <small>${w.error ? `${escapeHtml(w.error)}. ` : ''}Siteyi yormamak için ${w.effectiveEvery || every * w.backoff} dk’da bir bakılıyor (normalde ${every} dk). Düzelince kendiliğinden eski aralığa döner.</small>
+        <button class="btn-ghost" data-f="check" data-id="${w.id}">Şimdi dene</button></div></div>`;
+}
+
 /** Sıklık seçiminin altındaki bilgi. */
 function everyHint(w) {
     const every = w.every || (w.type === 'channel' ? 30 : 5);
-    if (every <= 1) return '<p class="fw-hint warn">1 dakikada bir bakmak siteye yük bindirir ve engellenme riskini artırır. Yayın saatini biliyorsan "Zamanla" daha iyi; bilmiyorsan 5 dk önerilir.</p>';
-    return '<p class="fw-hint">Bakışlar sayfanın normal bir ziyareti gibidir ve saat başına denk gelmesin diye biraz kaydırılır. Site yanıt vermezse aralık kendiliğinden uzar, düzelince geri döner; ikisinde de haber verilir.</p>';
+    if (every <= 1) return `<div class="fw-hint warn">${icon('alert')}<small>1 dk siteyi yorar ve engellenme riskini artırır. Yayın saatini biliyorsan "Zamanla" daha iyi; bilmiyorsan 5 dk önerilir.</small></div>`;
+    return `<div class="fw-hint">${icon('info')}<small>Her bakış sayfanın normal bir ziyaretidir; saat başına denk gelmesin diye biraz kaydırılır. Site yanıt vermezse aralık kendiliğinden uzar, düzelince geri döner.</small></div>`;
 }
 
 const kindTag = (w) => (w.type === 'channel' ? w.kind || 'kanal' : w.type === 'schedule' ? 'zamanlı' : 'yayın');
@@ -324,6 +334,7 @@ export function initFollow({ navigate, toast }) {
         }
         root.innerHTML = `<div class="fw-detail">
             <div class="wz-top"><button class="back-btn" data-f="back" aria-label="Geri">${icon('back')}</button><span>${escapeHtml(w.name)}</span></div>
+            ${backoffCard(w)}
             ${isStream(w) ? streamCard(w) : ''}
             ${panelHtml(w, { head: !isStream(w) })}
             ${w.newCount ? `<button class="btn-ghost" data-f="seen" data-id="${w.id}">Yenileri görüldü say</button>` : ''}</div>`;
@@ -505,7 +516,7 @@ export function initFollow({ navigate, toast }) {
         }
         if (f === 'seen' && w) api(`/watch/${id}`, { seenAll: true }).then(load).catch(() => {});
         if (f === 'remove' && w) {
-            if (!confirm(`"${w.name}" takipten çıkarılsın mı?`)) return;
+            if (!(await confirmSheet({ title: 'Takipten çıkarılsın mı?', text: `"${w.name}" artık izlenmez. Daha önce kaydedilenler kitaplıkta kalır.`, danger: true, confirm: 'Takipten çıkar' }))) return;
             await api(`/watch/${id}`, null, 'DELETE').catch((err) => toast(err.message));
             ui.detail = null;
             ui.selected = null;

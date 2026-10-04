@@ -4,22 +4,20 @@ import { getPrefs, setPref, onPrefs, SAVE_LABELS, CONN_LABELS } from './prefs.js
 import { effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch } from './downloads.js';
 import { siteSettings, openSiteSettings } from './sitesettings.js';
 import { openBookmarklet, openServerStatus } from './servertools.js';
+import { icon } from './icons.js';
+import { libUsage } from './library.js';
+import { formatSize } from './util.js';
 
 const BIG_LABELS = { ask: 'Sor', ytdlp: 'Açık', ours: 'Kapalı' };
 
 export function initSettings({ onServerChange, install, toast = () => {}, openSetup = () => {}, openStorage = () => {} }) {
     const root = $('settingsView');
     root.innerHTML = `
-        <div class="settings-sec"><span class="sec-label">Görünüm</span>
-            <div class="seg" data-part="theme"></div></div>
+        <div class="st-card" data-part="srvcard"></div>
+        <div class="st-groups" data-part="groups"></div>
 
-        <div class="settings-sec"><span class="sec-label">Varsayılan indirme</span>
-            <div class="rows filled" data-part="defaults"></div></div>
-
-        <div class="settings-sec"><span class="sec-label">Bulma</span>
-            <div class="rows filled" data-part="finding"></div></div>
-
-        <div class="settings-sec">
+        <div class="st-sub" data-sub="conn">
+            <div class="wz-top"><button class="back-btn" data-set="sub-back" aria-label="Geri">${icon('back')}</button><span>Sunucu bağlantısı</span></div>
             <div class="settings-sec-head"><span class="sec-label">Kendi sunucum</span>
                 <span class="status-chip" data-part="chip">Kapalı</span></div>
             <div class="server-panel">
@@ -39,17 +37,12 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
                     <button class="btn-ac" id="serverSaveBtn">Kaydet ve test et</button>
                 </div>
                 <p class="hint" id="serverStatus"></p>
-                <div class="rows filled hidden" id="serverTools">
-                    <button class="row" data-set="status"><span class="row-value" style="font-weight:400">Sunucu durumu
-                        <span class="muted row-sub">Disk, süren kayıtlar, son hatalar, bakım</span></span><span class="row-chev">›</span></button>
-                    <button class="row" data-set="bookmark"><span class="row-value" style="font-weight:400">Bilgisayardan gönder
-                        <span class="muted row-sub">Tarayıcıdaki sayfayı tek tıkla buraya yolla</span></span><span class="row-chev">›</span></button>
-                </div>
             </div>
         </div>
 
-        <div class="settings-sec">
-            <div class="settings-sec-head"><span class="sec-label">Reklam engelleme</span>
+        <div class="st-sub" data-sub=""adblock">
+            <div class="wz-top"><button class="back-btn" data-set="sub-back" aria-label="Geri">${icon('back')}</button><span>Reklam engelleme</span></div>
+            <div class="settings-sec-head"><span class="sec-label">Durum</span>
                 <span class="status-chip" id="adblockChip">Sunucu yok</span></div>
             <div class="server-panel">
                 <span class="hint" id="adblockText">Kendi sunucun ayarlanınca, sunucunun açtığı sayfalarda reklamlar,
@@ -71,8 +64,9 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             </div>
         </div>
 
-        <div class="settings-sec">
-            <div class="settings-sec-head"><span class="sec-label">Sitelere girişler</span>
+        <div class="st-sub" data-sub=""logins">
+            <div class="wz-top"><button class="back-btn" data-set="sub-back" aria-label="Geri">${icon('back')}</button><span>Sitelere girişler</span></div>
+            <div class="settings-sec-head"><span class="sec-label">Kayıtlı girişler</span>
                 <span class="status-chip" id="loginsChip">Sunucu yok</span></div>
             <div class="server-panel">
                 <span class="hint" id="loginsText">Bir siteye "Kendim dokunayım" ekranında bir kez giriş yaparsan giriş
@@ -92,52 +86,74 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             SAMPLE-AES) yayınlar desteklenmez. Dosyalar bir aracıya yüklenmez; indirme tarayıcınızda ya da kendi
             sunucunuzda yapılır.</p>`;
 
-    const themeBox = root.querySelector('[data-part="theme"]');
-    const defaultsBox = root.querySelector('[data-part="defaults"]');
     const chip = root.querySelector('[data-part="chip"]');
-    const findingBox = root.querySelector('[data-part="finding"]');
-    const sub = (text) => `<span class="muted row-sub">${text}</span>`;
+    const cardBox = root.querySelector('[data-part="srvcard"]');
+    const groupsBox = root.querySelector('[data-part="groups"]');
+    // Sunucu ve kitaplık bilgisi (satırlardaki değerler için).
+    const srv = { on: false, version: '', reach: true, blocked: null, adOn: false, logins: null, usage: 0 };
+
+    /** Alt sayfa (sunucu bağlantısı, reklam engelleme, sitelere girişler). */
+    function openSub(name) {
+        root.classList.toggle('sub-open', Boolean(name));
+        root.querySelectorAll('.st-sub').forEach((el) => el.classList.toggle('open', el.dataset.sub === name));
+        window.scrollTo(0, 0);
+    }
+
+    const row = (key, ic, label, { sub = '', value = '', toggle = null, disabled = false } = {}) => `
+        <button class="row st-row${disabled ? ' disabled' : ''}" data-set="${key}"${disabled ? ' disabled' : ''}>
+            <span class="row-tile">${icon(ic)}</span>
+            <span class="row-value">${label}${sub ? `<span class="muted row-sub">${sub}</span>` : ''}</span>
+            ${toggle === null ? `${value ? `<span class="st-val">${escapeHtml(value)}</span>` : ''}<span class="row-chev">${icon('chevronRight')}</span>`
+                : `<span class="toggle${toggle ? ' on' : ''}"></span>`}</button>`;
+    const group = (title, rows) => `<div class="st-group"><span class="sec-label">${title}</span><div class="rows filled">${rows.join('')}</div></div>`;
 
     function renderPrefs() {
         const prefs = getPrefs();
-        themeBox.innerHTML = [['dark', 'Koyu'], ['light', 'Açık']].map(([v, l]) =>
-            `<button class="${prefs.theme === v ? 'on' : ''}" data-set="theme" data-v="${v}">${l}</button>`).join('');
+        const server = getRenderServer();
+        let host = '';
+        try {
+            host = server ? new URL(server.url).host : '';
+        } catch (_) { /* geçersiz */ }
+        cardBox.innerHTML = server
+            ? `<div class="st-card-top"><span class="st-card-ic on">${icon('server')}</span>
+                <span class="st-card-t"><b>Kendi sunucum</b><small>${escapeHtml(host)}${server.url === location.origin ? ' · bu cihaz' : ''}</small></span>
+                <span class="status-chip${srv.reach ? ' on' : ''}">${srv.reach ? `Bağlı${srv.version ? ' · v' + escapeHtml(srv.version) : ''}` : 'Ulaşılamıyor'}</span></div>
+                <div class="st-card-btns"><button class="btn-ghost" data-set="status">Sunucu durumu</button><button class="btn-ghost" data-set="sub" data-v="conn">Bağlantı</button></div>`
+            : `<div class="st-card-top"><span class="st-card-ic">${icon('server')}</span>
+                <span class="st-card-t"><b>Kendi sunucum</b><small>Kapalı siteler, giriş isteyenler ve kilitliyken kayıt için</small></span>
+                <span class="status-chip">Kapalı</span></div>
+                <div class="st-card-btns"><button class="btn-ac" data-set="setup">Kurulum</button><button class="btn-ghost" data-set="sub" data-v="conn">Bağlan</button></div>`;
+
         const save = effectiveSaveMode(prefs.save);
         const sites = Object.keys(siteSettings());
         const bgOk = canBackgroundFetch && save !== 'disk';
-        defaultsBox.innerHTML = `
-            <button class="row" data-set="save"><span class="row-value" style="font-weight:400">Kaydet</span>
-                <span class="muted">${SAVE_LABELS[save]} ›</span></button>
-            <button class="row" data-set="conn"><span class="row-value" style="font-weight:400">Bağlantı yöntemi</span>
-                <span class="muted">${CONN_LABELS[prefs.conn]} ›</span></button>
-            ${getRenderServer() ? `<button class="row" data-set="serverBackground"><span class="row-value" style="font-weight:400">Arka planda indir
-                ${sub('Sunucunda iner; uygulama kapansa, geri tuşuna bassan da sürer')}</span>
-                <span class="toggle${prefs.serverBackground !== false ? ' on' : ''}"></span></button>`
-            : `<button class="row${bgOk ? '' : ' disabled'}" data-set="background" ${bgOk ? '' : 'disabled'}>
-                <span class="row-value" style="font-weight:400">Arka planda indir${canBackgroundFetch ? '' : ' (bu tarayıcıda yok)'}</span>
-                <span class="toggle${prefs.background && bgOk ? ' on' : ''}"></span></button>`}
-            <button class="row" data-set="storage"><span class="row-value" style="font-weight:400">Kitaplık ve depolama</span>
-                <span class="row-chev">›</span></button>
-            <button class="row" data-set="keepAwake"><span class="row-value" style="font-weight:400">İndirirken ekranı açık tut</span>
-                <span class="toggle${prefs.keepAwake ? ' on' : ''}"></span></button>
-            <button class="row" data-set="fsLandscape"><span class="row-value" style="font-weight:400">Tam ekranda yataya çevir
-                ${sub('Yatay videolar tam ekrana alınınca ekran kendiliğinden yatay döner')}</span>
-                <span class="toggle${prefs.fsLandscape ? ' on' : ''}"></span></button>
-`;
-        findingBox.innerHTML = `
-            <button class="row" data-set="bigSites"><span class="row-value" style="font-weight:400">Bilinen sitelerde gelişmiş bulma
-                ${sub('YouTube, Instagram, TikTok, X… kalite listesiyle')}</span>
-                <span class="muted">${BIG_LABELS[prefs.bigSites] || BIG_LABELS.ask} ›</span></button>
-            <button class="row" data-set="sites"><span class="row-value" style="font-weight:400">Site başına ayarlar
-                ${sub(sites.length ? escapeHtml(sites.slice(0, 3).join(', ') + (sites.length > 3 ? ` +${sites.length - 3}` : '')) : 'Yöntem, kalite ve klasör')}</span>
-                <span class="row-chev">›</span></button>
-            <button class="row" data-set="useYtdlp"><span class="row-value" style="font-weight:400">Diğer sitelerde de gelişmiş bulma
-                ${sub('Kapalıyken diğer sayfalar doğrudan sunucunda açılıp taranır')}</span>
-                <span class="toggle${prefs.useYtdlp ? ' on' : ''}"></span></button>
-            <button class="row" data-set="fullGalleries"><span class="row-value" style="font-weight:400">Galerilerin tamamı
-                ${sub('Resimlerde tam boyut ve tüm sayfalar')}</span>
-                <span class="toggle${prefs.fullGalleries !== false ? ' on' : ''}"></span></button>`;
+        const groups = [
+            group('Görünüm', [row('theme-cycle', prefs.theme === 'light' ? 'sun' : 'moon', 'Tema', { value: prefs.theme === 'light' ? 'Açık' : 'Koyu' })]),
+            group('İndirme', [
+                row('save', 'download', 'Kaydet', { value: SAVE_LABELS[save] }),
+                row('conn', 'globe', 'Bağlantı yöntemi', { value: CONN_LABELS[prefs.conn] }),
+                server ? row('serverBackground', 'server', 'Sunucunda indir', { sub: 'Uygulama kapansa, geri tuşuna bassan da sürer', toggle: prefs.serverBackground !== false })
+                    : row('background', 'download', 'Arka planda indir', { sub: canBackgroundFetch ? '' : 'Bu tarayıcıda yok', toggle: prefs.background && bgOk, disabled: !bgOk }),
+                row('keepAwake', 'sun', 'İndirirken ekranı açık tut', { toggle: prefs.keepAwake })
+            ]),
+            group('Bulma', [
+                row('bigSites', 'globe', 'Bilinen sitelerde gelişmiş bulma', { sub: 'YouTube, Instagram, TikTok, X…', value: BIG_LABELS[prefs.bigSites] || BIG_LABELS.ask }),
+                row('sites', 'list', 'Site başına ayarlar', { value: sites.length ? `${sites.length} site` : '' }),
+                row('useYtdlp', 'globe', 'Diğer sitelerde de gelişmiş bulma', { sub: 'Kapalıyken sayfa doğrudan sunucunda taranır', toggle: Boolean(prefs.useYtdlp) }),
+                row('fullGalleries', 'image', 'Galerilerin tamamı', { sub: 'Resimlerde tam boyut ve tüm sayfalar', toggle: prefs.fullGalleries !== false })
+            ]),
+            group('Oynatma', [row('fsLandscape', 'rotate', 'Tam ekranda yataya çevir', { sub: 'Yatay videolarda', toggle: Boolean(prefs.fsLandscape) })]),
+            server ? group('Sunucu', [
+                row('bookmark', 'laptop', 'Bilgisayardan gönder', { sub: 'Tarayıcıdaki sayfayı tek tıkla yolla' }),
+                row('sub-adblock', 'alert', 'Reklam engelleme', { value: srv.blocked === null ? '' : srv.adOn ? `${srv.blocked.toLocaleString('tr-TR')} engellendi` : 'Kapalı' }),
+                row('sub-logins', 'touch', 'Sitelere girişler', { value: srv.logins === null ? '' : srv.logins ? `${srv.logins} site` : 'Yok' }),
+                row('libSync', 'sync', 'Cihazlar arası eşitleme', { sub: 'Kitaplık sunucun üzerinden', toggle: Boolean(prefs.libSync) })
+            ]) : '',
+            group('Kitaplık', [row('storage', 'folder', 'Kitaplık ve depolama', { value: srv.usage ? formatSize(srv.usage) : '' })])
+        ];
+        groupsBox.innerHTML = groups.join('');
     }
+    libUsage().then((u) => { srv.usage = u.total; renderPrefs(); }).catch(() => {});
 
     root.addEventListener('click', (e) => {
         const btn = e.target.closest('[data-set]');
@@ -145,6 +161,13 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
         const prefs = getPrefs();
         const key = btn.dataset.set;
         if (key === 'theme') setPref('theme', btn.dataset.v);
+        if (key === 'theme-cycle') setPref('theme', prefs.theme === 'light' ? 'dark' : 'light');
+        if (key === 'sub') return openSub(btn.dataset.v);
+        if (key === 'sub-back') return openSub(null);
+        if (key === 'sub-adblock') return openSub('adblock');
+        if (key === 'sub-logins') return openSub('logins');
+        if (key === 'setup') return openSetup(1);
+        if (key === 'libSync') setPref('libSync', !prefs.libSync);
         if (key === 'storage') return openStorage();
         if (key === 'save') {
             const order = ['downloads', 'gallery', 'disk'].filter((m) =>
@@ -181,6 +204,9 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
     const adText = $('adblockText');
     const showAdblock = (health) => {
         const ab = health && health.adblock;
+        srv.blocked = ab && typeof ab.blocked === 'number' ? ab.blocked : null;
+        srv.adOn = Boolean(ab && ab.enabled);
+        renderPrefs();
         const hasStats = Boolean(ab && ab.enabled && typeof ab.blocked === 'number');
         $('adStats').classList.toggle('hidden', !hasStats);
         if (hasStats) {
@@ -214,6 +240,8 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
     const loginsList = $('loginsList');
     const showLogins = (data) => {
         const sites = (data && data.sites) || [];
+        srv.logins = data && data.enabled ? sites.length : null;
+        renderPrefs();
         loginsChip.classList.toggle('on', Boolean(data && data.enabled));
         loginsChip.textContent = !data ? 'Sunucu yok' : !data.enabled ? 'Kapalı' : sites.length ? `${sites.length} site` : 'Açık';
         loginsList.classList.toggle('hidden', !sites.length);
@@ -240,9 +268,11 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
     });
 
     const showState = (on, text, version) => {
+        srv.on = on;
+        if (version) srv.version = version;
+        if (on) srv.reach = true;
         chip.textContent = on ? `Bağlı${version ? ' · v' + version : ''}` : 'Kapalı';
         chip.classList.toggle('on', on);
-        $('serverTools').classList.toggle('hidden', !on);
         renderPrefs();
         if (text !== undefined) status.textContent = text;
         onServerChange(on ? getRenderServer() : null, version);
@@ -264,6 +294,8 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             .catch(() => {
                 chip.textContent = 'Ulaşılamıyor';
                 chip.classList.remove('on');
+                srv.reach = false;
+                renderPrefs();
             });
     } else {
         showState(false);

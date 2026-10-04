@@ -4,6 +4,7 @@ import { getPrefs, setPref, onPrefs } from './prefs.js';
 import { deviceInfo, lastSyncState, syncNow, syncedItems, fetchToDevice } from './sync.js';
 import { libList, onLibrary, libUsage, libRemove, libPersist, libClean, libUpdate, applyProgress } from './library.js';
 import { icon } from './icons.js';
+import { confirmSheet } from './sheet.js';
 
 const KIND_LABEL = { video: 'Video', photo: 'Fotoğraf', audio: 'Ses', rec: 'Kayıt', file: 'Dosya' };
 const TYPES = [['Tümü', null], ['Video', 'video'], ['Fotoğraf', 'photo'], ['Ses', 'audio'], ['Kayıt', 'rec']];
@@ -79,11 +80,12 @@ export async function deleteServerItems(items) {
 }
 
 export function confirmServerDelete(items) {
-    const n = items.length;
     const synced = items.some((i) => i.serverKind === 'library');
-    return confirm(`${n === 1 ? `"${items[0].name}"` : `${n} dosya`} sunucundan silinsin mi?\n${synced
-        ? 'Eşitlenmiş kopya diğer cihazlardan da kalkar; bu cihazda indirilmiş olanlar kalır.'
-        : 'Sunucudaki dosya geri gelmez.'}`);
+    return confirmSheet({
+        title: 'Sunucudan silinsin mi?', items, danger: true, confirm: 'Sunucudan sil',
+        text: synced ? 'Eşitlenmiş kopya diğer cihazlardan da kalkar; bir cihaza indirilmiş kopyalar kalır.'
+            : 'Dosya sunucundan kalıcı olarak silinir. Telefona daha önce indirdiğin kopya kalır.'
+    });
 }
 
 function hostOf(url) {
@@ -451,16 +453,16 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
             if (!picked.length) return;
             const only = list.filter((i) => !i.exportedAt).length;
             const lines = [
-                list.length ? `${list.length} öğe bu cihazın kitaplığından${only ? ` (${only} tanesi yalnızca burada)` : ''}` : '',
+                list.length ? `${list.length} öğe bu cihazdan${only ? ` (${only} tanesi yalnızca burada)` : ''}` : '',
                 remote.length ? `${remote.length} öğe sunucundan` : ''
             ].filter(Boolean);
-            if (!confirm(`Silinsin mi?\n${lines.join('\n')}\nSilinenler geri gelmez.`)) return;
-            Promise.all([list.length ? libRemove(list.map((i) => i.id)) : null, remote.length ? deleteServerItems(remote) : null]).then(() => {
+            confirmSheet({ title: `${picked.length} öğe silinsin mi?`, text: `${lines.join(', ')} silinecek. Silinenler geri gelmez.`, items: picked, danger: true, confirm: 'Sil' })
+                .then((ok) => ok && Promise.all([list.length ? libRemove(list.map((i) => i.id)) : null, remote.length ? deleteServerItems(remote) : null]).then(() => {
                 ui.picking = false;
                 ui.picked.clear();
                 toast(`${picked.length} öğe silindi`);
                 if (remote.length) refresh({ server: true });
-            });
+            }));
             return;
         }
         if (act === 'coll') ui.collection = ui.collection && ui.collection.kind === 'coll' && ui.collection.value === btn.dataset.v ? null : { kind: 'coll', value: btn.dataset.v, label: btn.dataset.v };
@@ -756,8 +758,9 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
             if (s === 'del') {
                 const item = (await libList()).find((i) => i.id === btn.dataset.id);
                 if (!item) return;
-                const note = item.exportedAt ? '' : '\nBu dosya yalnızca burada; silinirse geri gelmez.';
-                if (!confirm(`"${item.name}" kitaplıktan silinsin mi?${note}`)) return;
+                const ok = await confirmSheet({ title: 'Kitaplıktan silinsin mi?', items: [item], danger: true, confirm: 'Sil',
+                    text: item.exportedAt ? 'Galeriye ya da İndirilenler’e kaydettiğin kopya kalır.' : 'Bu dosya yalnızca burada; silinirse geri gelmez.' });
+                if (!ok) return;
                 await libRemove(item.id);
             }
             draw();
