@@ -388,10 +388,12 @@ export async function editMp4(blob, opts = {}, info = null) {
         }
     }
     chunks.sort((x, y) => x.time - y.time);
+    // Gömülecek altyazılar (3GPP metin: her örnek 2 bayt uzunluk + UTF-8 metin; boşluklar boş örnek).
+    const texts = (opts.textTracks || []).map((track) => buildTextSamples(track.cues || [], start, end)).map((t, i) => ({ ...t, track: opts.textTracks[i] }));
     const dataSize = chunks.reduce((n, c) => {
         for (let k = c.a; k < c.z; k++) n += c.s.t.sizes[k];
         return n;
-    }, 0);
+    }, 0) + texts.reduce((n, t) => n + t.data.length, 0);
 
     const audioOnly = sel.every((s) => s.t.handler === 'soun');
     const ftyp = box('ftyp', TEXT.encode(audioOnly ? 'M4A ' : 'isom'), w32(512), TEXT.encode(audioOnly ? 'M4A mp42isom' : 'isomiso2avc1mp41'));
@@ -413,6 +415,11 @@ export async function editMp4(blob, opts = {}, info = null) {
             pos += to - from;
             k = j;
         }
+    }
+    for (const t of texts) {
+        t.offset = pos;
+        parts.push(t.data);
+        pos += t.data.length;
     }
 
     // moov
@@ -465,14 +472,105 @@ export async function editMp4(blob, opts = {}, info = null) {
             : new Uint8Array(0);
         return box('trak', tkhd, edts, mdia);
     });
+    const video = sel.find((s) => s.t.handler === 'vide');
+    texts.forEach((t, i) => {
+        if (!t.sizes.length) return;
+        traks.push(textTrak(t, sel.length + i + 1, { width: video ? video.t.width : 640, height: video ? video.t.height : 360, use64 }));
+    });
     const mvhd = fullBox('mvhd', 0, 0, w32(0), w32(0), w32(movieScale), w32(movieDur),
         w32(0x10000), new Uint8Array([1, 0]), new Uint8Array(10),
         w32(0x10000), w32(0), w32(0), w32(0), w32(0x10000), w32(0), w32(0), w32(0), w32(0x40000000),
-        new Uint8Array(24), w32(sel.length + 1));
+        new Uint8Array(24), w32(sel.length + texts.length + 1));
     const moov = box('moov', mvhd, ...traks);
     parts.push(moov);
     return {
         blob: new Blob(parts, { type: audioOnly ? 'audio/mp4' : 'video/mp4' }),
         start, end, duration: movieDur / movieScale
     };
+}
+
+/* ---------------- Altyazı izi (tx3g) ---------------- */
+
+const LANG3 = { tr: 'tur', en: 'eng', de: 'deu', fr: 'fra', es: 'spa', it: 'ita', ar: 'ara', ru: 'rus', ja: 'jpn', ko: 'kor', zh: 'zho', pt: 'por', nl: 'nld', fa: 'fas', az: 'aze', ku: 'kur', el: 'ell' };
+
+function packLang(code) {
+    const c3 = (LANG3[String(code || '').split('-')[0].toLowerCase()] || (/^[a-z]{3}$/.test(code) ? code : 'und'));
+    const v = ((c3.charCodeAt(0) - 0x60) << 10) | ((c3.charCodeAt(1) - 0x60) << 5) | (c3.charCodeAt(2) - 0x60);
+    return new Uint8Array([(v >> 8) & 0x7f, v & 0xff]);
+}
+
+/** İpuçlarını (sn) 1000'lik zaman ölçeğinde örneklere çevirir; aralık dışı atılır, başlangıç 0'a çekilir. */
+function buildTextSamples(cues, start = 0, end = Infinity) {
+    const sizes = [];
+    const durs = [];
+    const parts = [];
+    let t = 0;
+    const push = (bytes, dur) => {
+        if (dur <= 0) return;
+        parts.push(bytes);
+        sizes.push(bytes.length);
+        durs.push(dur);
+    };
+    for (const c of cues) {
+        const a = Math.round((Math.max(c.start, start) - start) * 1000);
+        const b = Math.round((Math.min(c.end, end) - start) * 1000);
+        if (b <= a || b <= t) continue;
+        const from = Math.max(a, t);
+        if (from > t) push(new Uint8Array(2), from - t); // boşluk: metinsiz örnek
+        const text = TEXT.encode(c.text);
+        const sample = new Uint8Array(2 + text.length);
+        sample[0] = text.length >> 8;
+        sample[1] = text.length & 255;
+        sample.set(text, 2);
+        push(sample, b - from);
+        t = b;
+    }
+    // Kapanış: son satır videonun sonuna kadar ekranda kalmasın.
+    if (sizes.length) {
+        push(new Uint8Array(2), 100);
+        t += 100;
+    }
+    return { data: concat(parts), sizes, durs, duration: t };
+}
+
+function w16(v) {
+    return new Uint8Array([(v >> 8) & 255, v & 255]);
+}
+
+function textTrak(t, id, { width, height, use64 }) {
+    const ftab = box('ftab', w16(1), w16(1), new Uint8Array([5]), TEXT.encode('Serif'));
+    const tx3g = box('tx3g', new Uint8Array(6), w16(1),
+        w32(0),                          // görüntü bayrakları
+        new Uint8Array([1, 0xff]),       // yatay: orta, dikey: alt
+        new Uint8Array([0, 0, 0, 0]),    // arka plan rengi (saydam)
+        new Uint8Array(8),               // metin kutusu
+        w16(0), w16(0), w16(1), new Uint8Array([0, 18]), new Uint8Array([255, 255, 255, 255]), // stil
+        ftab);
+    const stsd = fullBox('stsd', 0, 0, w32(1), tx3g);
+    const stts = rle(t.durs);
+    const stbl = box('stbl', stsd,
+        fullBox('stts', 0, 0, w32(stts.length), ...stts.flatMap(([c, d]) => [w32(c), w32(d)])),
+        fullBox('stsz', 0, 0, w32(0), w32(t.sizes.length), ...t.sizes.map(w32)),
+        fullBox('stsc', 0, 0, w32(1), w32(1), w32(t.sizes.length), w32(1)),
+        use64 ? fullBox('co64', 0, 0, w32(1), w64(t.offset)) : fullBox('stco', 0, 0, w32(1), w32(t.offset)));
+    const minf = box('minf', fullBox('nmhd', 0, 0), box('dinf', fullBox('dref', 0, 0, w32(1), fullBox('url ', 0, 1))), stbl);
+    const hdlr = fullBox('hdlr', 0, 0, w32(0), TEXT.encode('sbtl'), new Uint8Array(12), TEXT.encode('Altyazi\0'));
+    const mdhd = fullBox('mdhd', 0, 0, w32(0), w32(0), w32(1000), w32(t.duration), packLang(t.track.language), w16(0));
+    const tkhd = fullBox('tkhd', 0, 3, w32(0), w32(0), w32(id), w32(0), w32(t.duration), new Uint8Array(8),
+        w16(0), w16(2), w16(0), w16(0),
+        w32(0x10000), w32(0), w32(0), w32(0), w32(0x10000), w32(0), w32(0), w32(0), w32(0x40000000),
+        w32(Math.round(width) * 65536), w32(Math.round(Math.min(height, 120)) * 65536));
+    return box('trak', tkhd, box('mdia', mdhd, hdlr, minf));
+}
+
+/**
+ * MP4'e altyazı izleri gömer (video yeniden kodlanmaz).
+ * @param {Blob} blob
+ * @param {{language: string, cues: {start: number, end: number, text: string}[]}[]} tracks
+ */
+export async function embedSubtitles(blob, tracks) {
+    const src = await toProgressive(blob);
+    const info = await readMp4(src);
+    const r = await editMp4(src, { start: 0, end: info.duration, textTracks: tracks }, info);
+    return new Blob([r.blob], { type: blob.type || 'video/mp4' });
 }

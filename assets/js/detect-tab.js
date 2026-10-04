@@ -1,6 +1,6 @@
 // "Algıla" ekranı: adresteki içeriği tanır, önizlemesini oynatır, seçenekleri gösterir ve
 // indirmeyi/kaydı başlatır.
-import { $, escapeHtml, isHttpUrl, formatSize, hms, getRenderServer, isServerStream, checkRenderServer } from './util.js';
+import { $, escapeHtml, isHttpUrl, formatSize, hms, getRenderServer, isServerStream, checkRenderServer, saveBlob } from './util.js';
 import { analyzeUrl, formatDuration, describeMediaPlaylist, cachedManifest } from './detect.js';
 import { downloadFile } from './video.js';
 import { downloadMerged } from './merge.js';
@@ -15,6 +15,8 @@ import { getPrefs, setPref, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { canRemote, openRemoteOverlay } from './remote.js';
 import { canServerRecord, startServerRecording, captureIntoJob } from './serverrec.js';
 import { attachPreview, grabFrame, probePreview } from './preview.js';
+import { subLabel, subCode, loadCues, toSrt, toVtt, shiftCues } from './subs.js';
+import { embedSubtitles } from './mp4edit.js';
 
 // yt-dlp'nin en güçlü olduğu büyük platformlar: bunlarda "nasıl bakalım?" diye sorulur.
 const BIG_SITES = [
@@ -66,7 +68,7 @@ const KIND_LABEL = {
 };
 const REC_LIMITS = [['Sınırsız', 0], ['30 dk', 1800], ['1 sa', 3600], ['2 sa', 7200], ['Özel', -1]];
 
-export function initDetectTab({ navigate, toast, openImages, photos = null, install = null, openSetup = null, onFollow = null }) {
+export function initDetectTab({ navigate, toast, openImages, photos = null, install = null, openSetup = null, onFollow = null, onBulk = null }) {
     const urlInput = $('detectUrl');
     const analyzeBtn = $('detectBtn');
     const statusBox = $('detectStatus');
@@ -83,6 +85,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     let autoHops = 0;
     let entryUrl = '';    // algılamanın başladığı adres (sayfadan videoya geçilse de)     // sayfadan medyaya otomatik geçişte sonsuz döngüyü engeller
     let remote = null;    // açık "kendim dokunayım" oturumu
+    let bulkMode = false; // toplu eklemede: önizleme/konum sorusu/uyarılar yok
     let preview = null;   // açık önizleme oynatıcısı
     let seq = 0;          // eski analizlerin sonucu yenisinin üstüne yazılmasın
     const thumbs = new Map(); // sayfa listesi: adres → {ok, thumb, duration, height}
@@ -92,6 +95,17 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (e.key === 'Enter') onAnalyzeClick();
     });
     $('detectPasteBtn').addEventListener('click', () => pasteAndAnalyze());
+    const bulkLink = $('detectBulkBtn');
+    if (bulkLink) bulkLink.addEventListener('click', () => onBulk && onBulk(urlInput.value));
+    // Kutuya birden çok bağlantı yapıştırılırsa toplu ekleme açılır.
+    urlInput.addEventListener('paste', (e) => {
+        const text = (e.clipboardData || window.clipboardData).getData('text');
+        if (onBulk && countLinks(text) > 1) {
+            e.preventDefault();
+            onBulk(text);
+        }
+    });
+    const countLinks = (text) => (String(text).match(/https?:\/\/[^\s<>"']+/g) || []).length;
 
     async function readClipboard() {
         if (!navigator.clipboard || !navigator.clipboard.readText) throw new Error('Bu tarayıcı panoyu okumaya izin vermiyor');
@@ -139,6 +153,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             urlInput.focus();
             return;
         }
+        if (onBulk && countLinks(text) > 1) return onBulk(text);
         const url = firstUrl(text);
         if (!isHttpUrl(url)) {
             setError('Panoda bir bağlantı yok. Önce paylaşılacak bağlantıyı kopyalayın.');
@@ -367,7 +382,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
      * `pair`: sayfada ayrı bulunan ses playlist'i (görüntüyle birleştirilecek).
      * `page`: bağlantının bulunduğu sayfa — bağlantı inmezse video o sayfayla açılıp kaydedilir.
      */
-    async function analyze(url, { pair = null, page = null, title = '', noExtract = false, useExtract = false, fromYtdlp = false } = {}) {
+    async function analyze(url, { pair = null, page = null, title = '', noExtract = false, useExtract = false, fromYtdlp = false, subtitles = null } = {}) {
         if (!isHttpUrl(url)) {
             setError('Geçerli bir http(s) adresi girin.');
             return;
@@ -398,6 +413,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             });
             if (mySeq !== seq) return;
             info = result;
+            // Sayfadan (gelişmiş bulma) gelen altyazılar seçilen videoya taşınır.
+            if (subtitles && subtitles.length && !(result.details.subtitles || []).length) result.details.subtitles = subtitles;
             ui = initialUi(result, pair);
             ui.sourcePage = page;
             // Sayfadan açılan videoya sayfanın başlığı ad olur ("videoplayback" yerine).
@@ -414,7 +431,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             if (result.target === 'page' && links.length === 1 && autoHops < 2) {
                 autoHops++;
                 return analyze(links[0].url, {
-                    pair: links[0].audioUrl || null, page: result.url, title: result.details.title || '', fromYtdlp: Boolean(links[0].fromYtdlp)
+                    pair: links[0].audioUrl || null, page: result.url, title: result.details.title || '', fromYtdlp: Boolean(links[0].fromYtdlp),
+                    subtitles: links[0].subtitles || result.details.subtitles || null
                 });
             }
             autoHops = 0;
@@ -492,7 +510,10 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             media: d.playlist ? d : result.target === 'dash' ? { duration: d.duration || 0, live: false } : null,
             audioUrl: d.audioUrl || pair || null,
             loadingVariant: false,
-            showHidden: false
+            showHidden: false,
+            // Altyazı: varsayılan seçili olan sitenin Türkçe altyazısı (varsa).
+            subs: new Set((d.subtitles || []).map((sub, i) => (/^tr/i.test(sub.language || '') && !sub.auto ? i : -1)).filter((i) => i >= 0).slice(0, 1)),
+            subMode: 'embed'
         };
     }
 
@@ -526,6 +547,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             });
             if (mySeq !== seq) return p.destroy();
             preview = p;
+            addSubtitleToggle(video, mySeq);
             const variant = currentVariant();
             if (variant) video.addEventListener('loadedmetadata', () => preview && preview.selectQuality(variant.url), { once: true });
         } catch (err) {
@@ -533,8 +555,46 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         }
     }
 
+    /** Önizlemede altyazı seçimi (Kapalı / TR / EN …). */
+    function addSubtitleToggle(video, mySeq) {
+        const list = (info.details && info.details.subtitles) || [];
+        if (!list.length) return;
+        const box = document.createElement('div');
+        box.className = 'pv-subs';
+        const shown = list.slice(0, 3);
+        box.innerHTML = `<button class="on" data-sub="-1">Kapalı</button>${shown.map((sub, i) =>
+            `<button data-sub="${i}">${escapeHtml(subCode(sub).toUpperCase())}${sub.auto ? '*' : ''}</button>`).join('')}`;
+        video.parentElement.appendChild(box);
+        const loaded = new Map();
+        box.addEventListener('click', async (e) => {
+            const b = e.target.closest('[data-sub]');
+            if (!b) return;
+            const i = Number(b.dataset.sub);
+            box.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+            for (const t of video.textTracks) t.mode = 'disabled';
+            if (i < 0) return;
+            try {
+                if (!loaded.has(i)) {
+                    const cues = await loadCues(shown[i], { mode: getPrefs().conn });
+                    if (mySeq !== seq) return;
+                    const track = document.createElement('track');
+                    track.kind = 'subtitles';
+                    track.srclang = subCode(shown[i]);
+                    track.src = URL.createObjectURL(new Blob([toVtt(cues)], { type: 'text/vtt' }));
+                    video.appendChild(track);
+                    loaded.set(i, track);
+                    await new Promise((r) => { track.addEventListener('load', r, { once: true }); setTimeout(r, 1500); });
+                }
+                loaded.get(i).track.mode = 'showing';
+            } catch (err) {
+                toast(`Altyazı açılamadı: ${err.message}`);
+            }
+        });
+    }
+
     /** İndirme kartındaki küçük resim için önizlemeden o anki kare. */
     async function currentThumb() {
+        if (bulkMode) return info.previewUrl || null;
         const video = previewBox.querySelector('video');
         return (video && await grabFrame(video)) || info.previewUrl || null;
     }
@@ -785,6 +845,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 <div class="card-pad">
                     ${qualityHtml()}
                     ${rangeHtml()}
+                    ${subsHtml()}
                     ${info.unreachable ? `<label class="field"><span class="field-label">Videonun bulunduğu sayfa (isteğe bağlı) —
                         verirsen o sayfanın çerez/oturumuyla denenir</span>
                         <input class="input" type="url" data-input="sourcePage" value="${escapeHtml(ui.sourcePage || '')}"
@@ -811,6 +872,94 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 ${body}
             </div>
             ${warningsHtml()}`;
+    }
+
+    const SUB_MODES = [['embed', 'Videoya göm'], ['srt', 'Ayrı .srt'], ['both', 'İkisi']];
+    const SUB_HINTS = {
+        embed: 'Altyazı videonun içinde gelir; oynatıcıda açılıp kapatılabilir.',
+        srt: 'Videonun yanına aynı adla .srt dosyası olarak kaydedilir.',
+        both: 'Hem videoya gömülür hem ayrı .srt olarak kaydedilir.'
+    };
+
+    function subsHtml() {
+        const list = (info.details && info.details.subtitles) || [];
+        if (!list.length) return '';
+        return `<div class="sec subs-sec"><div class="pr-head"><span class="sec-label">Altyazılar · ${list.length}</span>
+                <span class="pr-head-note">${ui.subs.size} seçili</span></div>
+            <div class="sub-list">${list.map((sub, i) => `<button class="sub-row" data-act="sub-toggle" data-i="${i}">
+                <span class="sub-check${ui.subs.has(i) ? ' on' : ''}">${ui.subs.has(i) ? '✓' : ''}</span>
+                <span class="sub-name">${escapeHtml(subLabel(sub))}</span><span class="sub-src">${sub.auto ? 'Otomatik' : 'Siteden'}</span></button>`).join('')}</div>
+            ${ui.subs.size ? `<span class="sec-label">Nasıl kaydedilsin</span>
+            <div class="seg">${SUB_MODES.map(([k, l]) => `<button class="${ui.subMode === k ? 'on' : ''}" data-act="sub-mode" data-v="${k}">${l}</button>`).join('')}</div>
+            <span class="sec-hint">${SUB_HINTS[ui.subMode]}</span>` : ''}</div>`;
+    }
+
+    /** Seçili altyazılar ve nasıl kaydedilecekleri. */
+    function subtitlePlan(fileExt) {
+        const list = (info.details && info.details.subtitles) || [];
+        const chosen = [...(ui.subs || [])].map((i) => list[i]).filter(Boolean);
+        if (!chosen.length) return null;
+        const range = ui.rangeOpen ? rangeSeconds() : null;
+        let mode = ui.subMode || 'embed';
+        // Gömme yalnızca MP4 çıktıya ve bellekteki dosyaya yapılabilir (konum seçildiyse dosya doğrudan diske yazılır).
+        const embedOk = /\.mp4$/i.test(fileExt) && effectiveSaveMode(getPrefs().save) !== 'disk';
+        if (!embedOk && mode !== 'srt') mode = 'srt';
+        return { chosen, mode, range };
+    }
+
+    /** Ayrı .srt dosyaları (küçük işler). */
+    function queueSubtitleFiles(plan, name) {
+        const conn = getPrefs().conn;
+        for (const sub of plan.chosen) {
+            const fileName = `${name}.${subCode(sub)}.srt`;
+            addJob({
+                name: fileName,
+                kind: 'file',
+                run: async (job) => {
+                    job.setDetail('Altyazı alınıyor');
+                    let cues = await loadCues(sub, { mode: conn, signal: job.signal });
+                    if (plan.range) cues = shiftCues(cues, plan.range.start, plan.range.end || Infinity);
+                    const blob = new Blob(['\ufeff' + toSrt(cues)], { type: 'application/x-subrip' });
+                    const sink = await createSink(fileName, { mode: effectiveSaveMode(getPrefs().save) === 'disk' ? 'downloads' : effectiveSaveMode(getPrefs().save), mime: 'application/x-subrip' });
+                    await sink.write(new Uint8Array(await blob.arrayBuffer()));
+                    const out = await sink.close();
+                    if (out) job.attachResult(out);
+                    job.done(`Altyazı · ${cues.length} satır`);
+                }
+            });
+        }
+    }
+
+    /** Gömme: dosya bellekte biter, altyazı izleri eklenir, sonra kaydedilir. */
+    function embedSink(plan, saveMode) {
+        return async (name, type) => {
+            const inner = await createSink(name, { mode: 'gallery', mime: type });
+            return {
+                ...inner,
+                mode: saveMode,
+                write: (chunk) => inner.write(chunk),
+                patch: (position, bytes) => inner.patch(position, bytes),
+                abort: () => inner.abort(),
+                async close() {
+                    const blob = await inner.close();
+                    let out = blob;
+                    try {
+                        const tracks = [];
+                        for (const sub of plan.chosen) {
+                            let cues = await loadCues(sub, { mode: getPrefs().conn });
+                            if (plan.range) cues = shiftCues(cues, plan.range.start, plan.range.end || Infinity);
+                            if (cues.length) tracks.push({ language: subCode(sub), cues });
+                        }
+                        if (tracks.length) out = await embedSubtitles(blob, tracks);
+                    } catch (err) {
+                        console.warn('Altyazı gömülemedi:', err);
+                        toast(`Altyazı gömülemedi: ${err.message}`);
+                    }
+                    if (saveMode !== 'gallery') saveBlob(out, name);
+                    return out;
+                }
+            };
+        };
     }
 
     function recLimitSeconds() {
@@ -1066,9 +1215,11 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
         if (act === 'analyze-link') {
             const fromPage = info && info.target === 'page';
+            const link = fromPage ? (info.details.links || []).find((l) => l.url === btn.dataset.url) : null;
             return analyze(btn.dataset.url, {
                 pair: btn.dataset.pair || null, page: fromPage ? info.url : null, title: fromPage ? info.details.title || '' : '',
-                fromYtdlp: btn.dataset.ytdlp === '1'
+                fromYtdlp: btn.dataset.ytdlp === '1',
+                subtitles: (link && link.subtitles) || (fromPage ? info.details.subtitles : null)
             });
         }
         if (act === 'capture') return startCapture(btn.dataset.url || info.url);
@@ -1111,6 +1262,11 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             renderIdle();
             return;
         }
+        if (act === 'sub-toggle') {
+            const i = Number(btn.dataset.i);
+            if (ui.subs.has(i)) ui.subs.delete(i); else ui.subs.add(i);
+        }
+        if (act === 'sub-mode') ui.subMode = btn.dataset.v;
         if (act === 'range-open') ui.rangeOpen = true;
         if (act === 'range-preset') {
             ui.rangeOpen = true;
@@ -1153,9 +1309,14 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     /** "Konum seç" yönteminde dosya konumu hemen (dokunuş geçerliyken) sorulur. */
     async function prepareSink(fileName, mime) {
-        const saveMode = effectiveSaveMode(getPrefs().save);
+        let saveMode = effectiveSaveMode(getPrefs().save);
+        // Toplu eklemede her dosya için konum sorulamaz (dokunuş tek); İndirilenler'e kaydedilir.
+        if (bulkMode && saveMode === 'disk') saveMode = 'downloads';
         let diskSink = null;
         if (saveMode === 'disk') diskSink = await createSink(fileName, { mode: 'disk', mime });
+        const plan = bulkMode ? null : subtitlePlan(fileName);
+        if (plan && plan.mode !== 'embed') queueSubtitleFiles(plan, fileName.replace(/\.[a-z0-9]{1,5}$/i, ''));
+        if (plan && plan.mode !== 'srt') return { saveMode, createSinkFor: embedSink(plan, saveMode) };
         return {
             saveMode,
             createSinkFor: (name, type) => diskSink ? Promise.resolve(diskSink) : createSink(name, { mode: saveMode, mime: type })
@@ -1241,7 +1402,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                         return downloadHlsVod({ job, videoPlaylist, audioPlaylist, name, range, mode, createSinkFor });
                     }, { mediaUrl: info.url, kind: 'video', name, saveMode, createSinkFor })
                 });
-                toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'İndirme başladı · İndirmeler');
+                if (!bulkMode) toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'İndirme başladı · İndirmeler');
                 return;
             }
             if (isHls) {
@@ -1283,7 +1444,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                             job, videoUrl: url, audioUrl, name, mode: prefs.conn, size: info.size, createSinkFor
                         }), { mediaUrl, kind: 'video', name, saveMode, createSinkFor })
                     });
-                    toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'İndirme başladı · İndirmeler');
+                    if (!bulkMode) toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'İndirme başladı · İndirmeler');
                     return;
                 }
                 addJob({
@@ -1298,8 +1459,9 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                     }), { mediaUrl, kind: info.kind, name, saveMode, createSinkFor })
                 });
             }
-            toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'İndirme başladı · İndirmeler');
+            if (!bulkMode) toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'İndirme başladı · İndirmeler');
         } catch (err) {
+            if (bulkMode) throw err;
             if (err.name !== 'AbortError') setError(err.message);
         }
     }
@@ -1373,7 +1535,50 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     renderIdle();
 
+    /**
+     * Toplu ekleme: analiz edilmiş bir sonucu (Algıla ekranını değiştirmeden) sıraya ekler.
+     * quality: 'best' | '1080' | '720' | 'audio'
+     */
+    async function enqueueResult(result, { quality = 'best', page = '', title = '' } = {}) {
+        const saved = { info, ui, entryUrl };
+        bulkMode = true;
+        try {
+            info = result;
+            ui = initialUi(result, null);
+            ui.sourcePage = page || null;
+            entryUrl = page || result.url;
+            if (title && result.target !== 'page') ui.name = cleanTitle(title);
+            const variants = (result.details && result.details.variants) || [];
+            if (variants.length) {
+                const height = (v) => v.height || (v.resolution && Number(String(v.resolution).split('x')[1])) || 0;
+                if (quality === 'audio') {
+                    const audioOnly = variants.findIndex((v) => v.audioOnly || /mp4a|opus/.test(v.codecs || '') && !/avc|hvc|vp0|av01/.test(v.codecs || ''));
+                    ui.variant = audioOnly >= 0 ? audioOnly : variants.length - 1;
+                } else if (quality !== 'best') {
+                    const cap = Number(quality);
+                    let best = -1;
+                    variants.forEach((v, i) => {
+                        const h = height(v);
+                        if (h && h <= cap && (best < 0 || h > height(variants[best]))) best = i;
+                    });
+                    ui.variant = best >= 0 ? best : variants.length - 1;
+                } else {
+                    let best = 0;
+                    variants.forEach((v, i) => { if (height(v) > height(variants[best])) best = i; });
+                    ui.variant = best;
+                }
+                // Seçilen kalite ilk varyant değilse eldeki liste ona ait değil; indirirken okunur.
+                if (ui.variant !== 0 && ui.media) ui.media = { ...ui.media, playlist: null };
+            }
+            await startDownload(true);
+        } finally {
+            bulkMode = false;
+            ({ info, ui, entryUrl } = saved);
+        }
+    }
+
     return {
+        enqueueResult,
         paste: pasteAndAnalyze,
         prefill(url, autoStart, { shared = false } = {}) {
             const link = firstUrl(url);

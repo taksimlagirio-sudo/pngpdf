@@ -1,6 +1,6 @@
 // İndirme yöneticisi: iş kuyruğu (aynı anda en fazla N iş), canlı kayıtlar, hedefe yazma
 // (İndirilenler / Galeri / Konum seç), arka plan indirme ve İndirmeler ekranı + sağ sütun + şerit.
-import { $, formatSize, escapeHtml, saveBlob, hms, formatLeft } from './util.js';
+import { $, formatSize, escapeHtml, saveBlob, hms, formatLeft, waitForNetwork } from './util.js';
 import { getPrefs, setPref, onPrefs } from './prefs.js';
 import { openRemoteOverlay } from './remote.js';
 import { libAdd, libUpdate } from './library.js';
@@ -196,6 +196,18 @@ export function addJob({ name, kind = 'file', thumb = null, run = null, now = fa
             job.detail = 'Durduruluyor, kaydediliyor...';
             if (job.hooks.stop) job.hooks.stop();
             render();
+        },
+        /** Bağlantı koptu: iş "duraklatıldı" görünür, bağlantı gelince (ya da Devam et ile) sürer. */
+        async waitNetwork() {
+            job.netPaused = true;
+            render();
+            try {
+                await waitForNetwork(job.signal, { kick: (fn) => { job.resumeNow = fn; } });
+            } finally {
+                job.netPaused = false;
+                job.resumeNow = null;
+                render();
+            }
         },
         progress(received, total) {
             if (received !== job.received) job.lastProgressAt = Date.now();
@@ -564,6 +576,7 @@ export function initDownloads({ onNavigate, onDetect } = {}) {
         }
         if (!job) return;
         if (act === 'cancel') job.cancel();
+        if (act === 'resume' && job.resumeNow) job.resumeNow();
         if (act === 'stop') job.stop();
         if (act === 'now') startNow(job);
         if (act === 'save') saveJob(job);
@@ -610,6 +623,8 @@ export function initDownloads({ onNavigate, onDetect } = {}) {
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') render();
     });
+    window.addEventListener('online', render);
+    window.addEventListener('offline', render);
 
     // Süren kayıt/indirme varken sayfa yanlışlıkla kapatılmasın.
     window.addEventListener('beforeunload', (e) => {
@@ -762,6 +777,11 @@ function renderFull(list) {
         ${active.length || queued.length ? `<div class="dl-summary"><span>${summaryParts.join(' · ')}</span><span class="mono">${speedText(totalSpeed(active))}</span></div>` : ''}
         <div class="dl-list">`;
 
+    const paused = active.filter((j) => j.netPaused);
+    if (filter !== 'done' && (paused.length || navigator.onLine === false)) {
+        const waiting = paused.length + queued.length;
+        html = html.replace('<div class="dl-list">', `<div class="net-banner"><i></i>İnternet yok${waiting ? ` · ${waiting} indirme bekliyor` : ''}</div><div class="dl-list">`);
+    }
     if (filter !== 'done') {
         html += active.map(renderActive).join('');
         html += queued.map((job, i) => renderQueuedJob(job, active.length + i + 1)).join('');
@@ -770,6 +790,7 @@ function renderFull(list) {
             html += `<div class="dl-group">İnmeyenler · ${failed.length}</div>`;
             html += failed.map(renderFailed).join('');
         }
+        if (paused.length) html += '<p class="net-note">İnen parçalar saklanır. Bağlantı gelince kaldığı parçadan sürer; baştan inmez.</p>';
         if (!active.length && !queued.length && !failed.length && !pending.length) {
             html += `<div class="empty">Süren indirme yok.<br>Algıla'ya bir bağlantı yapıştırın; videolar, yayınlar ve canlı kayıtlar burada görünür.</div>`;
         }
@@ -956,6 +977,7 @@ function renderRec(job) {
 }
 
 function renderActive(job) {
+    if (job.netPaused) return renderNetPaused(job);
     if (job.rec) return renderRec(job);
     if (job.transfer) return renderTransfer(job);
     const ratio = ratioOf(job);
@@ -982,6 +1004,24 @@ function renderActive(job) {
                 <div class="dl-sub"><span>${escapeHtml(subLeft)}</span><span>${subRight}</span></div>
                 ${job.bgId ? '<span class="dl-note"><span class="dot"></span>Arka planda · uygulama kapansa da sürer</span>' : ''}
                 <div class="dl-btns">${btns.join('')}</div>
+            </div>
+        </div>`;
+}
+
+/** Bağlantı koptu: iş duraklatıldı, bağlantı gelince kaldığı yerden sürer. */
+function renderNetPaused(job) {
+    const ratio = ratioOf(job);
+    const pct = ratio === null ? '' : Math.round(ratio * 100) + '%';
+    return `
+        <div class="dl-card net">
+            ${thumbHtml(job)}
+            <div class="dl-main">
+                <div class="dl-top"><span class="dl-name">${escapeHtml(job.name)}</span><span class="dl-pct">${pct}</span></div>
+                <span class="net-sub">Bağlantı koptu${pct ? ` · %${Math.round(ratio * 100)}'de duraklatıldı` : ''} · bağlanınca sürecek</span>
+                <div class="progress net-bar"><div style="width:${ratio === null ? 35 : ratio * 100}%"></div></div>
+                <div class="dl-sub"><span class="mono">${job.kind === 'hls' ? `${job.received} / ${job.total} parça · ${formatSize(job.bytes)}` : job.total ? `${formatSize(job.received)} / ${formatSize(job.total)}` : formatSize(job.bytes)}</span>
+                </div>
+                <div class="dl-btns">${btn(job, 'resume', 'Devam et', 'primary')}${btn(job, 'cancel', 'İptal')}</div>
             </div>
         </div>`;
 }

@@ -186,6 +186,7 @@ export async function renderExtract(url, { signal } = {}) {
         item.url = full(item.url);
         if (item.audioUrl) item.audioUrl = full(item.audioUrl);
     }
+    for (const sub of result.subtitles || []) sub.url = full(sub.url);
     return result;
 }
 
@@ -344,4 +345,35 @@ export function clock(seconds) {
     const m = Math.floor(t / 60) % 60;
     const s = String(t % 60).padStart(2, '0');
     return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
+}
+
+/** Ağ bağlantısı koptu mu (sunucu hatası değil)? */
+export function isNetworkError(err) {
+    if (!err || err.name === 'AbortError') return false;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+    return err.name === 'TypeError' || /Failed to fetch|NetworkError|network error|ERR_INTERNET|ERR_NETWORK|Load failed|zaman aşımı|timed? ?out/i.test(err.message || '');
+}
+
+/**
+ * Bağlantı gelene kadar bekler: tarayıcının "online" olayı, elle "Devam et" ya da 15 sn'de bir
+ * yapılan kontrol. İptal edilirse AbortError fırlatır.
+ */
+export function waitForNetwork(signal, { kick } = {}) {
+    return new Promise((resolve, reject) => {
+        let timer = null;
+        const done = (fn) => {
+            window.removeEventListener('online', onOnline);
+            if (signal) signal.removeEventListener('abort', onAbort);
+            clearInterval(timer);
+            fn();
+        };
+        const onOnline = () => setTimeout(() => done(resolve), 1000);
+        const onAbort = () => done(() => reject(new DOMException('Aborted', 'AbortError')));
+        window.addEventListener('online', onOnline);
+        if (signal) signal.addEventListener('abort', onAbort);
+        timer = setInterval(() => {
+            if (navigator.onLine !== false) done(resolve);
+        }, 15000);
+        if (kick) kick(() => done(resolve));
+    });
 }

@@ -7,7 +7,7 @@
 // Canlı yayında playlist yalnızca son birkaç parçayı gösterir; bu yüzden canlı yayın "kayıt" olarak
 // ele alınır: playlist düzenli aralıklarla okunur, yeni parçalar eklenir; kullanıcı durdurunca ya da
 // süre sınırı dolunca dosya kapanır.
-import { formatSize, smartFetch, fileNameFromUrl, hms, sleep } from './util.js';
+import { formatSize, smartFetch, fileNameFromUrl, hms, sleep, isNetworkError } from './util.js';
 import { Mp4Builder, initHasVideo, tsHasVideo } from './mp4mux.mjs';
 
 const MAX_PARALLEL = 4;
@@ -23,9 +23,17 @@ export function parsePlaylist(text, baseUrl) {
 
     if (isMaster) {
         const audio = {}; // GROUP-ID → [{url, name, language, isDefault}]
+        const subtitles = []; // altyazı izleri (WebVTT parça listeleri)
         for (const line of lines) {
             if (!line.startsWith('#EXT-X-MEDIA:')) continue;
             const attrs = parseAttributes(line.slice(line.indexOf(':') + 1));
+            if ((attrs.TYPE || '').toUpperCase() === 'SUBTITLES' && attrs.URI) {
+                const url = resolve(attrs.URI);
+                if (!subtitles.some((s) => s.url === url)) {
+                    subtitles.push({ url, name: attrs.NAME || '', language: attrs.LANGUAGE || '', auto: /auto|otomatik|machine/i.test(attrs.NAME || ''), hls: true });
+                }
+                continue;
+            }
             if ((attrs.TYPE || '').toUpperCase() !== 'AUDIO') continue;
             const group = attrs['GROUP-ID'] || '';
             (audio[group] = audio[group] || []).push({
@@ -64,7 +72,7 @@ export function parsePlaylist(text, baseUrl) {
             if (!prev || v.bandwidth > prev.bandwidth) byKey.set(key, v);
         }
         const variants = [...byKey.values()].sort((a, b) => (b.height - a.height) || (b.bandwidth - a.bandwidth));
-        return { type: 'master', variants, audio, audioOnly: video.length === 0 };
+        return { type: 'master', variants, audio, subtitles, audioOnly: video.length === 0 };
     }
 
     const segments = [];
@@ -272,7 +280,7 @@ async function createMuxer(sink) {
 
 /* ---------------- Parça indirme ---------------- */
 
-function createSegmentFetcher({ mode, signal }) {
+function createSegmentFetcher({ mode, signal, waitNet = null }) {
     const keyCache = new Map();
     const mapCache = new Map();
 
@@ -305,6 +313,12 @@ function createSegmentFetcher({ mode, signal }) {
             } catch (err) {
                 if (err.name === 'AbortError') throw err;
                 lastError = err;
+                // Bağlantı koptuysa deneme sayılmaz: bağlantı gelince aynı parçadan sürülür.
+                if (waitNet && isNetworkError(err)) {
+                    await waitNet();
+                    attempt--;
+                    continue;
+                }
                 await sleep(400 * attempt);
             }
         }
@@ -369,7 +383,7 @@ export async function downloadHlsVod({
     job.name = sink.name || `${name}.mp4`;
     job.canStop = true;
     const muxer = await createMuxer(sink);
-    const fetchSegment = createSegmentFetcher({ mode, signal });
+    const fetchSegment = createSegmentFetcher({ mode, signal, waitNet: () => job.waitNetwork() });
 
     let downloaded = 0;
     let nextToWrite = 0;

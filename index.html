@@ -58,7 +58,8 @@
                     <input type="url" id="detectUrl" placeholder="Bağlantıyı yapıştırın (video, .m3u8, sayfa)" autocomplete="off" inputmode="url">
                     <button class="btn-ac" id="detectBtn">Algıla</button>
                 </div>
-                <button class="paste-btn" id="detectPasteBtn">Yapıştır ve algıla</button>
+                <div class="paste-row"><button class="paste-btn" id="detectPasteBtn">Yapıştır ve algıla</button>
+                    <button class="paste-btn bulk-btn" id="detectBulkBtn">Toplu ekle</button></div>
                 <div id="detectStatus"></div>
                 <div id="detectPreview"></div>
                 <div id="detectResult"></div>
@@ -68,7 +69,7 @@
             <section class="view" id="view-images">
                 <div class="view-head">
                     <span class="view-title">Resimler</span>
-                    <button class="head-paste" data-paste>Yapıştır ve algıla</button>
+                    <button class="head-paste" data-paste aria-label="Yapıştır ve algıla"><span class="hp-long">Yapıştır ve algıla</span><span class="hp-short">Yapıştır</span></button>
                     <button class="icon-btn theme-btn-head" data-theme-toggle aria-label="Temayı değiştir"></button>
                 </div>
                 <div class="urlbar">
@@ -83,7 +84,7 @@
             <section class="view" id="view-library">
                 <div class="view-head">
                     <span class="view-title">Kitaplık</span>
-                    <button class="head-paste" data-paste>Yapıştır ve algıla</button>
+                    <button class="head-paste" data-paste aria-label="Yapıştır ve algıla"><span class="hp-long">Yapıştır ve algıla</span><span class="hp-short">Yapıştır</span></button>
                     <button class="pill" id="libSearchBtn">Ara</button>
                 </div>
                 <div id="libraryView"></div>
@@ -93,7 +94,7 @@
             <section class="view" id="view-downloads">
                 <div class="view-head">
                     <span class="view-title">İndirmeler</span>
-                    <button class="head-paste" data-paste>Yapıştır ve algıla</button>
+                    <button class="head-paste" data-paste aria-label="Yapıştır ve algıla"><span class="hp-long">Yapıştır ve algıla</span><span class="hp-short">Yapıştır</span></button>
                     <button class="pill float-only" data-float-toggle>Üstte göster</button>
                 </div>
                 <div id="downloadsView"></div>
@@ -112,7 +113,7 @@
             <section class="view" id="view-settings">
                 <div class="view-head">
                     <span class="view-title">Ayarlar</span>
-                    <button class="head-paste" data-paste>Yapıştır ve algıla</button>
+                    <button class="head-paste" data-paste aria-label="Yapıştır ve algıla"><span class="hp-long">Yapıştır ve algıla</span><span class="hp-short">Yapıştır</span></button>
                 </div>
                 <div id="settingsView"></div>
             </section>

@@ -8,6 +8,7 @@ import { initSettings } from './settings.js';
 import { openSetup, parsePairLink, redeemPair } from './setup.js';
 import { initLibraryTab } from './library-tab.js';
 import { initFollow } from './follow.js';
+import { openBulk } from './bulk.js';
 import { createViewer } from './viewer.js';
 import { createEditor } from './editor.js';
 import { restoreServerRecordings } from './serverrec.js';
@@ -144,6 +145,7 @@ const detectTab = initDetectTab({
     toast,
     openSetup: showSetup,
     onFollow: (url) => followTab && followTab.add(url),
+    onBulk: (text) => openBulk({ text, enqueue: (r, o) => detectTab.enqueueResult(r, o), toast, navigate }),
     photos: imagesTab,
     install,
     openImages(pageUrl, urls, title) {

@@ -444,7 +444,8 @@ async function extractOnServer(url, signal, onStage) {
 function extractedLinks(extracted) {
     return extracted.items.map((item) => ({
         url: item.url, source: item.source || '', kind: item.kind, size: item.size || 0, height: item.height || 0, audioUrl: item.audioUrl || null,
-        variants: item.variants || 0, live: Boolean(item.live), duration: extracted.duration || 0, fromYtdlp: true
+        variants: item.variants || 0, live: Boolean(item.live), duration: extracted.duration || 0, fromYtdlp: true,
+        subtitles: extracted.subtitles || []
     }));
 }
 
@@ -453,6 +454,7 @@ function applyExtracted(result, extracted) {
     result.details.thumbnail = extracted.thumbnail || '';
     result.details.extractor = extracted.extractor || '';
     result.details.fromYtdlp = true;
+    result.details.subtitles = extracted.subtitles || [];
     result.details.links = extractedLinks(extracted);
 }
 
@@ -530,7 +532,7 @@ async function describeDash(result, url, mode, signal) {
     result.suggestedName = fileNameFromUrl(url).replace(/\.mpd$/i, '');
     Object.assign(result.details, {
         mpd, variants: mpd.variants, duration: mpd.duration, live: mpd.live, drm: mpd.drm,
-        hasAudio: mpd.audios.length > 0
+        hasAudio: mpd.audios.length > 0, subtitles: mpd.subtitles || []
     });
     if (mpd.drm) {
         result.downloadable = false;
@@ -555,6 +557,7 @@ async function describeHls(result, url, mode, signal) {
         const master = playlist;
         result.details.master = master;
         result.details.variants = master.variants;
+        result.details.subtitles = master.subtitles || [];
         result.details.audioUrl = audioFor(master, master.variants[0]);
         result.details.audioOnly = master.audioOnly;
         // Yayının canlı mı, kaç saniye mi olduğunu görmek için en iyi kaliteyi de okuyoruz.

@@ -1252,6 +1252,14 @@ const server = http.createServer(async (req, res) => {
 
     try {
         if (url.pathname === '/watch' || url.pathname.startsWith('/watch/')) return await handleWatch(req, res, url);
+        if (url.pathname === '/list' && req.method === 'POST') {
+            // Çalma listesi/kanal: içindeki videoların adresleri (toplu ekleme için).
+            const body = await readJson(req);
+            const target = new URL(String(body.url || ''));
+            if (!/^https?:$/.test(target.protocol)) return sendJson(res, 400, { error: 'Adres http/https olmalı' });
+            const r = await listEntries(target.href, { cookies: logins.storageState()?.cookies || [], limit: Math.min(200, Number(body.limit) || 100) });
+            return sendJson(res, 200, r);
+        }
         if (url.pathname === '/push/key' && req.method === 'GET') return sendJson(res, 200, { key: push.publicKey, subscribers: push.count() });
         if (url.pathname === '/push/subscribe' && req.method === 'POST') {
             push.subscribe(await readJson(req));

@@ -115,6 +115,9 @@ export function parseMpd(text, mpdUrl) {
         .map((r) => ({ ...r, resolution: r.width && r.height ? `${r.width}x${r.height}` : '' }));
     const audios = all.filter((r) => r.type === 'audio' && isMp4(r))
         .sort((a, b) => (/mp4a/.test(b.codecs) - /mp4a/.test(a.codecs)) || (b.bandwidth - a.bandwidth));
+    // Altyazı: tek dosya WebVTT temsilleri (parçalı/gömülü altyazılar alınmaz).
+    const subtitles = all.filter((r) => (r.type === 'text' || /vtt/.test(r.mime)) && /vtt/.test(r.mime + r.codecs) && !r.template && !r.list)
+        .map((r) => ({ url: r.base, language: r.lang, name: '', auto: false }));
     const drmList = [...variants, ...audios].flatMap((r) => r.drm).filter((s) => !/urn:mpeg:dash:mp4protection/i.test(s));
     const drmAny = [...variants, ...audios].some((r) => r.drm.length);
     return {
@@ -123,6 +126,7 @@ export function parseMpd(text, mpdUrl) {
         drm: drmAny ? (drmSystem(drmList[0]) || 'şifreli') : '',
         variants,
         audios,
+        subtitles,
         webmOnly: !variants.length && videosAll.length > 0,
         periods
     };
