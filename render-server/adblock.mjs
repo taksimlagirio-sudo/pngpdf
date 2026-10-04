@@ -40,10 +40,21 @@ export function isAdHost(url) {
 
 let engineKind = process.env.ADBLOCK === '0' ? 'off' : 'loading';
 let enginePromise = null;
+let rawEngine = null; // kozmetik (sayfadaki reklam alanlarını gizleme) kuralları için
 
 /** Uygulamada gösterilecek durum: kapalı / hazır listeler / yerleşik liste. */
+// Sunucu açıldığından beri sayaçlar (Ayarlar'da gösterilir).
+const stats = { blocked: 0, videoAds: 0, since: Date.now() };
+const VIDEO_AD = /\.(mp4|webm|m3u8|mpd)(\?|$)|vast|vmap|ima3|imasdk|preroll|videoad/i;
+
 export function adblockStatus() {
-    return { enabled: engineKind !== 'off', engine: engineKind, builtinHosts: AD_HOSTS.length };
+    return { enabled: engineKind !== 'off', engine: engineKind, builtinHosts: AD_HOSTS.length,
+        blocked: stats.blocked, videoAds: stats.videoAds, since: stats.since };
+}
+
+/** Sayfadan ayıklanan (reklam olduğu anlaşılan) video sayılır. */
+export function countVideoAd(n = 1) {
+    stats.videoAds += n;
 }
 /** Ghostery motoru (kuruluysa); listeler sunucu açılışında bir kez indirilir. */
 function getEngine() {
@@ -53,6 +64,7 @@ function getEngine() {
             try {
                 const { FiltersEngine, Request } = await import('@ghostery/adblocker');
                 const engine = await FiltersEngine.fromPrebuiltAdsAndTracking(fetch);
+                rawEngine = engine;
                 engineKind = 'lists';
                 console.log('Reklam engelleyici hazır (EasyList tabanlı listeler).');
                 return (url, sourceUrl, type) => engine.match(Request.fromRawDetails({ url, sourceUrl, type })).match;
@@ -113,6 +125,8 @@ export async function installRouting(context, { onBlocked = () => {}, needsCors 
         // bir reklam adresine gitmeye çalışırsa (tıklama ele geçirme) engellenir.
         const pageAlreadyOpen = isTopDocument && /^https?:/i.test(frameUrl);
         if ((!isTopDocument || pageAlreadyOpen) && await isAdRequest(url, frameUrl, isTopDocument ? 'document' : request.resourceType())) {
+            stats.blocked++;
+            if (request.resourceType() === 'media' || VIDEO_AD.test(url)) stats.videoAds++;
             onBlocked(url, isTopDocument);
             return route.abort('blockedbyclient').catch(() => {});
         }
@@ -172,7 +186,165 @@ export function guardNavigation(page, { onReturn = () => {} } = {}) {
             if (/^https?:/i.test(url)) {
                 home = url;
                 armed = true;
+                // Sayfa içi kilit: yönlendirme hiç gerçekleşmesin (gerçekleşirse yukarıdaki geri dönüş devrede).
+                page.evaluate(() => window.__indiriciSetLock && window.__indiriciSetLock()).catch(() => {});
             }
         }
     };
+}
+
+/* ---------------- Pop-up, tıklama tuzağı ve kozmetik engelleme ---------------- */
+
+// Her sayfaya (ve çerçeveye) ilk iş olarak eklenir:
+// - window.open sahte bir pencere döndürür: reklam penceresi hiç açılmaz, sayfa "açıldı" sanır.
+// - Başka siteye giden target=_blank bağlantılar (pop-under) tıklanınca açılmaz.
+const POPUP_GUARD = `(() => {
+    if (window.__indiriciGuard) return;
+    window.__indiriciGuard = true;
+    const fake = () => {
+        const noop = () => {};
+        const w = { closed: false, close() { this.closed = true; }, focus: noop, blur: noop, postMessage: noop,
+            moveTo: noop, resizeTo: noop, document: { write: noop, writeln: noop, open: noop, close: noop, body: null },
+            location: { href: 'about:blank', replace: noop, assign: noop } };
+        w.window = w; w.self = w; w.opener = window;
+        return w;
+    };
+    try {
+        Object.defineProperty(window, 'open', { value: function () { return fake(); }, writable: false, configurable: false });
+    } catch (_) {
+        window.open = function () { return fake(); };
+    }
+    // Otomatik tarama/kayıt sırasında sayfa başka bir siteye gitmeye kalkarsa (oynat düğmesine
+    // basınca reklama yönlendirme) gitmeden iptal edilir. Kilit yalnızca sunucu "arm" deyince açılır.
+    const site = (host) => {
+        const p = String(host).replace(/^www\./, '').split('.');
+        if (p.length <= 2) return p.join('.');
+        const two = p[p.length - 1].length === 2 && /^(co|com|net|org|gov|edu|ac|gen|bel|k12|biz|info|tv)$/.test(p[p.length - 2]);
+        return p.slice(two ? -3 : -2).join('.');
+    };
+    let locked = false;
+    try { locked = sessionStorage.getItem('__indiriciLock') === '1'; } catch (_) {}
+    window.__indiriciSetLock = () => {
+        locked = true;
+        try { sessionStorage.setItem('__indiriciLock', '1'); } catch (_) {}
+    };
+    if (window.top === window && window.navigation) {
+        window.navigation.addEventListener('navigate', (e) => {
+            if (!locked || !e.cancelable || e.hashChange || e.downloadRequest) return;
+            try {
+                const to = new URL(e.destination.url);
+                if (/^https?:$/.test(to.protocol) && site(to.hostname) !== site(location.hostname)) {
+                    e.preventDefault();
+                    window.__indiriciBlockedNav = (window.__indiriciBlockedNav || 0) + 1;
+                }
+            } catch (_) {}
+        });
+    }
+    document.addEventListener('click', (e) => {
+        const a = e.target && e.target.closest && e.target.closest('a[target]');
+        if (!a || /^_(self|parent|top)$/i.test(a.target)) return;
+        try {
+            if (new URL(a.href, location.href).host !== location.host) e.preventDefault();
+        } catch (_) { /* geçersiz adres */ }
+    }, true);
+})();`;
+
+const domainOf = (host) => siteOf('http://' + host);
+
+/** Sayfadaki reklam alanlarını gizler (EasyList kozmetik kuralları); hazır listeler yoksa bir şey yapmaz. */
+async function applyCosmetics(frame) {
+    if (!rawEngine) return;
+    let url;
+    try {
+        url = frame.url();
+    } catch (_) {
+        return;
+    }
+    if (!/^https?:/i.test(url)) return;
+    const hostname = hostOf(url);
+    const domain = domainOf(hostname);
+    try {
+        const base = rawEngine.getCosmeticsFilters({
+            url, hostname, domain, getBaseRules: true, getInjectionRules: true, getExtendedRules: false,
+            getRulesFromHostname: true, getRulesFromDOM: false
+        });
+        if (base.styles) await frame.addStyleTag({ content: base.styles }).catch(() => {});
+        for (const script of base.scripts || []) await frame.evaluate(script).catch(() => {});
+        const dom = await frame.evaluate(() => {
+            const classes = new Set();
+            const ids = new Set();
+            const hrefs = new Set();
+            for (const el of document.querySelectorAll('[class], [id], a[href]')) {
+                if (classes.size > 4000) break;
+                el.classList.forEach((c) => classes.add(c));
+                if (el.id) ids.add(el.id);
+                if (el.href && hrefs.size < 500) hrefs.add(el.href);
+            }
+            return { classes: [...classes], ids: [...ids], hrefs: [...hrefs] };
+        }).catch(() => null);
+        if (dom) {
+            const extra = rawEngine.getCosmeticsFilters({
+                url, hostname, domain, ...dom, getBaseRules: false, getInjectionRules: false, getExtendedRules: false,
+                getRulesFromHostname: false, getRulesFromDOM: true
+            });
+            if (extra.styles) await frame.addStyleTag({ content: extra.styles }).catch(() => {});
+        }
+    } catch (err) { if (process.env.DEBUG_ADBLOCK) console.log("cosmetics", err); }
+}
+
+/**
+ * Bağlamdaki her sayfaya pop-up korumasını ve kozmetik gizlemeyi kurar.
+ * ADBLOCK=0 ile başlatılmışsa pop-up koruması yine kurulur (reklam penceresi işe yaramaz).
+ */
+export async function installPageGuards(context) {
+    await context.addInitScript(POPUP_GUARD);
+    if (process.env.ADBLOCK === '0') return;
+    await getEngine();
+    const hook = (page) => {
+        page.on('domcontentloaded', () => applyCosmetics(page.mainFrame()));
+        page.on('frameattached', (frame) => {
+            frame.waitForLoadState('domcontentloaded').then(() => applyCosmetics(frame)).catch(() => {});
+        });
+    };
+    context.pages().forEach(hook);
+    context.on('page', hook);
+}
+
+/**
+ * Tıklamayı yutan görünmez katmanlar ("ilk tıklama reklama gider" tuzağı) etkisizleştirilir:
+ * ekranın büyük kısmını kaplayan, neredeyse saydam, içinde video/çerçeve olmayan sabit/mutlak
+ * öğeler dokunuşu geçirir hale getirilir. Kaç öğe etkilendiği döner.
+ */
+export async function disarmOverlays(page) {
+    let total = 0;
+    for (const frame of page.frames()) {
+        total += await frame.evaluate(() => {
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const alpha = (color) => {
+                const m = /rgba?\(([^)]+)\)/.exec(color || '');
+                if (!m) return color === 'transparent' ? 0 : 1;
+                const parts = m[1].split(',').map(Number);
+                return parts.length > 3 ? parts[3] : 1;
+            };
+            let n = 0;
+            for (const el of document.querySelectorAll('body *')) {
+                const cs = getComputedStyle(el);
+                if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
+                if (cs.pointerEvents === 'none' || cs.display === 'none' || cs.visibility === 'hidden') continue;
+                const r = el.getBoundingClientRect();
+                if (r.width * r.height < vw * vh * 0.35) continue;
+                if (el.querySelector('video, iframe, canvas, img[src]')) continue;
+                if (el.closest('video')) continue;
+                const seeThrough = Number(cs.opacity) < 0.15 || (alpha(cs.backgroundColor) < 0.15 && cs.backgroundImage === 'none');
+                const textless = (el.innerText || '').trim().length < 3;
+                if (seeThrough && textless) {
+                    el.style.setProperty('pointer-events', 'none', 'important');
+                    n++;
+                }
+            }
+            return n;
+        }).catch(() => 0);
+    }
+    return total;
 }

@@ -9,7 +9,15 @@ const DEFAULTS = {
     concurrency: 3,       // aynı anda en fazla iş
     keepAwake: true,      // kayıt/indirme sürerken ekranı açık tut (wake lock)
     recWhere: 'server',   // canlı kayıt: 'server' (kendi sunucum) | 'device'
-    useYtdlp: false       // Algıla'da önce yt-dlp'ye sor (sunucuda kuruluysa); kapalıyken yalnızca bizim tarama
+    useYtdlp: false,      // büyük platformlar dışındaki sitelerde de önce yt-dlp'ye sor (sunucuda kuruluysa)
+    libKeep: true,        // indirilenlerin bir kopyası Kitaplık'ta da tutulur
+    libAutoClean: false,  // galeriye/İndirilenler'e kaydedilenler 7 gün sonra Kitaplık'tan kaldırılır
+    libStyle: 'grid',
+    libSync: false,       // kitaplık kendi sunucun üzerinden cihazlar arasında eşitlenir
+    fullGalleries: true,  // Resimler: bilinen sitelerde galerinin tamamı ve tam boyut (sunucuda gallery-dl)
+    bigSites: 'ask',      // TikTok, Instagram, YouTube…: 'ask' (sor) | 'ytdlp' | 'ours' (kendi yöntemimiz)
+    siteMethods: {},      // (eski) "bu site için hatırla"; siteSettings'e taşınır
+    siteSettings: {}      // site başına: { 'ornek.com': { method, quality, folder } }
 };
 
 let prefs = { ...DEFAULTS };

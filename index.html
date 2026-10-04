@@ -31,10 +31,15 @@
         <!-- Masaüstü: sol kenar çubuğu -->
         <nav class="sidebar" aria-label="Bölümler">
             <div class="brand"><img src="assets/icons/icon.svg" alt="">İndirici</div>
+            <button class="side-paste" data-paste>Yapıştır ve algıla</button>
             <button class="nav-item" data-view="detect">Algıla</button>
             <button class="nav-item" data-view="images">Resimler</button>
+            <button class="nav-item" data-view="library">Kitaplık</button>
             <button class="nav-item" data-view="downloads">İndirmeler<span class="badge hidden" data-count></span></button>
+            <button class="nav-item" data-view="follow">Takip<span class="badge hidden" data-follow-count></span></button>
             <button class="nav-item" data-view="settings">Ayarlar</button>
+            <div class="side-coll" id="libCollections"></div>
+            <button class="side-storage" id="libSideStorage"></button>
             <button class="server-card" id="sideServer" data-view="settings">
                 <span class="server-card-title"><span class="dot"></span>Kendi sunucum</span>
                 <span class="server-card-sub">ayarlı değil</span>
@@ -53,6 +58,8 @@
                     <input type="url" id="detectUrl" placeholder="Bağlantıyı yapıştırın (video, .m3u8, sayfa)" autocomplete="off" inputmode="url">
                     <button class="btn-ac" id="detectBtn">Algıla</button>
                 </div>
+                <div class="paste-row"><button class="paste-btn" id="detectPasteBtn">Yapıştır ve algıla</button>
+                    <button class="paste-btn bulk-btn" id="detectBulkBtn">Toplu ekle</button></div>
                 <div id="detectStatus"></div>
                 <div id="detectPreview"></div>
                 <div id="detectResult"></div>
@@ -62,6 +69,7 @@
             <section class="view" id="view-images">
                 <div class="view-head">
                     <span class="view-title">Resimler</span>
+                    <button class="head-paste" data-paste aria-label="Yapıştır ve algıla"><span class="hp-long">Yapıştır ve algıla</span><span class="hp-short">Yapıştır</span></button>
                     <button class="icon-btn theme-btn-head" data-theme-toggle aria-label="Temayı değiştir"></button>
                 </div>
                 <div class="urlbar">
@@ -72,19 +80,40 @@
                 <div id="imgResult"></div>
             </section>
 
+            <!-- ============ KİTAPLIK ============ -->
+            <section class="view" id="view-library">
+                <div class="view-head">
+                    <span class="view-title">Kitaplık</span>
+                    <button class="head-paste" data-paste aria-label="Yapıştır ve algıla"><span class="hp-long">Yapıştır ve algıla</span><span class="hp-short">Yapıştır</span></button>
+                    <button class="pill" id="libSearchBtn">Ara</button>
+                </div>
+                <div id="libraryView"></div>
+            </section>
+
             <!-- ============ İNDİRMELER ============ -->
             <section class="view" id="view-downloads">
                 <div class="view-head">
                     <span class="view-title">İndirmeler</span>
+                    <button class="head-paste" data-paste aria-label="Yapıştır ve algıla"><span class="hp-long">Yapıştır ve algıla</span><span class="hp-short">Yapıştır</span></button>
                     <button class="pill float-only" data-float-toggle>Üstte göster</button>
                 </div>
                 <div id="downloadsView"></div>
+            </section>
+
+            <!-- ============ TAKİP ============ -->
+            <section class="view" id="view-follow">
+                <div class="view-head">
+                    <span class="view-title"><span class="fw-title-mob">İndirmeler</span><span class="fw-title-desk">Takip</span></span>
+                    <button class="pill fw-add-btn" data-follow-add>+ Takibe al</button>
+                </div>
+                <div id="followView"></div>
             </section>
 
             <!-- ============ AYARLAR ============ -->
             <section class="view" id="view-settings">
                 <div class="view-head">
                     <span class="view-title">Ayarlar</span>
+                    <button class="head-paste" data-paste aria-label="Yapıştır ve algıla"><span class="hp-long">Yapıştır ve algıla</span><span class="hp-short">Yapıştır</span></button>
                 </div>
                 <div id="settingsView"></div>
             </section>
@@ -100,6 +129,7 @@
     <nav class="tabbar" aria-label="Bölümler">
         <button class="tab" data-view="detect">Algıla</button>
         <button class="tab" data-view="images">Resimler</button>
+        <button class="tab" data-view="library">Kitaplık</button>
         <button class="tab" data-view="downloads"><span>İndirmeler<span data-count-inline></span></span></button>
         <button class="tab" data-view="settings">Ayarlar</button>
     </nav>

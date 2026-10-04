@@ -1,5 +1,5 @@
 // Service worker: çevrimdışı kabuk + arka plan indirmeleri (Background Fetch)
-const VERSION = 'v30';
+const VERSION = 'v47';
 const SHELL_CACHE = `shell-${VERSION}`;
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -15,6 +15,21 @@ const SHELL_FILES = [
     './assets/js/downloads.js',
     './assets/js/detect.js',
     './assets/js/detect-tab.js',
+    './assets/js/recent.js',
+    './assets/js/setup.js',
+    './assets/js/library.js',
+    './assets/js/library-tab.js',
+    './assets/js/viewer.js',
+    './assets/js/follow.js',
+    './assets/js/bulk.js',
+    './assets/js/subs.js',
+    './assets/js/sync.js',
+    './assets/js/cast.js',
+    './assets/js/editor.js',
+    './assets/js/anim.js',
+    './assets/js/sitesettings.js',
+    './assets/js/servertools.js',
+    './assets/js/mp4edit.js',
     './assets/js/images.js',
     './assets/js/settings.js',
     './assets/js/serverrec.js',
@@ -159,6 +174,39 @@ self.addEventListener('backgroundfetchclick', (event) => {
             await client.focus();
         } else {
             await self.clients.openWindow('./');
+        }
+    })());
+});
+
+/* ---- Takip bildirimleri (kendi sunucundan Web Push) ---- */
+self.addEventListener('push', (event) => {
+    let data = {};
+    try {
+        data = event.data ? event.data.json() : {};
+    } catch (_) {
+        data = { title: 'İndirici', body: event.data ? event.data.text() : '' };
+    }
+    event.waitUntil(self.registration.showNotification(data.title || 'İndirici', {
+        body: data.body || '',
+        tag: data.tag || undefined,
+        renotify: Boolean(data.tag),
+        icon: './assets/icons/icon-192.png',
+        badge: './assets/icons/icon-192.png',
+        data: { url: data.url || '#follow' }
+    }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    const hash = (event.notification.data && event.notification.data.url) || '#follow';
+    event.waitUntil((async () => {
+        const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        const client = all.find((c) => c.url.startsWith(self.registration.scope));
+        if (client) {
+            await client.focus();
+            client.navigate(self.registration.scope + hash).catch(() => {});
+        } else {
+            await self.clients.openWindow('./' + hash);
         }
     })());
 });

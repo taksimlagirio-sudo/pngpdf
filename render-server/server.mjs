@@ -25,6 +25,7 @@
 //   GET  /capture/:id/shot, POST /capture/:id/action → video başlamazsa kullanıcı sayfaya dokunur
 
 import http from 'node:http';
+import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import dns from 'node:dns/promises';
@@ -33,13 +34,21 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { classify, dedupKey, isSegment } from './media.mjs';
-import { createRecorder } from './recorder.mjs';
+import { createRecorder, parsePlaylist } from './recorder.mjs';
+import { createWatcher } from './watcher.mjs';
+import { createPush } from './push.mjs';
 import { createCapturer } from './capture.mjs';
 import { createLoginStore } from './logins.mjs';
-import { findYtdlp, extractInfo, normalizeInfo } from './ytdlp.mjs';
+import { findYtdlp, extractInfo, normalizeInfo, listEntries } from './ytdlp.mjs';
 import { findGalleryDl, extractImages } from './gallerydl.mjs';
 import { createCookieJar } from './cookiejar.mjs';
-import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus } from './adblock.mjs';
+import { pairPage, redeemCode, networkAddresses, tailscaleName } from './pairing.mjs';
+import { createLibStore } from './libstore.mjs';
+import { createTv } from './tv.mjs';
+import { findFfmpeg, analyzeAudio, createAudioJobs } from './audio.mjs';
+import { createInbox } from './inbox.mjs';
+import qrcode from './vendor/qrcode.mjs';
+import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd, installPageGuards, disarmOverlays } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '0.4.0';
@@ -86,8 +95,8 @@ function authorized(req, url) {
 
 const CORS_HEADERS = {
     'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET, HEAD, POST, DELETE, OPTIONS',
-    'access-control-allow-headers': 'authorization, content-type, range',
+    'access-control-allow-methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
+    'access-control-allow-headers': 'authorization, content-type, range, x-meta, x-device',
     'access-control-expose-headers': 'content-length, content-type, content-range, accept-ranges',
     // https bir sayfadan yerel ağdaki/localhost'taki sunucuya istek için (Chrome Private Network Access).
     'access-control-allow-private-network': 'true',
@@ -248,6 +257,7 @@ async function openRecordedPage(pageUrl, contextOptions) {
     const state0 = { blockedAds: 0 };
     const blocked = new Set(); // engellenen reklam istekleri "başarısız istek" diye listeye girmesin
     await installRouting(context, { onBlocked: (url) => { state0.blockedAds++; blocked.add(url); } });
+    await installPageGuards(context);
     const page = await context.newPage();
     // Tıklamanın açtığı reklam pencereleri hemen kapatılsın.
     context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
@@ -340,7 +350,7 @@ async function nudgePlayback(page, started, nudge) {
     // oynat düğmesine yeniden basılması gerekir.
     if (nudge.steps && !nudge.steps.length) {
         nudge.emptiedAt = nudge.emptiedAt || Date.now();
-        if ((nudge.rounds || 1) < 3 && Date.now() - nudge.emptiedAt > 3000) {
+        if ((nudge.rounds || 1) < 3 && Date.now() - nudge.emptiedAt > 1500) {
             nudge.rounds = (nudge.rounds || 1) + 1;
             nudge.steps = null;
             nudge.emptiedAt = 0;
@@ -349,6 +359,11 @@ async function nudgePlayback(page, started, nudge) {
     if (!nudge.steps) {
         nudge.nextAt = Math.max(nudge.nextAt || 0, started + 2500);
         nudge.steps = [
+            async () => {
+                // Tıklamayı yutan görünmez reklam katmanları önce etkisizleştirilir.
+                await disarmOverlays(page);
+                return false;
+            },
             () => clickConsent(page),
             async () => {
                 for (const frame of page.frames()) {
@@ -463,6 +478,7 @@ async function sniff(pageUrl, waitMs) {
     const items = [];
     for (const item of foundItems(state)) {
         if (!(await isAdRequest(item.url, pageUrl, 'media'))) items.push(item);
+        else countVideoAd();
     }
     return { title, finalUrl, items, main, blockedAds: state.blockedAds, elapsedMs: Date.now() - started };
 }
@@ -929,6 +945,13 @@ function serveStatic(req, res, file) {
 // Token yalnızca bu cihazın kendisinden açılan, aynı kökenli sayfaya verilir. Host başlığı
 // kontrolü, kötü niyetli bir sitenin alan adını 127.0.0.1'e çözdürüp (DNS rebinding) token'ı
 // okumasını engeller; tarayıcıdaki başka sitelerin istekleri de Sec-Fetch-Site ile ayıklanır.
+function pairPageAllowed(req) {
+    const host = (req.headers.host || '').toLowerCase();
+    const loopback = [`127.0.0.1:${PORT}`, `localhost:${PORT}`, `[::1]:${PORT}`].includes(host);
+    const site = req.headers['sec-fetch-site'];
+    return loopback && (!site || site === 'none' || site === 'same-origin');
+}
+
 function localConfigAllowed(req) {
     const host = (req.headers.host || '').toLowerCase();
     const loopback = [`127.0.0.1:${PORT}`, `localhost:${PORT}`, `[::1]:${PORT}`].includes(host);
@@ -987,6 +1010,472 @@ const capturer = createCapturer({
         }
     }
 });
+
+/* ---------------- Takip (yayın bekle, zamanla, kanal) ---------------- */
+
+const push = createPush({
+    keyFile: path.join(HERE, '.push-keys.json'),
+    subsFile: path.join(HERE, '.push-subs.json')
+});
+
+async function fetchText(url) {
+    const headers = { 'user-agent': DESKTOP_UA, accept: '*/*' };
+    const referer = refererByUrl.get(url) || refererByHost.get(new URL(url).host);
+    if (referer) headers.referer = referer;
+    const res = await fetchUpstream(url, headers, { signal: AbortSignal.timeout(20000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+}
+
+/** Sayfada (ya da doğrudan .m3u8 adresinde) şu an canlı bir yayın var mı? */
+async function findLive(pageUrl) {
+    let candidates = [];
+    let title = '';
+    if (/\.m3u8(\?|$)/i.test(pageUrl)) {
+        candidates = [pageUrl];
+    } else {
+        const r = await sniff(pageUrl, 20000);
+        if (r.main && r.main.status >= 400) return { reachable: false, error: `Sayfa HTTP ${r.main.status} döndü` };
+        title = r.title || '';
+        if (r.main && /mpegurl/.test(r.main.contentType)) candidates = [pageUrl];
+        candidates.push(...r.items.filter((i) => i.kind === 'hls').map((i) => i.url));
+    }
+    for (const url of candidates) {
+        try {
+            const list = parsePlaylist(await fetchText(url), url);
+            const media = list.type === 'master' ? parsePlaylist(await fetchText(list.variants[0].url), list.variants[0].url) : list;
+            if (media.isLive) return { reachable: true, live: { url }, title };
+        } catch (_) { /* bu aday açılmadı */ }
+    }
+    return { reachable: true, live: null, title };
+}
+
+/** /stream/... (yt-dlp biçimi) adresini sunucudaki dosyaya indirir. */
+async function saveStream(streamUrl, file, onBytes, signal) {
+    const id = (String(streamUrl).match(/^\/stream\/([0-9a-f]{24})$/) || [])[1];
+    const entry = id && streams.get(id);
+    if (!entry || (entry.fragments && entry.fragments.length)) throw new Error('Bu biçim sunucuya indirilemiyor');
+    const headers = { 'user-agent': DESKTOP_UA, accept: '*/*', ...entry.headers };
+    const out = fs.createWriteStream(file);
+    try {
+        const chunk = entry.chunk || STREAM_CHUNK;
+        let offset = 0;
+        for (;;) {
+            const up = await fetchUpstream(entry.url, { ...headers, range: `bytes=${offset}-${offset + chunk - 1}` }, { signal });
+            if (!up.ok) throw new Error(`Dosya alınamadı (HTTP ${up.status})`);
+            let got = 0;
+            for await (const c of up.body) {
+                got += c.length;
+                onBytes(c.length);
+                if (!out.write(c)) await new Promise((r) => out.once('drain', r));
+            }
+            offset += got;
+            const total = Number((up.headers.get('content-range') || '').split('/')[1]) || 0;
+            if (up.status === 200 || got < chunk || (total && offset >= total)) break;
+        }
+    } finally {
+        await new Promise((r) => out.end(r));
+    }
+}
+
+/** Kanalın yeni videosunu sunucuya indirir (en uygun kalite; sesli tek dosya ya da HLS). */
+async function downloadEntry(entry, { maxHeight = 0, keepMs = 0, source = '' } = {}) {
+    const r = await extractWithYtdlp(entry.url);
+    if (!r.ok) throw new Error(r.reason || 'Video bulunamadı');
+    const name = (r.title || entry.title || 'video').slice(0, 100);
+    const fits = (i) => !maxHeight || !i.height || i.height <= maxHeight;
+    const byHeight = (a, b) => (b.height || 0) - (a.height || 0);
+    const hls = r.items.filter((i) => i.kind === 'hls').sort(byHeight)[0];
+    const single = r.items.filter((i) => i.kind === 'video' && !i.audioUrl).sort(byHeight).find(fits);
+    const hlsBetter = hls && (!single || (hls.height || 0) > (single.height || 0));
+    if (hls && (hlsBetter || !single)) {
+        return recorder.start({ url: hls.url, name, vod: true, maxHeight, keepMs, source: source || entry.url });
+    }
+    if (single) {
+        return recorder.importFile({
+            name, ext: single.ext || 'mp4', keepMs, source: source || entry.url, quality: single.height ? `${single.height}p` : '',
+            fetchTo: (file, onBytes, signal) => saveStream(single.url, file, onBytes, signal)
+        });
+    }
+    throw new Error('Sesli tek dosya ya da akış bulunamadı');
+}
+
+const watcher = createWatcher({
+    file: process.env.WATCH_FILE || path.join(HERE, '.watches.json'),
+    recorder,
+    findLive,
+    listEntries: (url) => listEntries(url, { cookies: logins.storageState()?.cookies || [] }),
+    downloadEntry,
+    push,
+    log: (m) => console.log(m)
+});
+
+async function handleWatch(req, res, url) {
+    if (url.pathname === '/watch' && req.method === 'GET') return sendJson(res, 200, watcher.list());
+    if (url.pathname === '/watch' && req.method === 'POST') return sendJson(res, 200, watcher.add(await readJson(req)));
+    if (url.pathname === '/watch/probe' && req.method === 'POST') {
+        const body = await readJson(req);
+        const target = new URL(String(body.url || ''));
+        if (!/^https?:$/.test(target.protocol)) return sendJson(res, 400, { error: 'Adres http/https olmalı' });
+        const r = await findLive(target.href).catch((err) => ({ reachable: false, error: err.message }));
+        return sendJson(res, 200, { reachable: r.reachable, live: Boolean(r.live), title: r.title || '', error: r.error || '' });
+    }
+    if (url.pathname === '/watch/events/seen' && req.method === 'POST') {
+        const body = await readJson(req);
+        watcher.seenEvents(Array.isArray(body.ids) ? body.ids.map(String) : []);
+        return sendJson(res, 200, { ok: true });
+    }
+    const m = url.pathname.match(/^\/watch\/([0-9a-f]{16})(\/(check|stop))?$/);
+    if (!m) return sendJson(res, 404, { error: 'Bulunamadı' });
+    const [, id, , action] = m;
+    let result = null;
+    if (action === 'check' && req.method === 'POST') result = watcher.checkNow(id);
+    else if (action === 'stop' && req.method === 'POST') result = watcher.stop(id);
+    else if (!action && req.method === 'POST') result = watcher.update(id, await readJson(req));
+    else if (!action && req.method === 'DELETE') result = watcher.remove(id) ? { ok: true } : null;
+    return result ? sendJson(res, 200, result) : sendJson(res, 404, { error: 'Takip bulunamadı' });
+}
+
+/* ---------------- Cihazlar arası kitaplık ve TV'de oynat ---------------- */
+
+const libstore = createLibStore({ dir: process.env.LIBRARY_DIR || path.join(HERE, '.library') });
+const tv = createTv();
+
+/** Dosyayı Range desteğiyle gönderir (oynatıcılar ileri sarabilsin). */
+function sendFileRange(req, res, file, extra = {}) {
+    const size = file.size;
+    const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '');
+    let start = 0;
+    let end = size - 1;
+    if (m) {
+        if (m[1]) start = Number(m[1]);
+        if (m[2]) end = Math.min(size - 1, Number(m[2]));
+        if (!m[1] && m[2]) start = Math.max(0, size - Number(m[2]));
+        if (start > end || start >= size) {
+            res.writeHead(416, { ...CORS_HEADERS, 'content-range': `bytes */${size}` });
+            return res.end();
+        }
+    }
+    const ascii = file.name.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
+    res.writeHead(m ? 206 : 200, {
+        ...CORS_HEADERS, ...extra,
+        'content-type': file.mime,
+        'content-length': end - start + 1,
+        'accept-ranges': 'bytes',
+        ...(m ? { 'content-range': `bytes ${start}-${end}/${size}` } : {}),
+        'content-disposition': `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+        'cache-control': 'no-store'
+    });
+    if (req.method === 'HEAD') return res.end();
+    const stream = fs.createReadStream(file.path, { start, end });
+    res.on('close', () => stream.destroy());
+    stream.on('error', () => res.destroy());
+    stream.pipe(res);
+}
+
+/** "library:ID" / "record:ID" / "capture:ID" → dosya. */
+function sourceFile(source) {
+    const [kind, id] = String(source || '').split(':');
+    if (kind === 'library') return libstore.file(id);
+    if (kind === 'record') return recorder.file(id);
+    if (kind === 'capture') return capturer.file(id);
+    return null;
+}
+
+/** TV'nin açabileceği adresler (bu ağ / Tailscale / PUBLIC_URL). */
+async function reachableBases() {
+    const out = [];
+    const publicUrl = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+    if (publicUrl) out.push({ label: 'Uzaktan', url: publicUrl });
+    if (HOST === '0.0.0.0' || HOST === '::') {
+        const { lan, tailnet } = networkAddresses();
+        for (const ip of lan.slice(0, 2)) out.push({ label: 'Bu ağda', url: `http://${ip}:${PORT}` });
+        const ts = await tailscaleName();
+        if (ts || tailnet[0]) out.push({ label: 'Tailscale', url: `http://${ts || tailnet[0]}:${PORT}` });
+    }
+    out.push({ label: 'Bu cihaz', url: `http://127.0.0.1:${PORT}` });
+    return out;
+}
+
+/** Token istemeyen TV uçları: oynatıcı sayfası, dosya, komut bekleme, durum bildirme. */
+async function handleTvPublic(req, res, url) {
+    const m = url.pathname.match(/^\/tv\/([0-9a-f]{12})\/([A-Za-z0-9_-]{16})(\/(file|poll|state))?$/);
+    if (!m) return false;
+    const s = tv.check(m[1], m[2]);
+    if (!s) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('Oturum bulunamadı ya da süresi doldu');
+        return true;
+    }
+    const part = m[4];
+    if (!part && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(tv.page(s));
+        return true;
+    }
+    if (part === 'file' && (req.method === 'GET' || req.method === 'HEAD')) {
+        const file = sourceFile(s.source);
+        if (!file) {
+            res.writeHead(404);
+            res.end();
+            return true;
+        }
+        sendFileRange(req, res, file);
+        return true;
+    }
+    if (part === 'poll' && req.method === 'GET') {
+        sendJson(res, 200, await tv.poll(s, Number(url.searchParams.get('after')) || 0));
+        return true;
+    }
+    if (part === 'state' && req.method === 'POST') {
+        tv.report(s, await readJson(req, 4096).catch(() => ({})));
+        sendJson(res, 200, { ok: true });
+        return true;
+    }
+    return false;
+}
+
+async function handleTv(req, res, url) {
+    if (url.pathname === '/tv' && req.method === 'POST') {
+        const body = await readJson(req);
+        if (!sourceFile(body.source)) return sendJson(res, 404, { error: 'Dosya sunucuda bulunamadı' });
+        const s = tv.create({ source: body.source, title: body.title });
+        const path_ = `/tv/${s.id}/${s.secret}`;
+        const urls = (await reachableBases()).map((b) => ({ ...b, url: b.url + path_ }));
+        return sendJson(res, 200, { id: s.id, urls });
+    }
+    const m = url.pathname.match(/^\/tv\/([0-9a-f]{12})(\/(cmd|qr))?$/);
+    if (!m) return sendJson(res, 404, { error: 'Bulunamadı' });
+    const s = tv.get(m[1]);
+    if (!s) return sendJson(res, 404, { error: 'Oturum bulunamadı' });
+    if (m[3] === 'cmd' && req.method === 'POST') {
+        const body = await readJson(req);
+        tv.command(s.id, body.action, body.value);
+        return sendJson(res, 200, tv.publicState(s));
+    }
+    if (m[3] === 'qr' && req.method === 'GET') {
+        const qr = qrcode(0, 'M');
+        qr.addData(String(url.searchParams.get('u') || '').slice(0, 500));
+        qr.make();
+        res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/svg+xml', 'cache-control': 'no-store' });
+        return res.end(qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true }));
+    }
+    if (!m[3] && req.method === 'GET') return sendJson(res, 200, tv.publicState(s));
+    if (!m[3] && req.method === 'DELETE') {
+        tv.command(s.id, 'close');
+        setTimeout(() => tv.remove(s.id), 3000);
+        return sendJson(res, 200, { ok: true });
+    }
+    return sendJson(res, 404, { error: 'Bulunamadı' });
+}
+
+const audioJobs = createAudioJobs({ outDir: path.join(HERE, '.audio') });
+
+async function handleAudio(req, res, url) {
+    if (url.pathname === '/audio/analyze' && req.method === 'POST') {
+        const body = await readJson(req);
+        const file = sourceFile(body.source);
+        if (!file) return sendJson(res, 404, { error: 'Dosya sunucuda bulunamadı' });
+        return sendJson(res, 200, await analyzeAudio(file.path));
+    }
+    if (url.pathname === '/audio/export' && req.method === 'POST') {
+        const body = await readJson(req);
+        const file = sourceFile(body.source);
+        if (!file) return sendJson(res, 404, { error: 'Dosya sunucuda bulunamadı' });
+        return sendJson(res, 200, await audioJobs.start({ ...body, file: file.path, name: String(body.name || 'ses').slice(0, 100) }));
+    }
+    const m = url.pathname.match(/^\/audio\/job\/([0-9a-f]{16})(\/file)?$/);
+    if (!m) return sendJson(res, 404, { error: 'Bulunamadı' });
+    if (m[2] && (req.method === 'GET' || req.method === 'HEAD')) {
+        const file = audioJobs.file(m[1]);
+        return file ? sendFileRange(req, res, file) : sendJson(res, 404, { error: 'Dosya hazır değil' });
+    }
+    if (!m[2] && req.method === 'GET') {
+        const j = audioJobs.get(m[1]);
+        return j ? sendJson(res, 200, j) : sendJson(res, 404, { error: 'İş bulunamadı' });
+    }
+    if (!m[2] && req.method === 'DELETE') return sendJson(res, 200, { ok: audioJobs.remove(m[1]) });
+    return sendJson(res, 404, { error: 'Bulunamadı' });
+}
+
+/* ---------------- Bilgisayardan gönder (yer imi) ---------------- */
+
+const inbox = createInbox({ file: path.join(HERE, '.inbox.json'), push });
+
+/** Token istemeyen uçlar: /yerimi sayfası ve /gonder (yalnızca gönderme anahtarıyla). */
+function handleInboxPublic(req, res, url) {
+    if (url.pathname === '/gonder' && req.method === 'GET') {
+        const json = url.searchParams.get('json') === '1';
+        let item = null;
+        let error = '';
+        if (!inbox.checkKey(url.searchParams.get('k'))) error = 'Düğme eski; İndirici > Ayarlar > Bilgisayardan gönder sayfasından yenisini al';
+        else {
+            try {
+                item = inbox.add({ url: url.searchParams.get('u'), title: url.searchParams.get('t') || '' });
+            } catch (err) {
+                error = err.message;
+            }
+        }
+        if (json) {
+            sendJson(res, error ? 400 : 200, error ? { error } : item);
+            return true;
+        }
+        res.writeHead(error ? 400 : 200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(inbox.sentPage(item, error));
+        return true;
+    }
+    if (url.pathname === '/yerimi' && req.method === 'GET') {
+        // Sayfa gönderme anahtarını içerdiğinden anahtarla açılır (uygulama adresi tam verir).
+        if (!inbox.checkKey(url.searchParams.get('k'))) {
+            res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+            res.end('Bu adresi İndirici > Ayarlar > Bilgisayardan gönder ekranından kopyala.');
+            return true;
+        }
+        const base = `http://${req.headers.host || `127.0.0.1:${PORT}`}`;
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY' });
+        res.end(inbox.page(base));
+        return true;
+    }
+    return false;
+}
+
+/* ---------------- Sunucu durumu ---------------- */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const KEEP_CHOICES = [0, 7, 30, 90];
+const SETTINGS_FILE = path.join(HERE, '.server-settings.json');
+let serverSettings = { keepDays: 7 };
+try {
+    serverSettings = { ...serverSettings, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) };
+} catch (_) { /* varsayılanlar */ }
+recorder.setKeepDefault(serverSettings.keepDays * DAY_MS);
+
+const recentErrors = [];
+function noteError(title, where = '') {
+    recentErrors.unshift({ at: Date.now(), title: String(title).slice(0, 160), where: String(where).slice(0, 200) });
+    recentErrors.length = Math.min(recentErrors.length, 20);
+}
+
+const hostOf = (u) => {
+    try {
+        return new URL(u).host.replace(/^www\./, '');
+    } catch (_) {
+        return '';
+    }
+};
+
+function dirSize(dir) {
+    let n = 0;
+    try {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+            const p = path.join(dir, e.name);
+            n += e.isDirectory() ? dirSize(p) : fs.statSync(p).size;
+        }
+    } catch (_) { /* yok */ }
+    return n;
+}
+
+function serverStatus() {
+    let disk = null;
+    try {
+        const st = fs.statfsSync(HERE);
+        disk = { total: st.blocks * st.bsize, free: st.bavail * st.bsize };
+    } catch (_) { /* eski Node */ }
+    const recs = recorder.list();
+    const caps = capturer.list();
+    const sizes = {
+        records: dirSize(process.env.RECORD_DIR || path.join(HERE, '.recordings')) + dirSize(process.env.CAPTURE_DIR || path.join(HERE, '.captures')),
+        library: dirSize(process.env.LIBRARY_DIR || path.join(HERE, '.library')),
+        other: dirSize(path.join(HERE, '.audio'))
+    };
+    const running = [...recs, ...caps].filter((r) => r.state === 'recording' || r.state === 'stopping' || r.state === 'capturing')
+        .map((r) => ({ id: r.id, name: r.fileName || '', quality: r.quality || '', startedAt: r.startedAt, mediaSec: r.mediaSec || 0, bytes: r.bytes || 0, live: !r.vod && r.mode !== 'capture' }));
+    const w = watcher.list();
+    const waiting = w.items.filter((x) => x.enabled && x.state !== 'recording');
+    const next = waiting.map((x) => x.nextCheck || 0).filter((t) => t > Date.now()).sort((a, b) => a - b)[0] || 0;
+    const weekAgo = Date.now() - 7 * DAY_MS;
+    const doneWeek = [...recs, ...caps].filter((r) => r.state === 'done' && r.endedAt > weekAgo);
+    const errors = [
+        ...recentErrors,
+        ...[...recs, ...caps].filter((r) => r.state === 'error' && r.error).map((r) => ({ at: r.endedAt || r.startedAt, title: r.error, where: hostOf(r.source || r.url) })),
+        ...w.events.filter((e) => e.kind === 'unreachable').map((e) => ({ at: e.at, title: e.title, where: e.body }))
+    ].sort((a, b) => b.at - a.at).slice(0, 6);
+    const ab = adblockStatus();
+    return {
+        version: VERSION, host: os.hostname(), uptime: Math.round(process.uptime()), node: process.version,
+        termux: (process.env.PREFIX || '').includes('com.termux'), disk, sizes, running,
+        pending: { count: waiting.length, nextCheck: next },
+        week: { count: doneWeek.length, bytes: doneWeek.reduce((n, r) => n + (r.bytes || 0), 0) },
+        adblock: { blocked: ab.blocked, since: ab.since, enabled: ab.enabled },
+        biggest: recs.filter((r) => r.state === 'done').sort((a, b) => b.bytes - a.bytes).slice(0, 3)
+            .map((r) => ({ id: r.id, name: r.fileName, bytes: r.bytes, endedAt: r.endedAt })),
+        errors,
+        settings: serverSettings,
+        deletable: KEEP_CHOICES.filter(Boolean).map((d) => ({ days: d, ...recorder.olderThan(d * DAY_MS) }))
+    };
+}
+
+/** Sunucuyu yeniden başlatır: aynı komutla yeni bir kopya açılır, bu kopya kapanır. */
+function restartServer() {
+    setTimeout(async () => {
+        server.close();
+        if (browserPromise) {
+            const browser = await browserPromise.catch(() => null);
+            if (browser) await browser.close().catch(() => {});
+        }
+        const child = spawn(process.execPath, process.argv.slice(1), {
+            cwd: process.cwd(), env: { ...process.env, INDIRICI_RESTART: '1', OPEN_APP: '0' }, stdio: 'inherit', detached: true
+        });
+        child.unref();
+        process.exit(0);
+    }, 300);
+}
+
+async function handleStatus(req, res, url) {
+    if (url.pathname === '/status' && req.method === 'GET') return sendJson(res, 200, serverStatus());
+    if (url.pathname === '/status/settings' && req.method === 'POST') {
+        const body = await readJson(req);
+        if (body.keepDays !== undefined) {
+            if (!KEEP_CHOICES.includes(Number(body.keepDays))) throw new Error('Geçersiz süre');
+            serverSettings.keepDays = Number(body.keepDays);
+            recorder.setKeepDefault(serverSettings.keepDays * DAY_MS);
+        }
+        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(serverSettings));
+        return sendJson(res, 200, serverStatus());
+    }
+    if (url.pathname === '/status/restart' && req.method === 'POST') {
+        sendJson(res, 200, { ok: true });
+        restartServer();
+        return;
+    }
+    if (url.pathname === '/inbox' && req.method === 'GET') {
+        return sendJson(res, 200, { key: inbox.key, items: inbox.list(Number(url.searchParams.get('after')) || 0), bases: url.searchParams.get('bases') ? await reachableBases() : undefined });
+    }
+    return sendJson(res, 404, { error: 'Bulunamadı' });
+}
+
+async function handleLibrary(req, res, url) {
+    if (url.pathname === '/library' && req.method === 'GET') return sendJson(res, 200, libstore.list());
+    if (url.pathname === '/library/sync' && req.method === 'POST') return sendJson(res, 200, libstore.sync(await readJson(req, 4 * 1024 * 1024)));
+    const m = url.pathname.match(/^\/library\/item\/([a-z0-9]{4,40})(\/file)?$/i);
+    if (!m) return sendJson(res, 404, { error: 'Bulunamadı' });
+    const [, id, isFile] = m;
+    if (isFile && (req.method === 'GET' || req.method === 'HEAD')) {
+        const file = libstore.file(id);
+        if (!file) return sendJson(res, 404, { error: 'Dosya yok' });
+        return sendFileRange(req, res, file);
+    }
+    if (!isFile && req.method === 'PUT') {
+        let meta = {};
+        try {
+            meta = JSON.parse(Buffer.from(String(req.headers['x-meta'] || ''), 'base64').toString('utf8') || '{}');
+        } catch (_) { /* üst veri yok */ }
+        const item = await libstore.put(id, meta, req, String(req.headers['x-device'] || ''));
+        return sendJson(res, 200, item);
+    }
+    if (!isFile && req.method === 'DELETE') return sendJson(res, libstore.remove(id) ? 200 : 404, { ok: true });
+    return sendJson(res, 404, { error: 'Bulunamadı' });
+}
 
 /** /record (canlı HLS kaydı) ve /capture (sunucuda oynatıp kaydetme) aynı biçimde yönetilir. */
 async function handleJobs(req, res, url) {
@@ -1068,9 +1557,33 @@ const server = http.createServer(async (req, res) => {
         return res.end();
     }
 
+    if (url.pathname.startsWith('/tv/') && await handleTvPublic(req, res, url).catch((err) => {
+        if (!res.headersSent) sendJson(res, 400, { error: err.message });
+        return true;
+    })) return;
+
+    if ((url.pathname === '/gonder' || url.pathname === '/yerimi') && handleInboxPublic(req, res, url)) return;
+
     if (req.method === 'GET' || req.method === 'HEAD') {
         const file = staticFile(url.pathname);
         if (file) return serveStatic(req, res, file);
+
+        if (url.pathname === '/baglan') {
+            // Token'ı gösteren sayfa: yalnızca sunucunun çalıştığı cihazdan açılır.
+            if (!pairPageAllowed(req)) {
+                res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+                return res.end('Bu sayfa yalnızca sunucunun çalıştığı cihazda açılır: http://127.0.0.1:' + PORT + '/baglan');
+            }
+            const html = await pairPage({
+                host: HOST, port: PORT, token: TOKEN, version: VERSION,
+                stats: [
+                    `Reklam engeli: ${adblockStatus().enabled ? 'açık' : 'kapalı'}`,
+                    `Girişler: ${logins.sites().length} site`
+                ]
+            });
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY' });
+            return res.end(html);
+        }
 
         if (url.pathname === '/local-config') {
             // Bilerek CORS başlığı YOK: başka bir site bu yanıtı okuyamasın.
@@ -1080,15 +1593,50 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
+    if (url.pathname === '/pair' && req.method === 'POST') {
+        // QR'daki tek kullanımlık kod karşılığında token verilir.
+        const body = await readJson(req, 4096).catch(() => ({}));
+        if (!redeemCode(body && body.code)) return sendJson(res, 403, { error: 'Kod geçersiz ya da süresi doldu; sunucudaki sayfayı yenileyip yeniden okut' });
+        return sendJson(res, 200, { token: TOKEN, version: VERSION });
+    }
+
     if (!authorized(req, url)) {
         return sendJson(res, 401, { error: 'Geçersiz veya eksik token' });
     }
 
     try {
+        if (url.pathname === '/watch' || url.pathname.startsWith('/watch/')) return await handleWatch(req, res, url);
+        if (url.pathname === '/tv' || url.pathname.startsWith('/tv/')) return await handleTv(req, res, url);
+        if (url.pathname === '/library' || url.pathname.startsWith('/library/')) return await handleLibrary(req, res, url);
+        if (url.pathname.startsWith('/audio/')) return await handleAudio(req, res, url);
+        if (url.pathname === '/status' || url.pathname.startsWith('/status/') || url.pathname === '/inbox') return await handleStatus(req, res, url);
+        if (url.pathname === '/list' && req.method === 'POST') {
+            // Çalma listesi/kanal: içindeki videoların adresleri (toplu ekleme için).
+            const body = await readJson(req);
+            const target = new URL(String(body.url || ''));
+            if (!/^https?:$/.test(target.protocol)) return sendJson(res, 400, { error: 'Adres http/https olmalı' });
+            const r = await listEntries(target.href, { cookies: logins.storageState()?.cookies || [], limit: Math.min(200, Number(body.limit) || 100) });
+            return sendJson(res, 200, r);
+        }
+        if (url.pathname === '/push/key' && req.method === 'GET') return sendJson(res, 200, { key: push.publicKey, subscribers: push.count() });
+        if (url.pathname === '/push/subscribe' && req.method === 'POST') {
+            push.subscribe(await readJson(req));
+            return sendJson(res, 200, { ok: true, subscribers: push.count() });
+        }
+        if (url.pathname === '/push/unsubscribe' && req.method === 'POST') {
+            push.unsubscribe((await readJson(req)).endpoint);
+            return sendJson(res, 200, { ok: true });
+        }
+        if (url.pathname === '/push/test' && req.method === 'POST') {
+            const sent = await push.send({ title: 'İndirici', body: 'Bildirimler çalışıyor', url: '#follow', kind: 'test' });
+            return sendJson(res, 200, { sent });
+        }
+
         if (url.pathname === '/health' && req.method === 'GET') {
             return sendJson(res, 200, { ok: true, name: 'indirici-render-server', version: VERSION, adblock: adblockStatus(), logins: { enabled: logins.enabled, sites: logins.sites().length },
                 ytdlp: await findYtdlp().then((t) => (t ? { version: t.version } : null)),
-                gallerydl: await findGalleryDl().then((t) => (t ? { version: t.version } : null)) });
+                gallerydl: await findGalleryDl().then((t) => (t ? { version: t.version } : null)),
+                ffmpeg: await findFfmpeg().then((t) => (t ? { version: t.version } : null)) });
         }
 
         if (url.pathname === '/extract' && req.method === 'POST') {
@@ -1209,6 +1757,7 @@ const server = http.createServer(async (req, res) => {
 
         return sendJson(res, 404, { error: 'Bulunamadı' });
     } catch (err) {
+        if (/^\/(sniff|extract|images|session|record|capture|watch)/.test(url.pathname)) noteError(err.message || 'Hata', url.pathname.slice(1).split('/')[0]);
         if (!res.headersSent) return sendJson(res, 400, { error: err.message || 'Hata' });
         res.destroy();
     }
@@ -1235,10 +1784,14 @@ server.on('error', (err) => {
 
 warmAdblock();
 
+// Yeniden başlatılan kopya, eskisinin bağlantı noktasını bırakmasını bekler.
+if (process.env.INDIRICI_RESTART === '1') await new Promise((r) => setTimeout(r, 1200));
+
 server.listen(PORT, HOST, () => {
     console.log(`İndirici render sunucusu çalışıyor: http://${HOST}:${PORT}`);
     console.log(`Uygulama: ${APP_URL}  (bu adresten açınca token gerekmez)`);
     console.log(`Token (başka cihaz/adresten bağlanırken): ${TOKEN}`);
+    console.log(`Telefonu QR ile bağlamak için bu cihazda aç: http://127.0.0.1:${PORT}/baglan`);
     if (ALLOW_PRIVATE) console.log('UYARI: ALLOW_PRIVATE=1 — yerel ağ adreslerine erişim açık.');
     openApp();
 });

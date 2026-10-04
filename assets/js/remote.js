@@ -4,8 +4,44 @@
 import { escapeHtml, renderApi, renderBlob, getRenderServer } from './util.js';
 import { rememberManifests } from './detect.js';
 
-const ICONS = { hls: '📡', video: '🎬', audio: '🎵', dash: '📺', image: '🖼️' };
 const FRAME_DELAY_MS = 500;
+
+/** Bulunan medyanın etiketi: HLS, DASH ya da dosya uzantısı. */
+function kindTag(item) {
+    if (item.kind === 'hls') return 'HLS';
+    if (item.kind === 'dash') return 'DASH';
+    const ext = (String(item.url).split(/[?#]/)[0].match(/\.([a-z0-9]{2,4})$/i) || [])[1];
+    if (ext) return ext.toUpperCase();
+    return item.kind === 'audio' ? 'SES' : 'VİDEO';
+}
+
+function pageLabel(url) {
+    try {
+        const u = new URL(url);
+        return (u.host.replace(/^www\./, '') + u.pathname).replace(/\/$/, '');
+    } catch (_) {
+        return url || '';
+    }
+}
+
+/**
+ * Tam ekran "Kendim dokunayım": telefonda tüm ekranı, masaüstünde sağda medya paneli olan bir
+ * katman açar. Kapatılınca katman kaldırılır.
+ */
+export function openRemoteOverlay(pageUrl, options = {}) {
+    const el = document.createElement('div');
+    el.className = 'remote-overlay';
+    document.body.appendChild(el);
+    document.documentElement.classList.add('remote-open');
+    return openRemoteView(el, pageUrl, {
+        ...options,
+        onClose: () => {
+            el.remove();
+            if (!document.querySelector('.remote-overlay')) document.documentElement.classList.remove('remote-open');
+            if (options.onClose) options.onClose();
+        }
+    });
+}
 
 export function canRemote() {
     return Boolean(getRenderServer());
@@ -19,30 +55,41 @@ export function canRemote() {
 export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl = (u) => u, captureId = null, onClose = () => {} } = {}) {
     // captureId verilirse yeni oturum açılmaz: video kaydının (başlamayı bekleyen) sayfası kullanılır.
     const base = () => (captureId ? `/capture/${captureId}` : `/session/${id}`);
+    const where = captureId ? 'kaydın beklediği sayfa' : pageLabel(pageUrl);
     container.innerHTML = `
         <div class="remote-view">
-            <div class="remote-head">
-                <strong>👆 Sayfaya kendin dokun</strong>
-                <button class="btn btn-secondary" data-r="close">✕ Kapat</button>
+            <div class="rv-main">
+                <div class="rv-head">
+                    <div class="rv-title-box"><div class="rv-title">Sayfaya dokun</div>
+                        <div class="rv-url">${escapeHtml(where)}<span class="rv-desk"> · sunucunda açık</span></div></div>
+                    <div class="rv-head-btns">
+                        <button class="rv-btn rv-desk" data-r="back">← Geri</button>
+                        <button class="rv-btn rv-desk" data-r="reload">↻ Yenile</button>
+                        <button class="rv-btn" data-r="close">Kapat</button>
+                    </div>
+                </div>
+                <div class="rv-hint remote-status">Sayfa sunucunda açılıyor…</div>
+                <div class="remote-screen">
+                    <img alt="Sunucuda açılan sayfa">
+                    <span class="remote-dot hidden"></span>
+                    <span class="rv-live hidden"><i></i>canlı</span>
+                </div>
+                <div class="remote-controls rv-mob">
+                    <button class="rv-btn" data-r="up" title="Yukarı kaydır">↑</button>
+                    <button class="rv-btn" data-r="down" title="Aşağı kaydır">↓</button>
+                    <button class="rv-btn" data-r="back">← Geri</button>
+                    <button class="rv-btn" data-r="reload">↻ Yenile</button>
+                </div>
+                <div class="remote-type">
+                    <input class="input" type="text" enterkeyhint="send" placeholder="Kutucuğa dokun, buraya yaz">
+                    <button class="rv-btn rv-send" data-r="type">Gönder</button>
+                </div>
             </div>
-            <p class="hint remote-status">Sayfa sunucunda açılıyor...</p>
-            <div class="remote-screen">
-                <img alt="Sunucuda açılan sayfa">
-                <span class="remote-dot hidden"></span>
+            <div class="rv-side${captureId ? ' hidden' : ''}">
+                <div class="rv-found-head"><span data-found-count>Bulunan medya · 0</span><span class="rv-mob rv-note">Giriş yaparsan saklanır</span></div>
+                <div class="remote-found"><div class="rv-empty">Video başlayınca burada çıkar.</div></div>
+                <div class="rv-login">Bu ekranda giriş yaparsan giriş sunucunda saklanır; o sitenin videoları sonra girişli açılır.</div>
             </div>
-            <div class="remote-controls">
-                <button class="btn btn-secondary" data-r="up" title="Yukarı kaydır">▲</button>
-                <button class="btn btn-secondary" data-r="down" title="Aşağı kaydır">▼</button>
-                <button class="btn btn-secondary" data-r="back" title="Geri">←</button>
-                <button class="btn btn-secondary" data-r="reload" title="Yenile">⟳</button>
-            </div>
-            <div class="remote-type">
-                <input class="input" type="text" placeholder="Kutucuğa dokun, sonra buraya yaz">
-                <button class="btn btn-secondary" data-r="type">Yaz ⏎</button>
-            </div>
-            <p class="hint">Siteye giriş yaparsan giriş kendi sunucunda saklanır; sonraki açılışlarda yeniden girmen gerekmez
-                (Ayarlar → Sitelere girişler'den çıkış yapabilirsin).</p>
-            <div class="remote-found"></div>
         </div>`;
 
     const status = container.querySelector('.remote-status');
@@ -50,6 +97,8 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
     const dot = container.querySelector('.remote-dot');
     const textInput = container.querySelector('.remote-type input');
     const foundBox = container.querySelector('.remote-found');
+    const foundCount = container.querySelector('[data-found-count]');
+    const live = container.querySelector('.rv-live');
 
     let id = null;
     let alive = true;
@@ -68,14 +117,16 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
         const key = media.map((i) => i.url).join('\n');
         if (key === foundKey) return;
         foundKey = key;
+        foundCount.textContent = `Bulunan medya · ${media.length}`;
         foundBox.innerHTML = media.length
-            ? `<p class="hint">🔎 Bulunan medya (<strong>${media.length}</strong>) — indirmek için dokun:</p>
-               <div class="variant-list">${media.map((i) => `
-                   <button class="variant" data-r="pick" data-url="${escapeHtml(i.url)}">
-                       <span>${ICONS[i.kind] || '📄'} ${escapeHtml(shortUrl(i.url))}</span><span>⬇️</span>
-                   </button>`).join('')}</div>`
-            : '';
-        if (media.length) setStatus('✅ Medya bulundu. Aşağıdan seç ya da dokunmaya devam et.');
+            ? media.map((i) => `
+                <button class="rv-item" data-r="pick" data-url="${escapeHtml(i.url)}">
+                    <span class="rv-tag">${escapeHtml(kindTag(i))}</span>
+                    <span class="rv-item-url">${escapeHtml(shortUrl(i.url))}</span>
+                    <span class="rv-dl">İndir</span>
+                </button>`).join('')
+            : '<div class="rv-empty">Video başlayınca burada çıkar.</div>';
+        if (media.length) setStatus('Medya bulundu. Aşağıdan seç ya da dokunmaya devam et.');
     }
 
     // Dokunuşlar sırayla uygulanır; önceki bitmeden gelen dokunuş atılmaz, sıraya girer.
@@ -95,7 +146,7 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
             });
             if (state.items) renderFound(state.items);
         } catch (err) {
-            setStatus(`❌ ${err.message}`, true);
+            setStatus(err.message, true);
             if (err.status === 404) stop();
         } finally {
             if (kick) kick();
@@ -110,12 +161,14 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
                 if (!alive) break;
                 const next = URL.createObjectURL(blob);
                 img.src = next;
+                live.classList.remove('hidden');
                 if (frameUrl) URL.revokeObjectURL(frameUrl);
                 frameUrl = next;
                 if (!captureId && tick++ % 3 === 0) renderFound((await renderApi(base(), {}, 10000)).items);
             } catch (err) {
                 if (!alive) break;
-                setStatus(`❌ ${err.message}`, true);
+                live.classList.add('hidden');
+                setStatus(err.message, true);
                 if (err.status === 404) return stop();
             }
             await new Promise((resolve) => {
@@ -141,6 +194,7 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
         frameUrl = null;
         container.innerHTML = '';
         window.removeEventListener('pagehide', close);
+        document.removeEventListener('keydown', onKey);
         onClose();
     }
 
@@ -182,13 +236,18 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
         if (e.key === 'Enter') sendText();
     });
 
+    const onKey = (e) => {
+        if (e.key === 'Escape' && container.closest('.remote-overlay')) close();
+    };
+    document.addEventListener('keydown', onKey);
+
     // Uygulama kapanırsa sunucudaki sayfa açık kalmasın (sunucu da 90 sn sonra kendisi kapatır).
     window.addEventListener('pagehide', close);
 
     if (captureId) {
         id = captureId;
         img.style.aspectRatio = '16 / 9';
-        setStatus('Videonun oynat düğmesine dokun (reklam/onay varsa önce onları geç). Video başladığı an kayıt kendiliğinden başlar.');
+        setStatus('Videonun oynat düğmesine dokun (reklam/onay varsa önce onları geç). Video başladığı an kayıt başlar.');
         loop();
         return { close };
     }
@@ -206,11 +265,11 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
             }
             id = state.id;
             img.style.aspectRatio = `${state.width} / ${state.height}`;
-            setStatus('Görüntüye dokun: dokunduğun yer sunucudaki sayfada tıklanır. Video başlayınca adresi aşağıda çıkar.');
+            setStatus('Dokunduğun yer sunucudaki sayfada tıklanır. Video başlayınca aşağıda çıkar.');
             renderFound(state.items);
             loop();
         } catch (err) {
-            setStatus(`❌ ${err.message}`, true);
+            setStatus(err.message, true);
             alive = false;
         }
     })();

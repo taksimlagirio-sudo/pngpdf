@@ -5,10 +5,20 @@ import { initDownloads, setCurrentView, setFloatOpen, getJobs } from './download
 import { initDetectTab } from './detect-tab.js';
 import { initImagesTab } from './images.js';
 import { initSettings } from './settings.js';
+import { startInbox } from './servertools.js';
+import { openSetup, parsePairLink, redeemPair } from './setup.js';
+import { initLibraryTab } from './library-tab.js';
+import { initFollow } from './follow.js';
+import { openBulk } from './bulk.js';
+import { createViewer } from './viewer.js';
+import { createEditor } from './editor.js';
 import { restoreServerRecordings } from './serverrec.js';
 import { canFloat, toggleFloatingBar, onFloatStateChange } from './floatbar.js';
 
-const VIEWS = ['detect', 'images', 'downloads', 'settings'];
+let settingsTab = null; // Ayarlar açılınca sayaçları tazelemek için
+let libraryTab = null;
+let followTab = null;
+const VIEWS = ['detect', 'images', 'library', 'downloads', 'follow', 'settings'];
 // Eski sürümlerin sekme adresleri (kısayollar, yer imleri) yeni bölümlere düşsün.
 const LEGACY = { mp4: 'detect', hls: 'detect', image: 'images', pdf: 'detect' };
 
@@ -50,13 +60,24 @@ function navigate(name) {
     if (!VIEWS.includes(name)) name = LEGACY[name] || 'detect';
     document.body.dataset.view = name;
     VIEWS.forEach((v) => $(`view-${v}`).classList.toggle('active', v === name));
-    document.querySelectorAll('.tab, .nav-item').forEach((el) => el.classList.toggle('active', el.dataset.view === name));
+    // Takip, telefonda İndirmeler'in bir sekmesidir; alt çubukta İndirmeler seçili görünür.
+    document.querySelectorAll('.tab, .nav-item').forEach((el) => el.classList.toggle('active',
+        el.dataset.view === name || (name === 'follow' && el.classList.contains('tab') && el.dataset.view === 'downloads')));
     if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
     setCurrentView(name);
+    if (name === 'settings' && settingsTab) settingsTab.refresh();
+    if (name === 'library' && libraryTab) libraryTab.refresh();
+    if (name === 'follow' && followTab) followTab.refresh();
     window.scrollTo(0, 0);
 }
 
 document.addEventListener('click', (e) => {
+    // "Yapıştır ve algıla" her sekmede: Algıla'ya geçip panodaki bağlantıyı algılar.
+    if (e.target.closest('[data-paste]')) {
+        navigate('detect');
+        detectTab.paste();
+        return;
+    }
     const themeBtn = e.target.closest('[data-theme-toggle]');
     if (themeBtn) {
         setPref('theme', getPrefs().theme === 'light' ? 'dark' : 'light');
@@ -72,21 +93,16 @@ document.addEventListener('click', (e) => {
 });
 window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
 
-initDownloads({ onNavigate: navigate });
+initDownloads({
+    onNavigate: navigate,
+    onDetect: (url) => {
+        navigate('detect');
+        detectTab.prefill(url, true);
+    }
+});
 
 // Kendi sunucundan açıldıysa token'ı kendiliğinden al.
 await autoConfigureLocalServer();
-
-const imagesTab = initImagesTab({ toast });
-const detectTab = initDetectTab({
-    navigate,
-    toast,
-    photos: imagesTab,
-    openImages(pageUrl, urls, title) {
-        navigate('images');
-        imagesTab.open(pageUrl, urls, title);
-    }
-});
 
 /* ---- Ana ekrana ekleme ---- */
 let installPrompt = null;
@@ -103,22 +119,57 @@ window.addEventListener('appinstalled', () => {
 });
 const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
-/* ---- Ayarlar + kenar çubuğundaki sunucu kartı ---- */
-initSettings({
-    install: {
-        onAvailable(fn) {
-            installListeners.add(fn);
-            fn(Boolean(installPrompt));
-        },
-        async prompt() {
-            if (!installPrompt) return;
-            installPrompt.prompt();
-            await installPrompt.userChoice;
-            installPrompt = null;
-            setInstallable(false);
-        },
-        iosHint: !standalone && /iPhone|iPad|iPod/.test(navigator.userAgent)
+const install = {
+    onAvailable(fn) {
+        installListeners.add(fn);
+        fn(Boolean(installPrompt));
     },
+    available: () => Boolean(installPrompt),
+    async prompt() {
+        if (!installPrompt) return;
+        installPrompt.prompt();
+        await installPrompt.userChoice;
+        installPrompt = null;
+        setInstallable(false);
+    },
+    iosHint: !standalone && /iPhone|iPad|iPod/.test(navigator.userAgent)
+};
+
+const imagesTab = initImagesTab({ toast });
+function showSetup(step = 1) {
+    if (!settingsTab) return;
+    openSetup({ connect: (config) => settingsTab.connect(config), toast, step });
+}
+
+const detectTab = initDetectTab({
+    navigate,
+    toast,
+    openSetup: showSetup,
+    onFollow: (url) => followTab && followTab.add(url),
+    onBulk: (text) => openBulk({ text, enqueue: (r, o) => detectTab.enqueueResult(r, o), toast, navigate }),
+    photos: imagesTab,
+    install,
+    openImages(pageUrl, urls, title) {
+        navigate('images');
+        imagesTab.open(pageUrl, urls, title);
+    }
+});
+
+/* ---- Ayarlar + kenar çubuğundaki sunucu kartı ---- */
+followTab = initFollow({ navigate, toast });
+document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-follow-add]')) followTab.add('', 'live');
+});
+const viewer = createViewer({ toast });
+const editor = createEditor({ toast });
+viewer.setEditor((item, list) => editor.open(item, list));
+libraryTab = initLibraryTab({ toast, viewer, onMerge: (items) => editor.merge(items) });
+
+settingsTab = initSettings({
+    install,
+    toast,
+    openStorage: () => libraryTab.openStorage(),
+    openSetup: showSetup,
     onServerChange(server, version) {
         const card = $('sideServer');
         card.querySelector('.dot').classList.toggle('on', Boolean(server));
@@ -135,6 +186,15 @@ initSettings({
 });
 
 restoreServerRecordings();
+
+// Bilgisayardan (yer imi düğmesiyle) gönderilen bağlantı gelince algılama başlar.
+startInbox({
+    onLink(url) {
+        navigate('detect');
+        detectTab.prefill(url, true, { shared: true });
+        toast('Bilgisayardan bağlantı geldi');
+    }
+});
 // Telefon uygulamayı alta alınca sayfayı dondurabilir ya da kapatabilir; kayıtlar sunucuda sürer.
 // Öne gelince sunucudaki kayıtlarla yeniden eşitlenir (eksik olanlar eklenir, bitenler iner).
 document.addEventListener('visibilitychange', () => {
@@ -154,10 +214,19 @@ const shared = [params.get('url'), params.get('text'), params.get('title')]
     .map((value) => (value.match(/https?:\/\/\S+/) || [])[0])
     .find(Boolean);
 
-if (shared) {
+// QR ile bağlanma: sunucunun "/baglan" QR'ı telefon kamerasıyla okutulunca …/?pair=KOD açılır.
+const pairLink = params.get('pair') ? parsePairLink(location.href) : null;
+if (pairLink) {
+    history.replaceState(null, '', location.pathname + '#settings');
+    navigate('settings');
+    redeemPair(pairLink)
+        .then((config) => settingsTab.connect(config))
+        .then(() => toast('Sunucuna bağlandı'))
+        .catch((err) => toast(`Bağlanılamadı: ${err.message}`));
+} else if (shared) {
     history.replaceState(null, '', location.pathname + '#detect');
     navigate('detect');
-    detectTab.prefill(shared, true);
+    detectTab.prefill(shared, true, { shared: true });
 } else {
     navigate(location.hash.slice(1) || 'detect');
 }

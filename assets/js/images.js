@@ -68,15 +68,15 @@ export function initImagesTab({ toast }) {
             let urls = null;
             const names = new Map();
             // Önce gallery-dl (sunucuda kuruluysa): bilinen sitelerde tam boyutlu resimler ve galerinin tamamı.
-            if (getRenderServer()) {
-                setBusy('Resimler aranıyor (gallery-dl)...');
+            if (getRenderServer() && getPrefs().fullGalleries !== false) {
+                setBusy('Galeri taranıyor...');
                 const found = await renderImages(url).catch(() => null);
                 if (mySeq !== seq) return;
                 if (found && found.ok && found.items.length) {
                     urls = found.items.map((i) => i.url);
                     for (const i of found.items) if (i.name) names.set(i.url, i.name);
                     if (found.title && !pageTitle) pageTitle = found.title;
-                    source = `gallery-dl${found.site ? ' · ' + found.site : ''}`;
+                    source = `galerinin tamamı${found.site ? ' · ' + found.site : ''}`;
                 }
             }
             if (!urls) urls = known;

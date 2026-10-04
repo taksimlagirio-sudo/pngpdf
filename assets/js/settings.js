@@ -2,8 +2,12 @@
 import { $, isHttpUrl, getRenderServer, setRenderServer, checkRenderServer, renderApi, escapeHtml } from './util.js';
 import { getPrefs, setPref, onPrefs, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch } from './downloads.js';
+import { siteSettings, openSiteSettings } from './sitesettings.js';
+import { openBookmarklet, openServerStatus } from './servertools.js';
 
-export function initSettings({ onServerChange, install }) {
+const BIG_LABELS = { ask: 'Sor', ytdlp: 'Açık', ours: 'Kapalı' };
+
+export function initSettings({ onServerChange, install, toast = () => {}, openSetup = () => {}, openStorage = () => {} }) {
     const root = $('settingsView');
     root.innerHTML = `
         <div class="settings-sec"><span class="sec-label">Görünüm</span>
@@ -11,6 +15,9 @@ export function initSettings({ onServerChange, install }) {
 
         <div class="settings-sec"><span class="sec-label">Varsayılan indirme</span>
             <div class="rows filled" data-part="defaults"></div></div>
+
+        <div class="settings-sec"><span class="sec-label">Bulma</span>
+            <div class="rows filled" data-part="finding"></div></div>
 
         <div class="settings-sec">
             <div class="settings-sec-head"><span class="sec-label">Kendi sunucum</span>
@@ -24,10 +31,20 @@ export function initSettings({ onServerChange, install }) {
                 <label class="field"><span class="field-label">Token</span>
                     <input class="input" type="password" id="serverToken" placeholder="Sunucu açılışta yazdırır" autocomplete="off" style="letter-spacing:.1em"></label>
                 <div class="btn-row">
+                    <button class="btn-ghost" id="serverWizardBtn">Kurulum</button>
+                    <button class="btn-ghost" id="serverQrBtn">QR ile bağlan</button>
+                </div>
+                <div class="btn-row">
                     <button class="btn-ghost" id="serverClearBtn">Kapat</button>
                     <button class="btn-ac" id="serverSaveBtn">Kaydet ve test et</button>
                 </div>
                 <p class="hint" id="serverStatus"></p>
+                <div class="rows filled hidden" id="serverTools">
+                    <button class="row" data-set="status"><span class="row-value" style="font-weight:400">Sunucu durumu
+                        <span class="muted row-sub">Disk, süren kayıtlar, son hatalar, bakım</span></span><span class="row-chev">›</span></button>
+                    <button class="row" data-set="bookmark"><span class="row-value" style="font-weight:400">Bilgisayardan gönder
+                        <span class="muted row-sub">Tarayıcıdaki sayfayı tek tıkla buraya yolla</span></span><span class="row-chev">›</span></button>
+                </div>
             </div>
         </div>
 
@@ -37,14 +54,15 @@ export function initSettings({ onServerChange, install }) {
             <div class="server-panel">
                 <span class="hint" id="adblockText">Kendi sunucun ayarlanınca, sunucunun açtığı sayfalarda reklamlar,
                     açılır pencereler ve reklama yönlendirmeler engellenir.</span>
-                <details>
-                    <summary class="link-btn" style="cursor:pointer">Engelleyici neyi görür, neyi görmez?</summary>
+                <div class="ad-stats hidden" id="adStats">
+                    <div><b id="adBlocked">0</b><span>engellenen istek</span></div>
+                    <div><b id="adVideo">0</b><span>atlanan video reklamı</span></div>
+                </div>
+                <details class="what-box">
+                    <summary>Neyi görür, neyi görmez?</summary>
+                    <p class="hint" style="margin:8px 0 0"><strong>Görür:</strong> yalnızca sunucunun açtığı sayfaların istekleri.
+                        <strong>Görmez:</strong> telefonundaki tarayıcı, dosyaların, şifrelerin.</p>
                     <ul class="hint" style="margin:8px 0 0 18px;display:flex;flex-direction:column;gap:6px">
-                        <li><strong>Görür:</strong> yalnızca kendi sunucundaki tarayıcının açtığı sayfaların istek
-                            adresleri — yani indirmek için açtırdığın sayfalar. "Bu adres reklam mı?" kontrolü sunucunun
-                            içinde yapılır; adresler Ghostery'ye ya da başka bir yere gönderilmez.</li>
-                        <li><strong>Görmez:</strong> telefonundaki tarayıcı, gezdiğin siteler, dosyaların, şifrelerin ve bu
-                            uygulamadaki ayarların. Telefon uygulamasında engelleyici hiç çalışmaz.</li>
                         <li><strong>Bağlandığı tek yer:</strong> sunucu açılırken reklam listelerini GitHub'dan
                             (ghostery/adblocker) indirir; bu sırada GitHub yalnızca sunucunun IP adresini görür.</li>
                         <li>Açık kaynak (MPL-2.0). Tamamen kapatmak için sunucuyu <code>ADBLOCK=0</code> ile başlat.</li>
@@ -60,8 +78,8 @@ export function initSettings({ onServerChange, install }) {
                 <span class="hint" id="loginsText">Bir siteye "Kendim dokunayım" ekranında bir kez giriş yaparsan giriş
                     kendi sunucunda saklanır; o sitenin videoları sonra girişli açılır ve kaydedilir.</span>
                 <div class="rows filled hidden" id="loginsList"></div>
-                <span class="hint">Girişler (çerezler) yalnızca kendi sunucundaki <code>.logins.json</code> dosyasında durur,
-                    başka yere gönderilmez. Saklamayı kapatmak için sunucuyu <code>SAVE_LOGINS=0</code> ile başlat.</span>
+                <span class="hint">Yalnızca kendi sunucunda saklanır (<code>.logins.json</code>), başka yere gönderilmez.
+                    Saklamayı kapatmak için sunucuyu <code>SAVE_LOGINS=0</code> ile başlat.</span>
             </div>
         </div>
 
@@ -77,12 +95,15 @@ export function initSettings({ onServerChange, install }) {
     const themeBox = root.querySelector('[data-part="theme"]');
     const defaultsBox = root.querySelector('[data-part="defaults"]');
     const chip = root.querySelector('[data-part="chip"]');
+    const findingBox = root.querySelector('[data-part="finding"]');
+    const sub = (text) => `<span class="muted row-sub">${text}</span>`;
 
     function renderPrefs() {
         const prefs = getPrefs();
         themeBox.innerHTML = [['dark', 'Koyu'], ['light', 'Açık']].map(([v, l]) =>
             `<button class="${prefs.theme === v ? 'on' : ''}" data-set="theme" data-v="${v}">${l}</button>`).join('');
         const save = effectiveSaveMode(prefs.save);
+        const sites = Object.keys(siteSettings());
         const bgOk = canBackgroundFetch && save !== 'disk';
         defaultsBox.innerHTML = `
             <button class="row" data-set="save"><span class="row-value" style="font-weight:400">Kaydet</span>
@@ -92,11 +113,24 @@ export function initSettings({ onServerChange, install }) {
             <button class="row${bgOk ? '' : ' disabled'}" data-set="background" ${bgOk ? '' : 'disabled'}>
                 <span class="row-value" style="font-weight:400">Arka planda indir${canBackgroundFetch ? '' : ' (bu tarayıcıda yok)'}</span>
                 <span class="toggle${prefs.background && bgOk ? ' on' : ''}"></span></button>
+            <button class="row" data-set="storage"><span class="row-value" style="font-weight:400">Kitaplık ve depolama</span>
+                <span class="row-chev">›</span></button>
             <button class="row" data-set="keepAwake"><span class="row-value" style="font-weight:400">İndirirken ekranı açık tut</span>
                 <span class="toggle${prefs.keepAwake ? ' on' : ''}"></span></button>
-            <button class="row" data-set="useYtdlp"><span class="row-value" style="font-weight:400">Bilinen sitelerde yt-dlp kullan
-                <span class="muted" style="display:block;font-size:12px">Sunucuda kuruluysa; kapalıyken sayfa doğrudan sunucunda taranır</span></span>
-                <span class="toggle${prefs.useYtdlp ? ' on' : ''}"></span></button>`;
+`;
+        findingBox.innerHTML = `
+            <button class="row" data-set="bigSites"><span class="row-value" style="font-weight:400">Bilinen sitelerde gelişmiş bulma
+                ${sub('YouTube, Instagram, TikTok, X… kalite listesiyle')}</span>
+                <span class="muted">${BIG_LABELS[prefs.bigSites] || BIG_LABELS.ask} ›</span></button>
+            <button class="row" data-set="sites"><span class="row-value" style="font-weight:400">Site başına ayarlar
+                ${sub(sites.length ? escapeHtml(sites.slice(0, 3).join(', ') + (sites.length > 3 ? ` +${sites.length - 3}` : '')) : 'Yöntem, kalite ve klasör')}</span>
+                <span class="row-chev">›</span></button>
+            <button class="row" data-set="useYtdlp"><span class="row-value" style="font-weight:400">Diğer sitelerde de gelişmiş bulma
+                ${sub('Kapalıyken diğer sayfalar doğrudan sunucunda açılıp taranır')}</span>
+                <span class="toggle${prefs.useYtdlp ? ' on' : ''}"></span></button>
+            <button class="row" data-set="fullGalleries"><span class="row-value" style="font-weight:400">Galerilerin tamamı
+                ${sub('Resimlerde tam boyut ve tüm sayfalar')}</span>
+                <span class="toggle${prefs.fullGalleries !== false ? ' on' : ''}"></span></button>`;
     }
 
     root.addEventListener('click', (e) => {
@@ -105,6 +139,7 @@ export function initSettings({ onServerChange, install }) {
         const prefs = getPrefs();
         const key = btn.dataset.set;
         if (key === 'theme') setPref('theme', btn.dataset.v);
+        if (key === 'storage') return openStorage();
         if (key === 'save') {
             const order = ['downloads', 'gallery', 'disk'].filter((m) =>
                 m === 'downloads' || (m === 'gallery' && canShareFiles) || (m === 'disk' && canSaveToDisk));
@@ -117,6 +152,14 @@ export function initSettings({ onServerChange, install }) {
         if (key === 'background') setPref('background', !prefs.background);
         if (key === 'keepAwake') setPref('keepAwake', !prefs.keepAwake);
         if (key === 'useYtdlp') setPref('useYtdlp', !prefs.useYtdlp);
+        if (key === 'fullGalleries') setPref('fullGalleries', prefs.fullGalleries === false);
+        if (key === 'bigSites') {
+            const order = ['ask', 'ytdlp', 'ours'];
+            setPref('bigSites', order[(order.indexOf(prefs.bigSites) + 1) % order.length]);
+        }
+        if (key === 'sites') return openSiteSettings({ toast });
+        if (key === 'status') return openServerStatus({ toast });
+        if (key === 'bookmark') return openBookmarklet({ toast });
     });
     onPrefs(renderPrefs);
     renderPrefs();
@@ -130,6 +173,12 @@ export function initSettings({ onServerChange, install }) {
     const adText = $('adblockText');
     const showAdblock = (health) => {
         const ab = health && health.adblock;
+        const hasStats = Boolean(ab && ab.enabled && typeof ab.blocked === 'number');
+        $('adStats').classList.toggle('hidden', !hasStats);
+        if (hasStats) {
+            $('adBlocked').textContent = ab.blocked.toLocaleString('tr-TR');
+            $('adVideo').textContent = ab.videoAds.toLocaleString('tr-TR');
+        }
         if (!health) {
             adChip.textContent = 'Sunucu yok';
             adChip.classList.remove('on');
@@ -185,6 +234,7 @@ export function initSettings({ onServerChange, install }) {
     const showState = (on, text, version) => {
         chip.textContent = on ? `Bağlı${version ? ' · v' + version : ''}` : 'Kapalı';
         chip.classList.toggle('on', on);
+        $('serverTools').classList.toggle('hidden', !on);
         if (text !== undefined) status.textContent = text;
         onServerChange(on ? getRenderServer() : null, version);
     };
@@ -210,6 +260,18 @@ export function initSettings({ onServerChange, install }) {
         showState(false);
     }
 
+    /** Sunucuyu dener; olursa kaydeder ve ekranı günceller (sihirbaz ve QR da bunu kullanır). */
+    async function connect(config) {
+        const health = await checkRenderServer(config);
+        setRenderServer(config);
+        urlInput.value = config.url;
+        tokenInput.value = config.token;
+        showState(true, `Bağlandı (sürüm ${health.version}). Sayfa adresleri artık bu sunucuda açılacak.`, health.version);
+        showAdblock(health);
+        loadLogins(health);
+        return health;
+    }
+
     $('serverSaveBtn').addEventListener('click', async () => {
         const config = { url: urlInput.value.trim().replace(/\/+$/, ''), token: tokenInput.value.trim() };
         if (!isHttpUrl(config.url) || !config.token) {
@@ -218,15 +280,13 @@ export function initSettings({ onServerChange, install }) {
         }
         status.textContent = 'Bağlanılıyor... (Chrome yerel ağ izni isterse "İzin ver"e bas)';
         try {
-            const health = await checkRenderServer(config);
-            setRenderServer(config);
-            showState(true, `Bağlandı (sürüm ${health.version}). Sayfa adresleri artık bu sunucuda açılacak.`, health.version);
-            showAdblock(health);
-            loadLogins(health);
+            await connect(config);
         } catch (err) {
             showState(Boolean(getRenderServer()), `Bağlanılamadı: ${err.message}. Sunucu açık mı, adres https mi (veya 127.0.0.1), token doğru mu?`);
         }
     });
+    $('serverWizardBtn').addEventListener('click', () => openSetup(1));
+    $('serverQrBtn').addEventListener('click', () => openSetup(3));
 
     $('serverClearBtn').addEventListener('click', () => {
         setRenderServer(null);
@@ -236,9 +296,20 @@ export function initSettings({ onServerChange, install }) {
         loadLogins(null);
     });
 
+    /** Ayarlar açılınca sayaçlar ve girişler tazelenir. */
+    function refresh() {
+        const server = getRenderServer();
+        if (!server) return;
+        checkRenderServer(server).then((health) => {
+            showAdblock(health);
+            loadLogins(health);
+        }).catch(() => {});
+    }
+
     /* ---- Ana ekrana ekle ---- */
     const installRow = $('installRow');
     install.onAvailable((available) => installRow.classList.toggle('hidden', !available));
     installRow.addEventListener('click', () => install.prompt());
     if (install.iosHint) $('iosInstallHint').classList.remove('hidden');
+    return { refresh, connect };
 }

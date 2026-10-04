@@ -41,6 +41,12 @@ Sunucu yalnızca Tailscale ağındaki cihazlarından erişilebilir olur; interne
 **Cloudflare Tunnel (alternatif):** `cloudflared tunnel --url http://127.0.0.1:8787` geçici bir
 https adresi verir. Bu adres internete açıktır; koruma yalnızca token'dır.
 
+**QR ile bağlanma:** sunucuyu `HOST=0.0.0.0` ile başlat ve sunucunun çalıştığı cihazda
+`http://127.0.0.1:8787/baglan` sayfasını aç. Sayfa adresleri, token'ı ve 10 dakika geçerli, tek kullanımlık
+bir kod içeren QR gösterir (token QR'a yazılmaz). Telefonda İndirici → Ayarlar → **QR ile bağlan** ile ya da
+telefon kamerasıyla okut. Sunucuya https ile ulaşıyorsan (ör. `tailscale serve`) adresi `PUBLIC_URL=https://…`
+olarak ver; QR o adresi de gösterir. `/baglan` sayfası yalnızca 127.0.0.1'den açılır.
+
 ## Kurulum (telefonun kendisi: Android + Termux) — önerilen
 
 Sunucu telefonda çalışınca İndirici'nin kendisi de ondan açılır (`http://127.0.0.1:8787/`):
@@ -151,6 +157,46 @@ kendiliğinden buraya geçer (`POST /capture {pageUrl, mediaUrl}`):
   (`USE_CHROME=0` ile kapatılır). Termux'taki Chromium'un H.264 desteği cihaza göre değişebilir.
 - Kayıtlar `render-server/.captures/` klasöründe tutulur (`CAPTURE_DIR`); uygulama dosyayı alınca silinir.
 
+## Takip: yayını bekle, zamanla, kanalı takip et
+
+Uygulamada İndirmeler → **Takip** (masaüstünde soldaki **Takip**). Hepsi sunucuda çalışır; telefon ya da
+uygulama kapalıyken de sürer.
+
+- **Yayını bekle:** sayfa seçtiğin sıklıkta (1–30 dk) yoklanır; canlı yayın açıldığı an kayıt başlar,
+  yayın bitince (ya da süre sınırında) dosya kaydedilir. "Her yayını" seçiliyse yayın kapanıp yeniden
+  açıldığında yine kaydedilir. İstersen yalnızca belirli gün ve saatlerde bakılır.
+- **Zamanla:** belirli saatte başlat, belirli saatte bitir (5 dk erken başlar, 10 dk geç biter); bir kez,
+  her gün, hafta içi ya da her hafta.
+- **Kanalı takip et:** kanal/profil/çalma listesindeki yeni videolar (yt-dlp gerekir) bulunur ve
+  istersen seçtiğin kalitede sunucuya indirilir. İlk bakışta eski videolar indirilmez.
+
+Kayıtlar ve inen videolar Kitaplık → **Sunucum**'da görünür, 7 gün saklanır. Takip listesi `.watches.json`
+dosyasında durur.
+
+**Bildirimler:** takip eklerken "Bildirim gönder" açıksa uygulama bildirim izni ister; sunucu yayın
+başlayınca, kayıt bitince ve yeni video gelince telefonuna bildirim gönderir (Web Push, telefon kilitliyken
+de gelir). Bunun için sunucunun internete çıkabilmesi yeterli; anahtarlar `.push-keys.json` dosyasında
+kendiliğinden oluşur.
+
+## Bilgisayardan gönder (yer imi düğmesi)
+
+Uygulamada Ayarlar → Kendi sunucum → **Bilgisayardan gönder** ekranındaki adresi (`/yerimi?k=…`)
+bilgisayarda aç ve "İndirici'ye gönder" düğmesini yer imleri çubuğuna sürükle. Bir video sayfasında bu
+düğmeye tıklayınca adres sunucuya bırakılır; açık olan İndirici (telefon ya da masaüstü) birkaç saniye
+içinde alıp algılamayı başlatır, kapalıysa bildirim gelir. Düğme yalnızca bağlantı bırakabilen ayrı bir
+anahtar taşır (`.inbox.json`); sunucu token'ı yer imine yazılmaz. Bilgisayarın sunucuya ulaşması için
+sunucu `HOST=0.0.0.0` ile (aynı Wi-Fi) ya da Tailscale üzerinden açık olmalı.
+
+## Sunucu durumu ve bakım
+
+Ayarlar → Kendi sunucum → **Sunucu durumu**: disk kullanımı, süren kayıt, bekleyen takipler, bu hafta
+inenler, son hatalar ve en büyük kayıtlar. Buradan "eski kayıtları sil" süresi seçilir (kapalı / 7 / 30 /
+90 gün, `.server-settings.json`) ve sunucu yeniden başlatılabilir.
+
+**Telefon açılınca kendiliğinden başlat (Termux):** Play Store ya da F-Droid'den *Termux:Boot*
+uygulamasını kurup bir kez aç, sonra Termux'ta `sh render-server/kur-otomatik.sh` çalıştır. Sunucu her
+açılışta arka planda başlar (kayıt: `~/indirici.log`). Kaldırmak için `sh render-server/kur-otomatik.sh kaldir`.
+
 ## Reklam engelleme
 
 Sunucunun açtığı tüm sayfalarda (tarama, "kendim dokunayım", açıp kaydet) reklam ve izleme
@@ -184,6 +230,11 @@ siteye kaçarsa (tıklama ele geçirme) videonun sayfasına geri dönülür ve o
 | POST | `/capture` `{pageUrl, mediaUrl, kind, name}` | Videoyu açıp hızlandırılmış oynatarak kaydeder |
 | GET / POST | `/capture/:id/shot`, `/capture/:id/action` | Video başlamazsa sayfanın görüntüsü / kullanıcının dokunuşu |
 | GET / POST / DELETE | `/capture`, `/capture/:id`, `/capture/:id/stop`, `/capture/:id/file` | `/record` ile aynı |
+| GET | `/status` | Sunucu durumu (disk, kayıtlar, takipler, son hatalar) |
+| POST | `/status/settings` `{keepDays}` · `/status/restart` | Eski kayıt silme süresi · yeniden başlatma |
+| GET | `/inbox?after=…` | Bilgisayardan gönderilen bağlantılar |
+| GET | `/yerimi?k=…` , `/gonder?k=…&u=…` | Yer imi sayfası ve gönderme ucu (token yerine gönderme anahtarı) |
+| POST | `/audio/analyze` , `/audio/export` `{source, …}` | Ses: dalga biçimi/sessizlik, MP3/M4A dışa aktarma (ffmpeg gerekir) |
 
 Token `Authorization: Bearer <token>` başlığıyla ya da `?token=` parametresiyle gönderilir.
 
@@ -216,7 +267,8 @@ hata açıklamasında "cihaza (IP) bağlı" ihtimali söylenmez; giriş/oturum v
 
 ## yt-dlp (veri katmanı)
 
-Varsayılan olarak **kapalıdır**: uygulamada Ayarlar → "Bilinen sitelerde yt-dlp kullan" açılırsa ve yt-dlp
+Büyük platformlarda (TikTok, Instagram, YouTube, X…) uygulama yt-dlp mi kendi yöntemimiz mi diye sorar
+(Ayarlar → Büyük platformlar); diğer sitelerde varsayılan kapalıdır (Ayarlar → "Diğer sitelerde de yt-dlp dene"). yt-dlp seçilince ve
 kuruluysa, sunucu bir sayfa adresi gelince önce yt-dlp'ye sorar (`yt-dlp -J`): YouTube, Vimeo,
 Instagram, X gibi bilinen ~1800 sitede videonun gerçek adresleri ve kalite listesi gelir. yt-dlp
 **yalnızca bilgi verir**; dosya indirmez. Liste, kalite seçimi, önizleme, indirme ve birleştirme

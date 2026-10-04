@@ -307,8 +307,14 @@ export async function analyzeUrl(url, { mode = 'auto', signal, onStage = () => {
     return result;
 }
 
+/** "Neden bulunamadı" raporu için adım kaydı. */
+function trace(result, key, label, state, note = '', since = 0) {
+    (result.details.trace = result.details.trace || []).push({ key, label, state, note, ms: since ? Date.now() - since : 0 });
+}
+
 /** Sayfayı (ve gerekirse script dosyalarını) tarayıp medya adreslerini bulur. */
 async function scanPage(result, url, mode, signal, onStage, { noExtract = false } = {}) {
+    const t0 = Date.now();
     const res = await smartFetch(url, { mode, init: { signal } });
     const html = await res.text();
 
@@ -319,6 +325,7 @@ async function scanPage(result, url, mode, signal, onStage, { noExtract = false 
     const embeds = findEmbeds(html, url);
     result.details.images = findImages(html, url);
     result.details.embeds = embeds;
+    trace(result, 'page', 'Sayfa okundu', 'ok', links.length ? `${links.length} video bağlantısı` : 'video bağlantısı yok', t0);
 
     // Kendi sunucun varsa sayfayı orada gerçekten çalıştır: JS ile oynatma anında üretilen
     // adresleri ancak böyle görebiliriz. Statik taramanın bulduklarıyla birleştirilir.
@@ -331,8 +338,10 @@ async function scanPage(result, url, mode, signal, onStage, { noExtract = false 
     // Sayfada bulunamadıysa sayfanın yüklediği script dosyalarına bak.
     if (links.length === 0) {
         onStage('Sayfanın script dosyaları taranıyor...');
+        const t1 = Date.now();
         links = await scanScripts(html, url, mode, signal);
         if (links.length) result.details.fromScripts = true;
+        trace(result, 'scripts', 'Betikler tarandı', 'ok', `${links.length} bulgu`, t1);
     }
 
     result.details.links = links.filter((l) => l.url !== url);
@@ -385,6 +394,7 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
     // Önce yt-dlp (sunucuda kuruluysa): bilinen sitelerde gerçek kalite listesini verir.
     let ytdlpReason = '';
     if (!noExtract) {
+        const tx = Date.now();
         const extracted = await extractOnServer(url, signal, onStage);
         if (extracted && extracted.ok && extracted.items.length && !GENERIC_EXTRACTOR.test(extracted.extractor || '')) {
             applyExtracted(result, extracted);
@@ -392,12 +402,23 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
         }
         // Site tanındı ama yt-dlp alamadı: neden, bizim tarama da bulamazsa gösterilir.
         if (extracted && !extracted.ok && !extracted.unsupported) ytdlpReason = extracted.reason || '';
+        if (!extracted) trace(result, 'ytdlp', 'Gelişmiş bulma', 'skip', 'Atlandı — sunucunda yt-dlp yok');
+        else if (ytdlpReason) trace(result, 'ytdlp', 'Gelişmiş bulma', 'fail', ytdlpReason, tx);
+        else if (extracted.ok && extracted.items.length === 0) trace(result, 'ytdlp', 'Gelişmiş bulma', 'fail', 'video vermedi', tx);
+        else trace(result, 'ytdlp', 'Gelişmiş bulma', 'skip', 'Atlandı — bu site tanınmıyor');
+    } else {
+        trace(result, 'ytdlp', 'Gelişmiş bulma', 'skip', 'Atlandı — Ayarlar\'da kapalı');
     }
     onStage('Sayfa kendi sunucunda çalıştırılıyor (oynatıcının istekleri bekleniyor)...');
+    const ts = Date.now();
     try {
         const sniffed = await renderSniff(url, { signal });
+        const status = sniffed.main && sniffed.main.status;
+        trace(result, 'server', 'Sunucunda açıldı', status >= 400 ? 'fail' : 'ok',
+            status >= 400 ? `sayfa HTTP ${status} döndü` : `${sniffed.blockedAds || 0} reklam engellendi`, ts);
         if (sniffed.title && !result.details.title) result.details.title = sniffed.title;
         if (sniffed.main) result.details.main = sniffed.main;
+        result.details.blockedAds = sniffed.blockedAds || 0;
 
         // Sunucunun gördükleri önce (gerçekten istenen adresler), statik taramadan gelenler sonra.
         const merged = new Map();
@@ -416,20 +437,27 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
         result.details.fromRender = sniffed.items.length > 0;
         result.details.images = mergeImages(result.details.images || [], sniffed.items.filter((i) => i.kind === 'image').map((i) => i.url));
 
-        if (result.details.links.length === 0 && ytdlpReason) result.warnings.push(`yt-dlp alamadı: ${ytdlpReason}`);
+        if (result.details.links.length === 0) {
+            trace(result, 'play', 'Video başlatılamadı', 'fail', result.details.hiddenLinks
+                ? `${result.details.hiddenLinks} istek görüldü ama hiçbiri oynayan video değildi`
+                : status === 401 || status === 403 ? 'sayfa giriş istiyor' : 'Oynat düğmesi giriş ya da dokunma istiyor olabilir');
+        }
+        if (result.details.links.length === 0 && ytdlpReason) result.warnings.push(`Gelişmiş bulma alamadı: ${ytdlpReason}`);
         if (result.details.links.length === 0) {
             result.warnings.push('Sayfa kendi sunucunda çalıştırıldı, oynat düğmesine de basıldı ama medya isteği ' +
                 'görülmedi. Sayfa birkaç tıklama ya da onay istiyorsa aşağıdaki "👆 Sayfayı aç, kendim dokunayım" ' +
                 'ile kendin geç. Yayın kapalıysa, giriş gerekiyorsa, WebRTC ile geliyorsa veya DRM korumalıysa bulunamaz.');
         }
     } catch (err) {
+        if (err.name === 'AbortError') throw err;
+        trace(result, 'server', 'Sunucunda açılamadı', 'fail', err.message, ts);
         result.warnings.push(`Kendi sunucuna ulaşılamadı: ${err.message}`);
     }
 }
 
 /** yt-dlp ile çözümleme: sunucunun yanıtı (ok/items ya da ok:false + reason); yt-dlp yoksa null. */
 async function extractOnServer(url, signal, onStage) {
-    onStage('Sayfa çözümleniyor (yt-dlp)...');
+    onStage('Gelişmiş bulma ile çözümleniyor...');
     let extracted;
     try {
         extracted = await renderExtract(url, { signal });
@@ -443,7 +471,8 @@ async function extractOnServer(url, signal, onStage) {
 function extractedLinks(extracted) {
     return extracted.items.map((item) => ({
         url: item.url, source: item.source || '', kind: item.kind, size: item.size || 0, height: item.height || 0, audioUrl: item.audioUrl || null,
-        variants: item.variants || 0, live: Boolean(item.live), duration: extracted.duration || 0, fromYtdlp: true
+        variants: item.variants || 0, live: Boolean(item.live), duration: extracted.duration || 0, fromYtdlp: true,
+        subtitles: extracted.subtitles || []
     }));
 }
 
@@ -452,6 +481,7 @@ function applyExtracted(result, extracted) {
     result.details.thumbnail = extracted.thumbnail || '';
     result.details.extractor = extracted.extractor || '';
     result.details.fromYtdlp = true;
+    result.details.subtitles = extracted.subtitles || [];
     result.details.links = extractedLinks(extracted);
 }
 
@@ -529,7 +559,7 @@ async function describeDash(result, url, mode, signal) {
     result.suggestedName = fileNameFromUrl(url).replace(/\.mpd$/i, '');
     Object.assign(result.details, {
         mpd, variants: mpd.variants, duration: mpd.duration, live: mpd.live, drm: mpd.drm,
-        hasAudio: mpd.audios.length > 0
+        hasAudio: mpd.audios.length > 0, subtitles: mpd.subtitles || []
     });
     if (mpd.drm) {
         result.downloadable = false;
@@ -554,6 +584,7 @@ async function describeHls(result, url, mode, signal) {
         const master = playlist;
         result.details.master = master;
         result.details.variants = master.variants;
+        result.details.subtitles = master.subtitles || [];
         result.details.audioUrl = audioFor(master, master.variants[0]);
         result.details.audioOnly = master.audioOnly;
         // Yayının canlı mı, kaç saniye mi olduğunu görmek için en iyi kaliteyi de okuyoruz.
@@ -605,8 +636,11 @@ export async function verifyLinks(links, { mode = 'auto', signal } = {}) {
             }
         }
         if (link.kind !== 'hls') {
-            const tiny = link.kind === 'video' && link.size > 0 && link.size < TINY_VIDEO;
-            return { ...link, ok: link.kind === 'video', hidden: link.kind !== 'video' || tiny, tiny };
+            // Ses dosyası yalnızca büyükse (podcast, anlatım) gösterilir; sayfa sesleri, efektler gizli.
+            const tiny = link.size > 0 && link.size < TINY_VIDEO;
+            const audio = link.kind === 'audio' && (link.size || 0) >= 1024 * 1024;
+            const ok = link.kind === 'video' || audio;
+            return { ...link, ok, hidden: !ok || (link.kind === 'video' && tiny), tiny };
         }
         try {
             const playlist = manifestTexts.has(link.url)

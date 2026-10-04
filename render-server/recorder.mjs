@@ -49,6 +49,7 @@ export function parsePlaylist(text, baseUrl) {
             const codecs = attrs.CODECS || '';
             variants.push({
                 url: resolve(uri),
+                height: parseInt(String(attrs.RESOLUTION || '').split('x')[1] || '0', 10),
                 bandwidth: parseInt(attrs.BANDWIDTH || '0', 10),
                 audioGroup: attrs.AUDIO || '',
                 video: codecs ? VIDEO_CODEC.test(codecs) : true
@@ -205,7 +206,8 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
             id: rec.id, state: rec.state, url: rec.url, audioUrl: rec.audioUrl, fileName: rec.fileName, file: rec.file,
             ext: rec.ext, quality: rec.quality, limitSec: rec.limitSec, limitLabel: rec.limitLabel,
             startedAt: rec.startedAt, endedAt: rec.endedAt, mediaSec: rec.mediaSec, bytes: rec.bytes,
-            missed: rec.missed, reason: rec.reason, error: rec.error, warning: rec.warning
+            missed: rec.missed, reason: rec.reason, error: rec.error, warning: rec.warning,
+            maxHeight: rec.maxHeight || 0, vod: Boolean(rec.vod), keepMs: rec.keepMs || 0, source: rec.source || ''
         };
     }
 
@@ -275,10 +277,12 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
 
         let muxer = null;
         try {
-            // Master verildiyse en yüksek kalite + varsayılan ses seçilir.
+            // Master verildiyse en yüksek kalite (ya da istenen üst sınırın altındaki en iyisi) + varsayılan ses.
             let first = await loadPlaylist(rec.url, signal);
             if (first.type === 'master') {
-                const best = first.variants[0];
+                const capped = rec.maxHeight ? first.variants.filter((v) => !v.height || v.height <= rec.maxHeight) : [];
+                const best = capped[0] || first.variants[0];
+                if (best.height) rec.quality = rec.quality || `${best.height}p`;
                 const group = first.audio[best.audioGroup] || [];
                 const audio = group.find((a) => a.isDefault) || group[0];
                 if (!rec.audioUrl && audio) rec.audioUrl = audio.url;
@@ -321,7 +325,8 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
                     const all = s.playlist.segments;
                     let fresh;
                     if (s.lastSeq === null) {
-                        fresh = all.slice(-1);
+                        // Canlıda en yeni parçadan başlanır; bitmiş (VOD) yayın baştan sona alınır.
+                        fresh = rec.vod || !s.playlist.isLive ? all : all.slice(-1);
                     } else {
                         fresh = all.filter((x) => x.seq > s.lastSeq);
                         const newest = all.length ? all[all.length - 1].seq : s.lastSeq;
@@ -386,16 +391,28 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
         return true;
     }
 
-    // Eski bitmiş kayıtlar diski doldurmasın.
-    setInterval(() => {
+    // Eski bitmiş kayıtlar diski doldurmasın (süre "Sunucu durumu"ndan değişir; 0: silinmez).
+    let keepDefault = KEEP_FINISHED_MS;
+    const sweep = () => {
         for (const rec of recordings.values()) {
-            if (rec.state !== 'recording' && rec.state !== 'stopping' && Date.now() - (rec.endedAt || 0) > KEEP_FINISHED_MS) {
+            const keep = rec.keepMs || keepDefault;
+            if (keep && rec.state !== 'recording' && rec.state !== 'stopping' && Date.now() - (rec.endedAt || 0) > keep) {
                 remove(rec.id);
             }
         }
-    }, 60 * 60 * 1000).unref();
+    };
+    setInterval(sweep, 60 * 60 * 1000).unref();
 
     return {
+        setKeepDefault(ms) {
+            keepDefault = Math.max(0, Number(ms) || 0);
+            sweep();
+        },
+        /** Bu süreden eski bitmiş kayıtlar (silinecekler): adet ve boyut. */
+        olderThan(ms) {
+            const old = [...recordings.values()].filter((r) => r.state === 'done' && !r.keepMs && Date.now() - (r.endedAt || 0) > ms);
+            return { count: old.length, bytes: old.reduce((n, r) => n + (r.bytes || 0), 0) };
+        },
         list() {
             return [...recordings.values()].map(publicState).sort((a, b) => b.startedAt - a.startedAt);
         },
@@ -403,7 +420,7 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
             const rec = recordings.get(id);
             return rec ? publicState(rec) : null;
         },
-        async start({ url, audioUrl, name, limitSec, limitLabel, quality }) {
+        async start({ url, audioUrl, name, limitSec, limitLabel, quality, maxHeight = 0, vod = false, keepMs = 0, source = '' }) {
             const target = new URL(url);
             await assertPublicTarget(target);
             const audio = audioUrl ? new URL(audioUrl) : null;
@@ -418,11 +435,46 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
                 limitSec: Math.max(0, Math.min(24 * 3600, Number(limitSec) || 0)),
                 limitLabel: String(limitLabel || '').slice(0, 20),
                 state: 'recording', startedAt: Date.now(), endedAt: 0, mediaSec: 0, bytes: 0, missed: 0,
-                reason: '', error: '', warning: '', stopRequested: false, controller: new AbortController()
+                reason: '', error: '', warning: '', stopRequested: false, controller: new AbortController(),
+                maxHeight: Number(maxHeight) || 0, vod: Boolean(vod), keepMs: Number(keepMs) || 0, source: String(source || '').slice(0, 2000)
             };
             recordings.set(id, rec);
             persist(rec);
             run(rec);
+            return publicState(rec);
+        },
+        /**
+         * Düz bir dosyayı (ör. kanalın yeni videosu) sunucuya indirir; bitince kayıtlar gibi listelenir.
+         * @param {(file: string, onBytes: (n: number) => void, signal: AbortSignal) => Promise<void>} fetchTo
+         */
+        importFile({ name, ext = 'mp4', fetchTo, keepMs = 0, source = '', quality = '' }) {
+            const id = randomBytes(12).toString('hex');
+            const baseName = String(name || 'video').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 100) || 'video';
+            const rec = {
+                id, url: source, audioUrl: null, baseName, quality, ext, file: `${id}.bin`, fileName: `${baseName}.${ext}`,
+                limitSec: 0, limitLabel: '', state: 'recording', startedAt: Date.now(), endedAt: 0, mediaSec: 0, bytes: 0, missed: 0,
+                reason: '', error: '', warning: '', stopRequested: false, controller: new AbortController(), keepMs, source, vod: true
+            };
+            recordings.set(id, rec);
+            persist(rec);
+            (async () => {
+                try {
+                    await fetchTo(path.join(dir, rec.file), (n) => { rec.bytes += n; }, rec.controller.signal);
+                    rec.bytes = fs.statSync(path.join(dir, rec.file)).size;
+                    rec.state = 'done';
+                } catch (err) {
+                    if (rec.controller.signal.aborted) {
+                        rec.state = 'cancelled';
+                        remove(rec.id);
+                        return;
+                    }
+                    rec.state = 'error';
+                    rec.error = err.message;
+                } finally {
+                    rec.endedAt = Date.now();
+                    if (recordings.has(rec.id)) persist(rec);
+                }
+            })();
             return publicState(rec);
         },
         stop(id) {

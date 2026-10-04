@@ -134,6 +134,7 @@ async function followCapture(job, start, { createSinkFor, why = '' }) {
     }
 
     // Dosyayı bu cihaza al (normal indirme gibi).
+    job.transfer = { mediaSec: state.mediaSec || 0 };
     job.rec = null;
     job.canStop = false;
     job.kind = 'video';
