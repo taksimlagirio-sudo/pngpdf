@@ -115,6 +115,77 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     });
     const countLinks = (text) => (String(text).match(/https?:\/\/[^\s<>"']+/g) || []).length;
 
+    /* ---- Bağlantı alanı önerileri: panodaki bağlantı ve son algılananlar ----
+     * Pano yalnızca izin önceden verilmişse sessizce okunur (izin sorusu çıkarmaz). Alan boştayken
+     * panodaki yeni bağlantı tek dokunuşluk bir öneri olarak çıkar; yazarken son algılananlardan
+     * uyanlar listelenir. Telefonda alan klavyenin hemen üstünde durur (sekme çubuğu gizlenir). */
+    const suggestBox = $('detectSuggest');
+    let clipUrl = '';
+    let typing = false;
+    async function checkClipboard() {
+        try {
+            const st = await navigator.permissions.query({ name: 'clipboard-read' });
+            if (st.state !== 'granted' || !document.hasFocus()) return;
+            const url = firstUrl(await navigator.clipboard.readText());
+            if (isHttpUrl(url) && url !== clipUrl) {
+                clipUrl = url;
+                paintSuggest();
+            }
+        } catch (_) { /* izin yok ya da desteklenmiyor */ }
+    }
+    function paintSuggest() {
+        if (!suggestBox) return;
+        const value = urlInput.value.trim();
+        const shortLink = (u) => u.replace(/^https?:\/\/(www\.)?/, '');
+        if (typing) {
+            const q = value.toLowerCase();
+            const items = [];
+            if (clipUrl && clipUrl !== value) {
+                items.push(`<button class="us-item clip" data-url="${escapeHtml(clipUrl)}">${icon('paste')}<span class="us-t"><b>Panodaki bağlantı</b><small>${escapeHtml(shortLink(clipUrl))}</small></span></button>`);
+            }
+            recentList()
+                .filter((r) => r.url !== value && r.url !== clipUrl && (!q || r.url.toLowerCase().includes(q) || (r.title || '').toLowerCase().includes(q)))
+                .slice(0, 3)
+                .forEach((r) => items.push(`<button class="us-item" data-url="${escapeHtml(r.url)}">${icon('history')}<span class="us-url">${escapeHtml(shortLink(r.url))}</span></button>`));
+            suggestBox.innerHTML = items.length ? `<span class="us-head">Önerilenler</span>${items.join('')}` : '';
+            return;
+        }
+        const recent = recentList()[0];
+        const fresh = clipUrl && !info && clipUrl !== value && !(recent && recent.url === clipUrl);
+        suggestBox.innerHTML = fresh
+            ? `<button class="us-chip" data-url="${escapeHtml(clipUrl)}">${icon('paste')}<span>Panoda: <i>${escapeHtml(shortLink(clipUrl).slice(0, 40))}</i></span><b>Algıla</b></button>`
+            : '';
+    }
+    if (suggestBox) {
+        // Öneriye dokunurken alan odağını kaybetmesin (klavye kapanıp liste kaybolmasın).
+        suggestBox.addEventListener('pointerdown', (e) => { if (e.target.closest('[data-url]')) e.preventDefault(); });
+        suggestBox.addEventListener('click', (e) => {
+            const b = e.target.closest('[data-url]');
+            if (!b) return;
+            const url = b.dataset.url;
+            if (url === clipUrl) clipUrl = ''; // kullanıldı
+            urlInput.value = url;
+            urlInput.blur();
+            showShared('');
+            start(url);
+        });
+        urlInput.addEventListener('focus', () => {
+            typing = true;
+            document.body.classList.add('typing');
+            checkClipboard();
+            paintSuggest();
+        });
+        urlInput.addEventListener('blur', () => {
+            typing = false;
+            document.body.classList.remove('typing');
+            paintSuggest();
+        });
+        urlInput.addEventListener('input', paintSuggest);
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkClipboard(); });
+        window.addEventListener('focus', checkClipboard);
+        checkClipboard();
+    }
+
     async function readClipboard() {
         if (!navigator.clipboard || !navigator.clipboard.readText) throw new Error('Bu tarayıcı panoyu okumaya izin vermiyor');
         return navigator.clipboard.readText();
@@ -147,6 +218,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             } catch (_) { /* pano izni yok */ }
         }
         urlInput.value = url;
+        urlInput.blur(); // telefonda klavye kapansın, sonuç görünsün
         start(url);
     }
 
@@ -700,6 +772,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     function render() {
         resTop.innerHTML = '';
+        paintSuggest();
         if (!info) return;
         if (info.target === 'page') renderPage();
         else if (info.target === 'hls' && ui.media && ui.media.live) renderLive();
@@ -1077,6 +1150,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 <div class="dl-actions dl-sticky">
                     <button class="btn-big" data-act="download">${dlButtonHtml()}</button>
                     <button class="btn-ghost dl-queue" data-act="queue" aria-label="Sıraya ekle" title="Sıraya ekle">${icon('list')}</button>
+                    <button class="dl-new" data-act="new-link">${icon('link')}<span>Başka bağlantı algıla</span>${icon('paste')}</button>
                 </div>`;
         }
         const d = info.details || {};
@@ -1513,6 +1587,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         photosPage = null;
         showShared('');
         renderIdle();
+        paintSuggest();
     }
     resTop.addEventListener('click', (e) => {
         if (e.target.closest('[data-act="back"]')) goIdle();
@@ -1523,6 +1598,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (!btn || btn.disabled) return;
         const act = btn.dataset.act;
         const prefs = getPrefs();
+        if (act === 'new-link') {
+            goIdle();
+            urlInput.value = '';
+            urlInput.focus();
+            return;
+        }
 
         if (act === 'analyze-link') {
             const fromPage = info && info.target === 'page';

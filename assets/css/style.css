@@ -3701,3 +3701,57 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
 .dl-interrupted li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dl-interrupted .muted { color: var(--mt); }
 .dli-btns { display: flex; gap: 8px; padding-left: 32px; }
+
+/* ---- Algıla: bağlantı alanı (telefonda altta, başparmak bölgesinde) ---- */
+.url-dock { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.url-field .url-link { flex: none; width: 18px; height: 18px; margin-left: 14px; color: var(--mt); }
+.url-field:focus-within .url-link { color: var(--act); }
+.urlbar .url-field .url-link + input { padding-left: 4px; }
+.url-suggest { display: flex; flex-direction: column; gap: 2px; }
+.url-suggest:empty { display: none; }
+.us-head { padding: 2px 4px 4px; font-size: 12px; font-weight: 600; color: var(--mt); }
+.us-item { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 8px; border-radius: 12px; border: 0; background: none; color: var(--tx); text-align: left; cursor: pointer; }
+.us-item .ic { flex: none; width: 17px; height: 17px; color: var(--mt); }
+.us-item.clip { background: var(--acs); }
+.us-item.clip .ic { color: var(--act); }
+.us-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.us-t b { font-size: 13px; }
+.us-t small, .us-url { font: 500 12px/1.3 var(--mono); color: var(--mt); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.us-chip { align-self: flex-start; max-width: 100%; display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px 0 10px; border-radius: 18px; border: 1px solid rgba(212, 240, 74, .3); background: var(--acs); color: var(--tx); font: 500 12.5px/1 Onest, system-ui, sans-serif; cursor: pointer; }
+.us-chip .ic { flex: none; width: 15px; height: 15px; color: var(--act); }
+.us-chip span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.us-chip span i { font: 500 12px/1 var(--mono); font-style: normal; color: var(--mt); }
+.us-chip b { color: var(--act); }
+.dl-new { display: none; }
+
+@media (max-width: 959px) {
+    #view-detect { padding-bottom: 84px; }
+    #view-detect .url-dock {
+        position: fixed; left: 0; right: 0; z-index: 28;
+        bottom: calc(var(--tabbar-h) - 22px + env(safe-area-inset-bottom));
+        padding: 10px 12px 12px; background: var(--bg);
+    }
+    #view-detect .url-dock::before { content: ''; position: absolute; left: 0; right: 0; bottom: 100%; height: 28px; background: linear-gradient(transparent, var(--bg)); pointer-events: none; }
+    #view-detect .urlbar { gap: 8px; align-items: center; padding: 6px; border-radius: 22px; border: 1px solid var(--ln); background: var(--sf); }
+    #view-detect .urlbar:focus-within { border-color: var(--ac); }
+    #view-detect .url-field { height: 44px; border: 0; background: none; border-radius: 0; padding: 0; }
+    #view-detect .url-field .url-link { margin-left: 8px; }
+    #view-detect .urlbar .url-field input { font-size: 14px; }
+    #view-detect .url-paste { width: 44px; height: 44px; padding: 0; justify-content: center; border-radius: 14px; }
+    #view-detect .url-paste span { display: none; }
+    #view-detect .urlbar .btn-ac { height: 44px; border-radius: 14px; padding: 0 16px; font-size: 15px; font-weight: 700; }
+    /* Klavye açıkken alan klavyenin hemen üstüne iner, sekme çubuğu gizlenir. */
+    body.typing .tabbar, body.typing .strip { display: none !important; }
+    body.typing #view-detect .url-dock { bottom: 0; padding-bottom: calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--ln); background: var(--sf); }
+    body.typing #view-detect .url-dock::before { display: none; }
+    /* Sonuçta indir çubuğu varsa alan gizlenir; çubukta "Başka bağlantı algıla" çıkar. */
+    #view-detect:has(.dl-sticky) .url-dock { display: none; }
+    #view-detect:has(.dl-sticky) { padding-bottom: 0; }
+    .dl-sticky { flex-wrap: wrap; }
+    .dl-new { order: 3; flex: 1 0 100%; display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--ln); background: var(--sf); color: var(--mt); font: 500 13.5px/1 Onest, system-ui, sans-serif; text-align: left; cursor: pointer; }
+    .dl-new .ic { width: 17px; height: 17px; }
+    .dl-new span { flex: 1; }
+    /* İndirme şeridi alanın üstünde dursun. */
+    body[data-view="detect"] .strip { bottom: calc(var(--tabbar-h) - 22px + env(safe-area-inset-bottom) + 86px); }
+    body[data-view="detect"]:has(#view-detect .dl-sticky) .strip { bottom: calc(var(--tabbar-h) - 22px + env(safe-area-inset-bottom) + 10px); }
+}

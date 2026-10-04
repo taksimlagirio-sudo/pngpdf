@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
     <title>İndirici — video, yayın ve resim indirici</title>
     <meta name="description" content="Bağlantının ardındaki videoyu, HLS yayınını ve resimleri bulup indirin; canlı yayınları süre sınırıyla kaydedin.">
     <meta name="theme-color" content="#121110">
@@ -54,10 +54,13 @@
                     <span class="view-title">Algıla</span>
                     <button class="icon-btn theme-btn-head" data-theme-toggle aria-label="Temayı değiştir"></button>
                 </div>
+                <div class="url-dock">
+                <div class="url-suggest" id="detectSuggest"></div>
                 <div class="urlbar">
-                    <label class="url-field"><input type="url" id="detectUrl" placeholder="Bağlantıyı yapıştır" autocomplete="off" inputmode="url" aria-label="Bağlantı">
+                    <label class="url-field"><svg class="ic url-link" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg><input type="url" id="detectUrl" placeholder="Bağlantıyı yapıştır" autocomplete="off" inputmode="url" aria-label="Bağlantı">
                         <button class="url-paste" id="detectPasteBtn" type="button" aria-label="Panodan yapıştır ve algıla"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/></svg><span>Yapıştır</span></button></label>
                     <button class="btn-ac" id="detectBtn">Algıla</button>
+                </div>
                 </div>
                 <div id="detectStatus"></div>
                 <div id="detectPreview"></div>
