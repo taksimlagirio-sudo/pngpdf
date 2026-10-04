@@ -3442,3 +3442,31 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
     .sv-wide { display: grid; } .sv-sec.sv-wide { display: flex; }
     .sv-head { max-width: none; }
 }
+
+/* ---- Akış: yalnızca video, sürüklenebilir şerit, ipuçları ---- */
+.fd-clean-btn { margin-left: auto; order: 3; }
+.vw-feed .fd-rail, .vw-feed .fd-info, .vw-feed .fd-hint, .vw-feed .fd-seg, .vw-feed .fd-prog { transition: opacity .25s; }
+.vw-feed.clean .fd-rail, .vw-feed.clean .fd-info, .vw-feed.clean .fd-hint, .vw-feed.clean .fd-seg { opacity: 0; pointer-events: none; }
+.vw-feed.clean .fd-top .fd-x { opacity: .35; }
+.vw-feed.clean .fd-prog { opacity: 0; }
+.vw-feed.clean .fd-slide.scrubbing .fd-prog, .vw-feed.clean .fd-slide.paused .fd-prog { opacity: 1; }
+.fd-scrub { position: absolute; left: 0; right: 0; bottom: 14px; height: 40px; z-index: 2; touch-action: none; cursor: pointer; }
+.fd-scrub .fd-prog { left: 16px; right: 16px; bottom: 16px; transition: height .15s, opacity .25s; }
+.fd-slide.scrubbing .fd-prog { height: 6px; bottom: 14px; }
+.fd-paused { position: absolute; left: 50%; top: 50%; width: 72px; height: 72px; margin: -36px 0 0 -36px; border-radius: 50%; background: rgba(0,0,0,.45); color: #fff; display: grid; place-items: center; font-size: 28px; opacity: 0; pointer-events: none; transition: opacity .2s; }
+.fd-slide.paused .fd-paused { opacity: 1; }
+.fd-flash { position: absolute; top: 50%; transform: translateY(-50%); padding: 10px 16px; border-radius: 999px; background: rgba(0,0,0,.6); color: #fff; font: 600 15px/1 inherit; opacity: 0; pointer-events: none; transition: opacity .2s; white-space: nowrap; z-index: 2; }
+.fd-flash.show { opacity: 1; }
+.fd-flash.center, .fd-flash.time { left: 50%; transform: translate(-50%, -50%); }
+.fd-flash.time { top: auto; bottom: 70px; transform: translateX(-50%); font-family: var(--mono); }
+.fd-flash.left { left: 12%; } .fd-flash.right { right: 12%; }
+.fd-slide.paused .fd-flash.center { opacity: 0; }
+/* Oynatıcı: dokununca yalnızca video (tam ekran), alttan sarma */
+.vw-scrub { bottom: 0; }
+.vw-scrub .fd-prog { opacity: 0; }
+.vw-stage.scrubbing .fd-prog { opacity: 1; }
+.viewer.vw-player.chrome-hidden .vw-body { display: none; }
+.viewer.vw-player.chrome-hidden .vw-stage { position: fixed; inset: 0; max-height: none; aspect-ratio: auto; z-index: 5; }
+.viewer.chrome-hidden .vw-stage > .fd-flash.show, .viewer.chrome-hidden .vw-stage > .fd-scrub { opacity: 1; }
+.viewer.chrome-hidden:not(.playing) .vw-stage > .vw-play { opacity: 1; }
+.viewer.chrome-hidden:not(.playing) .vw-scrub .fd-prog { opacity: .7; }

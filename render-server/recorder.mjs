@@ -207,7 +207,8 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
             ext: rec.ext, quality: rec.quality, limitSec: rec.limitSec, limitLabel: rec.limitLabel,
             startedAt: rec.startedAt, endedAt: rec.endedAt, mediaSec: rec.mediaSec, bytes: rec.bytes,
             missed: rec.missed, reason: rec.reason, error: rec.error, warning: rec.warning,
-            maxHeight: rec.maxHeight || 0, vod: Boolean(rec.vod), keepMs: rec.keepMs || 0, source: rec.source || ''
+            maxHeight: rec.maxHeight || 0, vod: Boolean(rec.vod), keepMs: rec.keepMs || 0, source: rec.source || '',
+            total: rec.total || 0, download: Boolean(rec.download)
         };
     }
 
@@ -447,19 +448,24 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
          * Düz bir dosyayı (ör. kanalın yeni videosu) sunucuya indirir; bitince kayıtlar gibi listelenir.
          * @param {(file: string, onBytes: (n: number) => void, signal: AbortSignal) => Promise<void>} fetchTo
          */
-        importFile({ name, ext = 'mp4', fetchTo, keepMs = 0, source = '', quality = '' }) {
+        importFile({ name, ext = 'mp4', fetchTo, keepMs = 0, source = '', quality = '', download = false }) {
             const id = randomBytes(12).toString('hex');
             const baseName = String(name || 'video').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 100) || 'video';
             const rec = {
                 id, url: source, audioUrl: null, baseName, quality, ext, file: `${id}.bin`, fileName: `${baseName}.${ext}`,
                 limitSec: 0, limitLabel: '', state: 'recording', startedAt: Date.now(), endedAt: 0, mediaSec: 0, bytes: 0, missed: 0,
-                reason: '', error: '', warning: '', stopRequested: false, controller: new AbortController(), keepMs, source, vod: true
+                reason: '', error: '', warning: '', stopRequested: false, controller: new AbortController(), keepMs, source, vod: true,
+                total: 0, download
             };
             recordings.set(id, rec);
             persist(rec);
             (async () => {
                 try {
-                    await fetchTo(path.join(dir, rec.file), (n) => { rec.bytes += n; }, rec.controller.signal);
+                    const result = await fetchTo(path.join(dir, rec.file), (n) => { rec.bytes += n; }, rec.controller.signal, (t) => { rec.total = t; });
+                    if (result && result.ext) {
+                        rec.ext = result.ext;
+                        rec.fileName = `${rec.baseName}.${result.ext}`;
+                    }
                     rec.bytes = fs.statSync(path.join(dir, rec.file)).size;
                     rec.state = 'done';
                 } catch (err) {

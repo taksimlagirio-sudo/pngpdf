@@ -7,25 +7,68 @@
   "scope": "./",
   "id": "/",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui"],
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
   "orientation": "any",
   "background_color": "#121110",
   "theme_color": "#121110",
-  "categories": ["utilities", "productivity"],
+  "categories": [
+    "utilities",
+    "productivity"
+  ],
   "icons": [
-    { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "assets/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "assets/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ],
   "share_target": {
     "action": "./",
     "method": "GET",
     "enctype": "application/x-www-form-urlencoded",
-    "params": { "title": "title", "text": "text", "url": "url" }
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  },
+  "launch_handler": {
+    "client_mode": [
+      "focus-existing",
+      "auto"
+    ]
   },
   "shortcuts": [
-    { "name": "Bağlantı algıla", "short_name": "Algıla", "url": "./#detect" },
-    { "name": "Sayfadaki resimler", "short_name": "Resimler", "url": "./#images" },
-    { "name": "İndirmeler", "short_name": "İndirmeler", "url": "./#downloads" }
+    {
+      "name": "Bağlantı algıla",
+      "short_name": "Algıla",
+      "url": "./#detect"
+    },
+    {
+      "name": "Sayfadaki resimler",
+      "short_name": "Resimler",
+      "url": "./#images"
+    },
+    {
+      "name": "İndirmeler",
+      "short_name": "İndirmeler",
+      "url": "./#downloads"
+    }
   ]
 }

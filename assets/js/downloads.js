@@ -267,7 +267,7 @@ function setStatus(job, status, detail) {
 /** Kuyruk: sınır dolmadıkça sıradaki işi başlatır. Arka plan (sistem) indirmeleri ve sunucudaki kayıtlar sayılmaz. */
 function pump() {
     const limit = getPrefs().concurrency || 3;
-    const running = () => [...jobs.values()].filter((j) => j.status === 'active' && !j.bgId && !j.serverRec).length;
+    const running = () => [...jobs.values()].filter((j) => j.status === 'active' && !j.bgId && !j.serverRec && !j.serverDl).length;
     const queued = [...jobs.values()].filter((j) => j.status === 'queued')
         .sort((a, b) => (b.now - a.now) || (a.createdAt - b.createdAt));
     for (const job of queued) {
@@ -448,8 +448,8 @@ export async function startBackgroundDownload({ urls, name, total = 0, thumb = n
 
     try {
         const bgFetch = await registration.backgroundFetch.fetch(bgId, urls, {
+            // Toplam boyut verilmez: tahmin gerçek boyuttan küçükse tarayıcı indirmeyi durdurur.
             title: name,
-            downloadTotal: total || undefined,
             icons: [{ src: 'assets/icons/icon-192.png', sizes: '192x192', type: 'image/png' }]
         });
         job.hooks.cancel = () => {
@@ -490,7 +490,9 @@ function checkStalls() {
         if (job.status !== 'active' || !job.bgId || job.stalled) continue;
         if (Date.now() - job.lastProgressAt > STALL_MS) {
             job.stalled = true;
-            job.detail = 'Arka planda ilerleme yok — "Normal indir" ile deneyebilirsiniz.';
+            // Hiç başlamadıysa (tarayıcı izin vermedi, ağ türü vb.) kendiliğinden normal indirmeye geçilir.
+            if (!job.bytes && job.fallback) runFallback(job);
+            else job.detail = 'Arka planda ilerleme yok — "Normal indir" ile deneyebilirsiniz.';
         }
     }
 }
@@ -631,7 +633,7 @@ export function initDownloads({ onNavigate, onDetect } = {}) {
 
     // Süren kayıt/indirme varken sayfa yanlışlıkla kapatılmasın.
     window.addEventListener('beforeunload', (e) => {
-        if ([...jobs.values()].some((j) => j.status === 'active' && !j.bgId && !j.serverRec)) {
+        if ([...jobs.values()].some((j) => j.status === 'active' && !j.bgId && !j.serverRec && !j.serverDl)) {
             e.preventDefault();
             e.returnValue = '';
         }
@@ -691,7 +693,7 @@ function renderNow() {
     if (aside && getComputedStyle(aside).display !== 'none') setHtml(aside, renderAside(list));
     renderStrip(active, queued);
 
-    const keepAwake = getPrefs().keepAwake && active.some((j) => !j.bgId && !j.serverRec);
+    const keepAwake = getPrefs().keepAwake && active.some((j) => !j.bgId && !j.serverRec && !j.serverDl);
     updateWakeLock(keepAwake);
 
     // Kayıt süreleri ve hızlar her saniye tazelensin.

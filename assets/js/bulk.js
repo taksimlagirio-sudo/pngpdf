@@ -1,6 +1,7 @@
 // Toplu ekle: birden çok bağlantı (ya da çalma listesi) tek seferde bulunur ve sıraya eklenir.
 import { escapeHtml, formatSize, clock, isHttpUrl, getRenderServer, renderApi } from './util.js';
 import { analyzeUrl } from './detect.js';
+import { variantIndexFor } from './sitesettings.js';
 import { getPrefs } from './prefs.js';
 
 const QUALITIES = [['best', 'En iyi'], ['1080', '1080p'], ['720', '720p'], ['audio', 'Sadece ses']];
@@ -119,6 +120,7 @@ export function openBulk({ text = '', enqueue, toast, navigate }) {
                 if (!link) throw new Error('Sayfada video bulunamadı');
                 page = result.url;
                 row.title = result.details.title || row.title;
+                row.link = link;
                 result = await analyzeUrl(link.url, opts);
             }
             if (seq !== st.seq) return;
@@ -167,19 +169,24 @@ export function openBulk({ text = '', enqueue, toast, navigate }) {
                 : [{ result: row.result, page: row.page, title: row.page ? row.title : '' }];
             for (const t of targets) {
                 try {
+                    const opts = { mode: getPrefs().conn, noExtract: !getPrefs().useYtdlp };
                     let result = t.result;
                     let page = t.page || '';
+                    let link = t.link || null;
                     if (!result) {
                         // Çalma listesindeki video: önce bulunur (gelişmiş bulma açıksa onunla).
-                        result = await analyzeUrl(t.url, { mode: getPrefs().conn, noExtract: !getPrefs().useYtdlp });
+                        result = await analyzeUrl(t.url, opts);
                         if (result.target === 'page') {
-                            const link = (result.details.links || [])[0];
+                            link = (result.details.links || [])[0];
                             if (!link) throw new Error('video yok');
                             page = result.url;
-                            result = await analyzeUrl(link.url, { mode: getPrefs().conn, noExtract: !getPrefs().useYtdlp });
+                            result = null;
                         }
                     }
-                    await enqueue(result, { quality: st.quality, page, title: t.title });
+                    // Gelişmiş bulmanın kalitelerinden seçilen kalite (ayrı sesiyle).
+                    const pick = link && link.formats ? link.formats[variantIndexFor(link.formats, st.quality === 'audio' ? '720' : st.quality)] : link;
+                    if (pick && (!result || pick.url !== link.url)) result = await analyzeUrl(pick.url, opts);
+                    await enqueue(result, { quality: st.quality, page, title: t.title, pair: pick ? pick.audioUrl || null : null });
                     added++;
                 } catch (err) {
                     failed++;

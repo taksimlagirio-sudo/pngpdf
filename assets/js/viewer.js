@@ -33,6 +33,53 @@ function fileName(item) {
     return item.name || 'dosya';
 }
 
+/** Ekranda kısa ipucu (sarma, oynat, zaman). text=null: kaldırır; ms=0: kaldırılana kadar kalır. */
+function flashOn(host, text, where = 'center', ms = 700) {
+    const box = host.querySelector('.fd-flash');
+    if (!box) return;
+    clearTimeout(box._t);
+    if (text === null) {
+        box._t = setTimeout(() => box.classList.remove('show'), 400);
+        return;
+    }
+    box.textContent = text;
+    box.className = `fd-flash show ${where}`;
+    if (ms) box._t = setTimeout(() => box.classList.remove('show'), ms);
+}
+
+/** Alttaki şerit: çubuk görünmese de sürüklenerek sarılır. */
+function attachScrub(zone, video, host) {
+    let drag = false;
+    const seekTo = (e) => {
+        const r = zone.getBoundingClientRect();
+        const p = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+        const d = video.duration || 0;
+        if (!d || !isFinite(d)) return;
+        video.currentTime = p * d;
+        const bar = zone.querySelector('.fd-prog span');
+        if (bar) bar.style.width = `${p * 100}%`;
+        flashOn(host, `${clock(p * d)} / ${clock(d)}`, 'time', 0);
+    };
+    zone.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        drag = true;
+        zone.setPointerCapture(e.pointerId);
+        host.classList.add('scrubbing');
+        seekTo(e);
+    });
+    zone.addEventListener('pointermove', (e) => drag && seekTo(e));
+    const end = () => {
+        if (!drag) return;
+        drag = false;
+        host.classList.remove('scrubbing');
+        flashOn(host, null);
+    };
+    zone.addEventListener('pointerup', end);
+    zone.addEventListener('pointercancel', end);
+    zone.addEventListener('click', (e) => e.stopPropagation());
+}
+
 export function createViewer({ toast, edit = null }) {
     /** Galeriye (paylaşım sayfası) ya da İndirilenler'e kaydeder. */
     async function toGallery(item) {
@@ -136,6 +183,7 @@ export function createViewer({ toast, edit = null }) {
                     <button class="vw-skip back" data-v="back10">« 10 sn</button>
                     <button class="vw-play" data-v="play" aria-label="Oynat/duraklat">▶</button>
                     <button class="vw-skip fwd" data-v="fwd10">10 sn »</button>
+                    ${isAudio ? '' : '<div class="fd-scrub vw-scrub"><div class="fd-prog"><span></span></div></div><div class="fd-flash"></div>'}
                 </div>
                 <div class="vw-body">
                     <div class="vw-title">${escapeHtml(item.name)}</div>
@@ -171,6 +219,8 @@ export function createViewer({ toast, edit = null }) {
                 const p = d ? video.currentTime / d : 0;
                 if (!seeking) range.value = Math.round(p * 1000);
                 fill.style.width = `${p * 100}%`;
+                const stageBar = el.querySelector('.vw-scrub .fd-prog span');
+                if (stageBar && !el.querySelector('.vw-stage').classList.contains('scrubbing')) stageBar.style.width = `${p * 100}%`;
                 cur.textContent = clock(video.currentTime);
                 if (d) dur.textContent = clock(d);
                 if (ab && ab.b !== undefined && video.currentTime >= ab.b) video.currentTime = ab.a;
@@ -197,14 +247,19 @@ export function createViewer({ toast, edit = null }) {
                 if (d) video.currentTime = (range.value / 1000) * d;
             });
             range.addEventListener('change', () => { seeking = false; });
-            // Çift dokunuş: sol yarı geri, sağ yarı ileri.
+            const stage = el.querySelector('.vw-stage');
+            const scrub = el.querySelector('.vw-scrub');
+            if (scrub) attachScrub(scrub, video, stage);
+            // Çift dokunuş: sol yarı geri, sağ yarı ileri. Tek dokunuş: yalnızca video (tam ekran).
             let lastTap = 0;
-            el.querySelector('.vw-stage').addEventListener('click', (e) => {
-                if (e.target.closest('button')) return;
+            stage.addEventListener('click', (e) => {
+                if (e.target.closest('button, .fd-scrub')) return;
                 const now = Date.now();
                 if (now - lastTap < 300) {
                     const r = e.currentTarget.getBoundingClientRect();
-                    video.currentTime += (e.clientX - r.left < r.width / 2 ? -10 : 10);
+                    const back = e.clientX - r.left < r.width / 2;
+                    video.currentTime = Math.max(0, video.currentTime + (back ? -10 : 10));
+                    flashOn(stage, back ? '« 10 sn' : '10 sn »', back ? 'left' : 'right');
                     lastTap = 0;
                     return;
                 }
@@ -290,8 +345,14 @@ export function createViewer({ toast, edit = null }) {
             if (v === 'close') return close();
             if (!video) return;
             if (v === 'play') return video.paused ? video.play().catch(() => {}) : video.pause();
-            if (v === 'back10') video.currentTime = Math.max(0, video.currentTime - 10);
-            if (v === 'fwd10') video.currentTime += 10;
+            if (v === 'back10') {
+                video.currentTime = Math.max(0, video.currentTime - 10);
+                flashOn(el.querySelector('.vw-stage'), '« 10 sn', 'left');
+            }
+            if (v === 'fwd10') {
+                video.currentTime += 10;
+                flashOn(el.querySelector('.vw-stage'), '10 sn »', 'right');
+            }
             if (v === 'speed') {
                 speed = SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length];
                 video.playbackRate = speed;
@@ -491,6 +552,12 @@ export function createViewer({ toast, edit = null }) {
 
     function openFeed(list, { mode = 'video' } = {}) {
         const el = overlay('vw-feed');
+        const CLEAN_KEY = 'indirici.feedClean';
+        let clean = false;
+        try {
+            clean = localStorage.getItem(CLEAN_KEY) === '1';
+        } catch (_) { /* depolama kapalı */ }
+        el.classList.toggle('clean', clean);
         const sources = new Map(); // id → kaynak
         let observer = null;
         let current = null;
@@ -507,6 +574,7 @@ export function createViewer({ toast, edit = null }) {
             const date = (ts) => new Date(ts).toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
             el.innerHTML = `
                 <div class="fd-top"><button class="fd-x" data-v="close" aria-label="Kapat">✕</button>
+                    <button class="fd-x fd-clean-btn" data-v="clean" aria-label="Yalnızca video" title="Yalnızca video">${clean ? '◧' : '◱'}</button>
                     <div class="seg lib-seg fd-seg">${[['video', 'Videolar'], ['photo', 'Fotoğraflar'], ['mixed', 'Karışık']].map(([k, l]) =>
                         `<button class="${mode === k ? 'on' : ''}" data-v="mode" data-m="${k}">${l}</button>`).join('')}</div></div>
                 <div class="fd-scroll">${items.length ? items.map((it, n) => `
@@ -516,9 +584,10 @@ export function createViewer({ toast, edit = null }) {
                         <div class="fd-info"><b>${escapeHtml(it.name)}</b>
                             <span>${escapeHtml([it.site, date(it.createdAt), it.width ? `${it.width}×${it.height}` : ''].filter(Boolean).join(' · '))}</span>
                             ${it.kind !== 'photo' ? '<span class="fd-time">0:00</span>' : ''}</div>
-                        ${it.kind !== 'photo' ? '<div class="fd-prog"><span></span></div>' : ''}
+                        ${it.kind !== 'photo' ? `<div class="fd-scrub"><div class="fd-prog"><span></span></div></div>
+                            <div class="fd-paused">▶</div><div class="fd-flash"></div>` : ''}
                     </section>`).join('') : '<div class="fd-empty">Bu seçimde öğe yok.</div>'}</div>
-                <p class="fd-hint">Yukarı kaydır: sonraki · çift dokun: ±10 sn</p>`;
+                <p class="fd-hint">Yukarı kaydır: sonraki · çift dokun: ±10 sn · alttan sürükle: sar</p>`;
 
             const slides = [...el.querySelectorAll('.fd-slide')];
             observer = new IntersectionObserver((entries) => {
@@ -544,6 +613,8 @@ export function createViewer({ toast, edit = null }) {
                         time.textContent = `${clock(media.currentTime)} / ${clock(media.duration || it.duration)}`;
                         bar.style.width = `${(media.currentTime / (media.duration || 1)) * 100}%`;
                     });
+                    media.addEventListener('pause', () => slide.classList.add('paused'));
+                    media.addEventListener('play', () => slide.classList.remove('paused'));
                 }
             }
 
@@ -574,29 +645,43 @@ export function createViewer({ toast, edit = null }) {
                 });
             }
 
+            // Alttaki şerit (çubuk gizliyken de) sürüklenerek sarılır.
+            el.querySelectorAll('.fd-scrub').forEach((zone) => {
+                const slide = zone.closest('.fd-slide');
+                attachScrub(zone, slide.querySelector('video'), slide);
+            });
+
             let lastTap = 0;
             el.querySelector('.fd-scroll').addEventListener('click', (e) => {
-                if (e.target.closest('button')) return;
+                if (e.target.closest('button, .fd-scrub')) return;
                 const slide = e.target.closest('.fd-slide');
                 const v = slide && slide.querySelector('video');
                 if (!v) return;
                 const now = Date.now();
                 if (now - lastTap < 300) {
                     const r = slide.getBoundingClientRect();
-                    v.currentTime += e.clientX - r.left < r.width / 2 ? -10 : 10;
+                    const back = e.clientX - r.left < r.width / 2;
+                    v.currentTime = Math.max(0, v.currentTime + (back ? -10 : 10));
+                    flash(slide, back ? '« 10 sn' : '10 sn »', back ? 'left' : 'right');
                     lastTap = 0;
                     return;
                 }
                 lastTap = now;
                 setTimeout(() => {
                     if (lastTap !== now) return;
-                    if (v.muted) v.muted = false;
-                    else if (v.paused) v.play().catch(() => {});
-                    else v.pause();
+                    if (v.muted) {
+                        v.muted = false;
+                        flash(slide, '🔊 Ses açıldı', 'center');
+                    } else if (v.paused) {
+                        v.play().catch(() => {});
+                        flash(slide, '▶', 'center');
+                    } else v.pause();
                 }, 310);
             });
             if (slides.length) activate(0);
         }
+
+        const flash = flashOn;
 
         function close() {
             if (observer) observer.disconnect();
@@ -614,6 +699,15 @@ export function createViewer({ toast, edit = null }) {
             if (v === 'mode') {
                 mode = btn.dataset.m;
                 return draw();
+            }
+            if (v === 'clean') {
+                clean = !clean;
+                el.classList.toggle('clean', clean);
+                btn.textContent = clean ? '◧' : '◱';
+                try {
+                    localStorage.setItem(CLEAN_KEY, clean ? '1' : '0');
+                } catch (_) { /* depolama kapalı */ }
+                return;
             }
             const slide = btn.closest('.fd-slide');
             const item = slide ? pick()[Number(slide.dataset.n)] : null;

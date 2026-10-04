@@ -13,7 +13,7 @@ import {
 } from './downloads.js';
 import { getPrefs, setPref, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { canRemote, openRemoteOverlay } from './remote.js';
-import { canServerRecord, startServerRecording, captureIntoJob } from './serverrec.js';
+import { canServerRecord, startServerRecording, captureIntoJob, serverDownloadIntoJob } from './serverrec.js';
 import { attachPreview, grabFrame, probePreview } from './preview.js';
 import { subLabel, subCode, loadCues, toSrt, toVtt, shiftCues } from './subs.js';
 import { embedSubtitles } from './mp4edit.js';
@@ -394,7 +394,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
      * `pair`: sayfada ayrı bulunan ses playlist'i (görüntüyle birleştirilecek).
      * `page`: bağlantının bulunduğu sayfa — bağlantı inmezse video o sayfayla açılıp kaydedilir.
      */
-    async function analyze(url, { pair = null, page = null, title = '', noExtract = false, useExtract = false, fromYtdlp = false, subtitles = null } = {}) {
+    async function analyze(url, { pair = null, page = null, title = '', noExtract = false, useExtract = false, fromYtdlp = false, subtitles = null, formats = null } = {}) {
         if (!isHttpUrl(url)) {
             setError('Geçerli bir http(s) adresi girin.');
             return;
@@ -429,6 +429,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             if (subtitles && subtitles.length && !(result.details.subtitles || []).length) result.details.subtitles = subtitles;
             ui = initialUi(result, pair);
             ui.sourcePage = page;
+            ui.formats = formats;
             // Sayfadan açılan videoya sayfanın başlığı ad olur ("videoplayback" yerine).
             if (title && result.target !== 'page') ui.name = cleanTitle(title);
             setBusy('');
@@ -442,9 +443,13 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             const links = result.details.links || [];
             if (result.target === 'page' && links.length === 1 && autoHops < 2) {
                 autoHops++;
-                return analyze(links[0].url, {
-                    pair: links[0].audioUrl || null, page: result.url, title: result.details.title || '', fromYtdlp: Boolean(links[0].fromYtdlp),
-                    subtitles: links[0].subtitles || result.details.subtitles || null
+                // Kaliteler varsa site ayarındaki kalite (yoksa en iyisi) açılır.
+                const fmts = links[0].formats || null;
+                const site = siteSettingFor(entryUrl || url);
+                const pick = fmts && site && site.quality !== 'best' ? fmts[variantIndexFor(fmts, site.quality)] : links[0];
+                return analyze(pick.url, {
+                    pair: pick.audioUrl || null, page: result.url, title: result.details.title || '', fromYtdlp: Boolean(pick.fromYtdlp),
+                    subtitles: pick.subtitles || result.details.subtitles || null, formats: fmts
                 });
             }
             autoHops = 0;
@@ -475,6 +480,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 info = unreachableInfo(url, err);
                 ui = initialUi(info, pair);
                 ui.sourcePage = page;
+                ui.formats = formats;
                 if (title) ui.name = cleanTitle(title);
                 render();
                 rememberResult(entryUrl);
@@ -716,6 +722,15 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         return variants[ui.variant] || null;
     }
 
+    /** Gelişmiş bulmanın verdiği kaliteler (her biri ayrı dosya). */
+    function formatsHtml() {
+        const list = ui.formats;
+        if (!list || list.length < 2 || (info.details.variants || []).length) return '';
+        return `<div class="sec"><span class="sec-label">Kalite</span><div class="qcards">${list.map((f, i) =>
+            `<button class="qcard${f.url === info.url ? ' on' : ''}" data-act="format" data-i="${i}">
+                <div class="qcard-label">${f.kind === 'hls' ? 'Yayın' : f.height ? `${f.height}p` : 'Kalite'}</div>${f.size ? `<div class="qcard-sub">~${formatSize(f.size)}</div>` : ''}</button>`).join('')}</div></div>`;
+    }
+
     function qualityHtml() {
         const variants = info.details.variants || [];
         if (!variants.length) return '';
@@ -742,7 +757,11 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     function optionRows({ background = true } = {}) {
         const prefs = getPrefs();
         const save = effectiveSaveMode(prefs.save);
-        const bgSupported = canBackgroundFetch && save !== 'disk';
+        // Kendi sunucun varsa arka planda indirme sunucuda yapılır (her türde); yoksa tarayıcının
+        // arka plan indirmesi (yalnızca tek dosya).
+        const viaServer = canServerRecord();
+        if (viaServer) background = !info.unreachable && info.target !== 'dash';
+        const bgSupported = viaServer || (canBackgroundFetch && save !== 'disk');
         return `
             <div class="rows">
                 <label class="row"><span class="row-label">Ad</span>
@@ -753,8 +772,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 <button class="row" data-act="cycle-conn"><span class="row-label">Bağlantı</span>
                     <span class="row-value">${CONN_LABELS[prefs.conn]}</span><span class="row-chev">›</span></button>
                 ${background ? `<button class="row${bgSupported ? '' : ' disabled'}" data-act="toggle-bg" ${bgSupported ? '' : 'disabled title="Bu tarayıcıda/kaydetme yönteminde desteklenmiyor"'}>
-                    <span class="row-value">Arka planda indir</span>
-                    <span class="toggle${prefs.background && bgSupported ? ' on' : ''}"></span></button>` : ''}
+                    <span class="row-value">Arka planda indir${viaServer ? '<span class="muted row-sub">Sunucunda iner; uygulama kapansa da sürer</span>' : ''}</span>
+                    <span class="toggle${(viaServer ? prefs.serverBackground !== false : prefs.background) && bgSupported ? ' on' : ''}"></span></button>` : ''}
             </div>`;
     }
 
@@ -862,6 +881,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             const size = downloadSize();
             body = `
                 <div class="card-pad">
+                    ${formatsHtml()}
                     ${qualityHtml()}
                     ${rangeHtml()}
                     ${subsHtml()}
@@ -1276,6 +1296,14 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 subtitles: (link && link.subtitles) || (fromPage ? info.details.subtitles : null)
             });
         }
+        if (act === 'format' && info && ui.formats) {
+            const f = ui.formats[Number(btn.dataset.i)];
+            if (!f || f.url === info.url) return;
+            return analyze(f.url, {
+                pair: f.audioUrl || null, page: ui.sourcePage, title: ui.name, fromYtdlp: true,
+                subtitles: info.details.subtitles || null, formats: ui.formats
+            });
+        }
         if (act === 'capture') return startCapture(btn.dataset.url || info.url);
         if (act === 'recent') {
             urlInput.value = btn.dataset.url;
@@ -1347,7 +1375,10 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (act === 'toggle-awake') setPref('keepAwake', !prefs.keepAwake);
         if (act === 'cycle-save') setPref('save', nextSaveMode(prefs.save));
         if (act === 'cycle-conn') setPref('conn', nextConn(prefs.conn));
-        if (act === 'toggle-bg') setPref('background', !prefs.background);
+        if (act === 'toggle-bg') {
+            if (canServerRecord()) setPref('serverBackground', prefs.serverBackground === false);
+            else setPref('background', !prefs.background);
+        }
         if (act === 'download') return startDownload(false);
         if (act === 'queue') return startDownload(true);
         if (act === 'record') return startRecording();
@@ -1445,6 +1476,9 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         const prefs = getPrefs();
         const isHls = info.target === 'hls' || (info.unreachable && info.kind === 'hls');
         const name = cleanName();
+        // "Arka planda indir" + kendi sunucun: dosya sunucuda iner, bitince telefona alınır.
+        const viaServer = prefs.serverBackground !== false && canServerRecord() && !info.unreachable && info.target !== 'dash' && !ui.rangeOpen;
+        const serverJob = (opts, createSinkFor) => (job) => serverDownloadIntoJob(job, { ...opts, page: jobSource().page, createSinkFor });
         try {
             if (info.target === 'dash') {
                 const mpd = info.details.mpd;
@@ -1481,6 +1515,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 const range = ui.rangeOpen ? rangeSeconds() : null;
                 const videoPlaylist = ui.media ? ui.media.playlist : null;
                 const audioUrl = ui.audioUrl;
+                if (viaServer && !isServerStream(videoUrl) && !(ui.media && ui.media.live)) {
+                    addJob({ name: name + ext, kind: 'hls', thumb, saveMode, source: jobSource(), now: true,
+                        run: serverJob({ url: videoUrl, audioUrl: audioUrl || '', name: name + ext, hls: true }, createSinkFor) });
+                    if (!bulkMode) toast('Sunucunda indiriliyor · İndirmeler');
+                    return;
+                }
                 addJob({
                     name: name + ext,
                     kind: 'hls',
@@ -1498,6 +1538,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 const url = info.url;
                 // Sunucudaki yt-dlp akışı açılmazsa sunucu kendi adresini açamaz; sayfa açılıp kaydedilir.
                 const mediaUrl = isServerStream(url) ? '' : url;
+                if (viaServer) {
+                    addJob({ name: fileName, kind: 'video', thumb, saveMode, source: jobSource(), now: true,
+                        run: serverJob({ url, audioUrl: ui.audioUrl || '', name: fileName }, createSinkFor) });
+                    if (!bulkMode) toast('Sunucunda indiriliyor · İndirmeler');
+                    return;
+                }
                 if (ui.audioUrl) {
                     const audioUrl = ui.audioUrl;
                     addJob({
@@ -1605,12 +1651,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
      * Toplu ekleme: analiz edilmiş bir sonucu (Algıla ekranını değiştirmeden) sıraya ekler.
      * quality: 'best' | '1080' | '720' | 'audio'
      */
-    async function enqueueResult(result, { quality = 'best', page = '', title = '' } = {}) {
+    async function enqueueResult(result, { quality = 'best', page = '', title = '', pair = null } = {}) {
         const saved = { info, ui, entryUrl };
         bulkMode = true;
         try {
             info = result;
-            ui = initialUi(result, null);
+            ui = initialUi(result, pair);
             ui.sourcePage = page || null;
             entryUrl = page || result.url;
             if (title && result.target !== 'page') ui.name = cleanTitle(title);
