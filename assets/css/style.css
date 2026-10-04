@@ -2761,8 +2761,6 @@ html.remote-open, html.remote-open body { overflow: hidden; }
 .vw-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 60px; height: 60px; border-radius: 50%; border: 0; background: rgba(0,0,0,.55); color: #fff; font-size: 22px; cursor: pointer; }
 .vw-skip { position: absolute; top: 50%; transform: translateY(-50%); border: 0; background: none; color: #fff; font: 600 13px/1 inherit; cursor: pointer; padding: 12px; text-shadow: 0 1px 4px rgba(0,0,0,.6); }
 .vw-skip.back { left: 16px; } .vw-skip.fwd { right: 16px; }
-.viewer.playing .vw-stage > button:not(.vw-x), .viewer.chrome-hidden .vw-stage > *:not(video) { opacity: 0; transition: opacity .25s; }
-.viewer.playing .vw-stage:hover > button { opacity: 1; }
 .vw-body { padding: 16px 18px calc(env(safe-area-inset-bottom) + 20px); display: flex; flex-direction: column; gap: 12px; max-width: 760px; margin: 0 auto; }
 .vw-title { font-size: 21px; font-weight: 650; letter-spacing: -.01em; }
 .vw-meta { font-size: 13.5px; color: #A29D93; margin-top: -6px; }
@@ -3466,11 +3464,6 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
 .vw-scrub { bottom: 0; }
 .vw-scrub .fd-prog { opacity: 0; }
 .vw-stage.scrubbing .fd-prog { opacity: 1; }
-.viewer.vw-player.chrome-hidden .vw-body { display: none; }
-.viewer.vw-player.chrome-hidden .vw-stage { position: fixed; inset: 0; max-height: none; aspect-ratio: auto; z-index: 5; }
-.viewer.chrome-hidden .vw-stage > .fd-flash.show, .viewer.chrome-hidden .vw-stage > .fd-scrub { opacity: 1; }
-.viewer.chrome-hidden:not(.playing) .vw-stage > .vw-play { opacity: 1; }
-.viewer.chrome-hidden:not(.playing) .vw-scrub .fd-prog { opacity: .7; }
 
 /* ---- Yapıştırma kutusu (pano izni yoksa) ---- */
 .paste-sheet { position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,.5); display: flex; align-items: flex-start; justify-content: center; padding: calc(env(safe-area-inset-top) + 70px) 16px 16px; }
@@ -3519,3 +3512,26 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
 /* Takip: bakış sıklığı bilgisi */
 .fw-hint { margin: 0; padding: 10px 14px 12px; font-size: 12px; line-height: 1.45; color: var(--mt); border-top: 1px solid var(--ln); }
 .fw-hint.warn { color: var(--wr); }
+
+/* Oynatıcı: dokununca görünen kontroller, ayrı tam ekran düğmesi */
+.vw-stage > button, .vw-stage > .vw-spd-badge, .vw-stage > .vw-stime { transition: opacity .25s; }
+.viewer.idle .vw-stage > button, .viewer.idle .vw-stage > .vw-spd-badge, .viewer.idle .vw-stage > .vw-stime { opacity: 0; pointer-events: none; }
+.viewer.idle { cursor: none; }
+.vw-scrub .fd-prog { opacity: .55; }
+.viewer.idle .vw-scrub .fd-prog { opacity: 0; }
+.vw-stage.scrubbing .fd-prog, .viewer.idle .vw-stage.scrubbing .fd-prog { opacity: 1; }
+.vw-fs { position: absolute; z-index: 3; right: 8px; bottom: 26px; width: 40px; height: 40px; border: 0; border-radius: 10px; background: rgba(0,0,0,.45); color: #fff; display: grid; place-items: center; cursor: pointer; }
+.vw-fs .ic { width: 20px; height: 20px; }
+.vw-stime { position: absolute; left: 12px; bottom: 34px; font: 500 12px/1 var(--mono); color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.8); pointer-events: none; }
+.viewer.vw-player.fs { padding: 0; overflow: hidden; }
+.viewer.vw-player.fs .vw-body { display: none; }
+.viewer.vw-player.fs .vw-stage { position: fixed; inset: 0; max-height: none; aspect-ratio: auto; z-index: 5; }
+.viewer.vw-player.fs .vw-fs { bottom: calc(env(safe-area-inset-bottom) + 30px); right: 14px; }
+.viewer.vw-player.fs .vw-stime { bottom: calc(env(safe-area-inset-bottom) + 40px); left: 16px; }
+
+/* Sarma önizlemesi */
+.scrub-prev { position: absolute; z-index: 6; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 4px; border-radius: 10px; background: rgba(0,0,0,.75); opacity: 0; pointer-events: none; transition: opacity .12s; }
+.scrub-prev.show { opacity: 1; }
+.scrub-prev canvas { display: block; width: 168px; height: auto; border-radius: 7px; background: #111; }
+.scrub-prev.no-frame canvas { display: none; }
+.scrub-prev span { font: 600 12.5px/1 var(--mono); color: #fff; padding: 0 4px 3px; }

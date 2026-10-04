@@ -250,6 +250,12 @@ function handleBack() {
     const top = layers[layers.length - 1];
     if (top) {
         if (top.matches('.remote-overlay')) {
+            // Tam ekrandaki oynatıcı önce tam ekrandan çıkar.
+            const fs = top.classList.contains('fs') && top.querySelector('[data-v="fs"]');
+            if (fs) {
+                fs.click();
+                return true;
+            }
             const btn = ['.back-btn', '[aria-label="Kapat"]', '[data-r="close"]', '[data-a="close"]']
                 .map((sel) => top.querySelector(sel)).find(Boolean);
             if (btn) btn.click();

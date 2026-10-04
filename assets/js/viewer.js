@@ -48,18 +48,98 @@ function flashOn(host, text, where = 'center', ms = 700) {
     if (ms) box._t = setTimeout(() => box.classList.remove('show'), ms);
 }
 
-/** Alttaki şerit: çubuk görünmese de sürüklenerek sarılır. */
+/**
+ * Sarma önizlemesi: sürüklerken video oynamaya devam eder; parmağın üstünde o anın küçük karesi ve
+ * zamanı görünür. Kare, aynı dosyayı açan gizli ikinci bir videodan alınır.
+ */
+function scrubPreview(video, host) {
+    let box = null;
+    let pv = null;
+    let ctx = null;
+    let busy = false;
+    let want = null;
+    const draw = () => {
+        if (!ctx || !pv.videoWidth) return;
+        const w = 168;
+        const h = Math.max(48, Math.round((w * pv.videoHeight) / pv.videoWidth));
+        if (ctx.canvas.height !== h) ctx.canvas.height = h;
+        ctx.drawImage(pv, 0, 0, w, h);
+    };
+    const seek = (t) => {
+        if (busy) {
+            want = t;
+            return;
+        }
+        busy = true;
+        pv.currentTime = t;
+    };
+    function ensure() {
+        if (box) return;
+        box = document.createElement('div');
+        box.className = 'scrub-prev';
+        box.innerHTML = '<canvas width="168" height="94"></canvas><span></span>';
+        host.appendChild(box);
+        ctx = box.querySelector('canvas').getContext('2d');
+        if (video.videoWidth) {
+            pv = document.createElement('video');
+            pv.muted = true;
+            pv.playsInline = true;
+            pv.preload = 'auto';
+            pv.src = video.currentSrc || video.src;
+            pv.addEventListener('seeked', () => {
+                draw();
+                busy = false;
+                if (want !== null) {
+                    const t = want;
+                    want = null;
+                    seek(t);
+                }
+            });
+        } else {
+            box.classList.add('no-frame'); // ses dosyası: yalnızca zaman
+        }
+    }
+    return {
+        /** t: saniye; x: önizlemenin ortalanacağı yatay konum (host içinde, px); bottom: host altından px. */
+        show(t, x, bottom) {
+            ensure();
+            const d = video.duration || 0;
+            box.querySelector('span').textContent = `${clock(t)} / ${clock(d)}`;
+            const half = (box.offsetWidth || 168) / 2;
+            box.style.left = `${Math.max(8, Math.min(host.clientWidth - half * 2 - 8, x - half))}px`;
+            box.style.bottom = `${bottom}px`;
+            box.classList.add('show');
+            if (pv) seek(t);
+        },
+        hide() {
+            if (box) box.classList.remove('show');
+        },
+        destroy() {
+            if (pv) {
+                pv.removeAttribute('src');
+                pv.load();
+            }
+            if (box) box.remove();
+            box = pv = ctx = null;
+        }
+    };
+}
+
+/** Alttaki şerit: çubuk görünmese de sürüklenir; bırakınca o ana gidilir (sürerken video oynar). */
 function attachScrub(zone, video, host) {
     let drag = false;
-    const seekTo = (e) => {
+    let target = 0;
+    const preview = scrubPreview(video, host);
+    const move = (e) => {
         const r = zone.getBoundingClientRect();
         const p = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
         const d = video.duration || 0;
         if (!d || !isFinite(d)) return;
-        video.currentTime = p * d;
+        target = p * d;
         const bar = zone.querySelector('.fd-prog span');
         if (bar) bar.style.width = `${p * 100}%`;
-        flashOn(host, `${clock(p * d)} / ${clock(d)}`, 'time', 0);
+        const hr = host.getBoundingClientRect();
+        preview.show(target, e.clientX - hr.left, hr.bottom - r.top + 6);
     };
     zone.addEventListener('pointerdown', (e) => {
         e.preventDefault();
@@ -67,17 +147,22 @@ function attachScrub(zone, video, host) {
         drag = true;
         zone.setPointerCapture(e.pointerId);
         host.classList.add('scrubbing');
-        seekTo(e);
+        move(e);
     });
-    zone.addEventListener('pointermove', (e) => drag && seekTo(e));
-    const end = () => {
+    zone.addEventListener('pointermove', (e) => drag && move(e));
+    zone.addEventListener('pointerup', () => {
         if (!drag) return;
         drag = false;
         host.classList.remove('scrubbing');
-        flashOn(host, null);
-    };
-    zone.addEventListener('pointerup', end);
-    zone.addEventListener('pointercancel', end);
+        preview.hide();
+        video.currentTime = target; // yalnızca bırakınca
+    });
+    zone.addEventListener('pointercancel', () => {
+        if (!drag) return;
+        drag = false;
+        host.classList.remove('scrubbing');
+        preview.hide();
+    });
     zone.addEventListener('click', (e) => e.stopPropagation());
 }
 
@@ -184,7 +269,9 @@ export function createViewer({ toast, edit = null }) {
                     <button class="vw-skip back" data-v="back10" aria-label="10 saniye geri">${icon('back10')}<span>10</span></button>
                     <button class="vw-play" data-v="play" aria-label="Oynat/duraklat">${icon('play')}</button>
                     <button class="vw-skip fwd" data-v="fwd10" aria-label="10 saniye ileri">${icon('fwd10')}<span>10</span></button>
-                    ${isAudio ? '' : '<div class="fd-scrub vw-scrub"><div class="fd-prog"><span></span></div></div><div class="fd-flash"></div>'}
+                    ${isAudio ? '' : `<div class="fd-scrub vw-scrub"><div class="fd-prog"><span></span></div></div><div class="fd-flash"></div>
+                        <span class="vw-stime" data-t="stime">0:00</span>
+                        <button class="vw-fs" data-v="fs" aria-label="Tam ekran">${icon(el.classList.contains('fs') ? 'minimize' : 'maximize')}</button>`}
                 </div>
                 <div class="vw-body">
                     <div class="vw-title">${escapeHtml(item.name)}</div>
@@ -205,7 +292,7 @@ export function createViewer({ toast, edit = null }) {
                             <span class="lib-row-th" style="${r.thumb ? `background-image:url('${r.thumb}')` : ''}"></span>
                             <span class="lib-row-main"><span class="lib-row-n">${escapeHtml(r.name)}</span>
                             <span class="lib-row-m">${r.duration ? clock(r.duration) + ' · ' : ''}${formatSize(r.size)}</span></span></button>`).join('')}</div>` : ''}
-                    <p class="vw-hint">Çift dokun: ±10 sn · yatay çevir: tam ekran</p>
+                    <p class="vw-hint">Dokun: kontrolleri göster/gizle · çift dokun: ±10 sn · alttan sürükle: sar</p>
                 </div>`;
             video = el.querySelector('video');
             video.playbackRate = speed;
@@ -219,10 +306,12 @@ export function createViewer({ toast, edit = null }) {
                 const d = video.duration || item.duration || 0;
                 const p = d ? video.currentTime / d : 0;
                 if (!seeking) range.value = Math.round(p * 1000);
-                fill.style.width = `${p * 100}%`;
+                if (!seeking) fill.style.width = `${p * 100}%`;
                 const stageBar = el.querySelector('.vw-scrub .fd-prog span');
                 if (stageBar && !el.querySelector('.vw-stage').classList.contains('scrubbing')) stageBar.style.width = `${p * 100}%`;
-                cur.textContent = clock(video.currentTime);
+                if (!seeking) cur.textContent = clock(video.currentTime);
+                const st = el.querySelector('[data-t="stime"]');
+                if (st) st.textContent = `${clock(video.currentTime)} / ${clock(d)}`;
                 if (d) dur.textContent = clock(d);
                 if (ab && ab.b !== undefined && video.currentTime >= ab.b) video.currentTime = ab.a;
             };
@@ -239,19 +328,30 @@ export function createViewer({ toast, edit = null }) {
                     el.querySelector('[data-track]').disabled = true;
                 }
             });
-            video.addEventListener('play', () => { playBtn.innerHTML = icon('pause'); el.classList.add('playing'); });
-            video.addEventListener('pause', () => { playBtn.innerHTML = icon('play'); el.classList.remove('playing'); });
-            video.addEventListener('ended', () => { playBtn.innerHTML = icon('play'); el.classList.remove('playing'); });
+            video.addEventListener('play', () => { playBtn.innerHTML = icon('pause'); el.classList.add('playing'); showControls(); });
+            video.addEventListener('pause', () => { playBtn.innerHTML = icon('play'); el.classList.remove('playing'); showControls(); });
+            video.addEventListener('ended', () => { playBtn.innerHTML = icon('play'); el.classList.remove('playing'); showControls(); });
+            // Alttaki çubuk da aynı: sürüklerken önizleme, bırakınca sarma.
+            const stage = el.querySelector('.vw-stage');
+            const rangePreview = scrubPreview(video, stage);
             range.addEventListener('input', () => {
                 seeking = true;
                 const d = video.duration || 0;
+                if (!d) return;
+                const p = range.value / 1000;
+                fill.style.width = `${p * 100}%`;
+                cur.textContent = clock(p * d);
+                rangePreview.show(p * d, p * stage.clientWidth, 12);
+            });
+            range.addEventListener('change', () => {
+                seeking = false;
+                rangePreview.hide();
+                const d = video.duration || 0;
                 if (d) video.currentTime = (range.value / 1000) * d;
             });
-            range.addEventListener('change', () => { seeking = false; });
-            const stage = el.querySelector('.vw-stage');
             const scrub = el.querySelector('.vw-scrub');
             if (scrub) attachScrub(scrub, video, stage);
-            // Çift dokunuş: sol yarı geri, sağ yarı ileri. Tek dokunuş: yalnızca video (tam ekran).
+            // Çift dokunuş: sol yarı geri, sağ yarı ileri. Tek dokunuş: kontrolleri göster/gizle.
             let lastTap = 0;
             stage.addEventListener('click', (e) => {
                 if (e.target.closest('button, .fd-scrub')) return;
@@ -266,7 +366,9 @@ export function createViewer({ toast, edit = null }) {
                 }
                 lastTap = now;
                 setTimeout(() => {
-                    if (lastTap === now) el.classList.toggle('chrome-hidden');
+                    if (lastTap !== now) return;
+                    if (el.classList.contains('idle')) showControls();
+                    else hideControls();
                 }, 310);
             });
             video.play().catch(() => {});
@@ -279,6 +381,47 @@ export function createViewer({ toast, edit = null }) {
             });
             video.addEventListener('ended', () => saveProgress(item, video.duration || 0, video.duration || 0));
         }
+
+        /* Kontroller: dokununca görünür, oynarken 2,5 sn sonra kendiliğinden gizlenir. */
+        let idleTimer = null;
+        function showControls() {
+            el.classList.remove('idle');
+            clearTimeout(idleTimer);
+            if (video && !video.paused) idleTimer = setTimeout(hideControls, 2500);
+        }
+        function hideControls() {
+            clearTimeout(idleTimer);
+            if (video && video.paused) return; // duraklatılmışken kontroller açık kalır
+            el.classList.add('idle');
+        }
+
+        /** Tam ekran: tarayıcının gerçek tam ekranı (adres çubuğu da gizlenir); yoksa sayfa içinde. */
+        async function setFullscreen(on) {
+            el.classList.toggle('fs', on);
+            const btn = el.querySelector('[data-v="fs"]');
+            if (btn) {
+                btn.innerHTML = icon(on ? 'minimize' : 'maximize');
+                btn.setAttribute('aria-label', on ? 'Tam ekrandan çık' : 'Tam ekran');
+            }
+            try {
+                if (on && !document.fullscreenElement && el.requestFullscreen) {
+                    await el.requestFullscreen({ navigationUI: 'hide' });
+                    // Yatay video yatay ekranda açılır.
+                    if (video && video.videoWidth > video.videoHeight && screen.orientation && screen.orientation.lock) {
+                        await screen.orientation.lock('landscape').catch(() => {});
+                    }
+                } else if (!on && document.fullscreenElement) {
+                    if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
+                    await document.exitFullscreen();
+                }
+            } catch (_) { /* tam ekran izni yok: sayfa içinde tam ekran sürer */ }
+            showControls();
+        }
+        const onFsChange = () => {
+            // Sistem geri tuşu/kaydırma ile tam ekrandan çıkıldıysa düzen de geri döner.
+            if (!document.fullscreenElement && el.classList.contains('fs')) setFullscreen(false);
+        };
+        document.addEventListener('fullscreenchange', onFsChange);
 
         /** Daha önce yarıda bırakıldıysa: "12:40'tan devam et / Baştan başla". */
         function offerResume() {
@@ -331,6 +474,9 @@ export function createViewer({ toast, edit = null }) {
         }
 
         function close() {
+            clearTimeout(idleTimer);
+            document.removeEventListener('fullscreenchange', onFsChange);
+            if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
             if (video && video.currentTime > 5) saveProgress(item, video.currentTime, video.duration || item.duration);
             if (video) video.pause();
             if (document.pictureInPictureElement === video) document.exitPictureInPicture().catch(() => {});
@@ -345,6 +491,8 @@ export function createViewer({ toast, edit = null }) {
             const v = btn.dataset.v;
             if (v === 'close') return close();
             if (!video) return;
+            if (v === 'fs') return setFullscreen(!el.classList.contains('fs'));
+            showControls();
             if (v === 'play') return video.paused ? video.play().catch(() => {}) : video.pause();
             if (v === 'back10') {
                 video.currentTime = Math.max(0, video.currentTime - 10);
@@ -612,7 +760,7 @@ export function createViewer({ toast, edit = null }) {
                     const bar = slide.querySelector('.fd-prog span');
                     media.addEventListener('timeupdate', () => {
                         time.textContent = `${clock(media.currentTime)} / ${clock(media.duration || it.duration)}`;
-                        bar.style.width = `${(media.currentTime / (media.duration || 1)) * 100}%`;
+                        if (!slide.classList.contains('scrubbing')) bar.style.width = `${(media.currentTime / (media.duration || 1)) * 100}%`;
                     });
                     media.addEventListener('pause', () => slide.classList.add('paused'));
                     media.addEventListener('play', () => slide.classList.remove('paused'));
