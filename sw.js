@@ -1,5 +1,5 @@
 // Service worker: çevrimdışı kabuk + arka plan indirmeleri (Background Fetch)
-const VERSION = 'v58';
+const VERSION = 'v59';
 const SHELL_CACHE = `shell-${VERSION}`;
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -43,6 +43,7 @@ const SHELL_FILES = [
     './assets/js/merge.js',
     './assets/js/dash.js',
     './assets/js/mp4mux.mjs',
+    './assets/js/hlsads.mjs',
     './assets/js/preview.js',
     './assets/vendor/mux-mp4.min.js',
     './assets/icons/icon.svg',
