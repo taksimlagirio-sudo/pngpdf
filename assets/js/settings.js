@@ -120,6 +120,9 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
                 <span class="row-chev">›</span></button>
             <button class="row" data-set="keepAwake"><span class="row-value" style="font-weight:400">İndirirken ekranı açık tut</span>
                 <span class="toggle${prefs.keepAwake ? ' on' : ''}"></span></button>
+            <button class="row" data-set="fsLandscape"><span class="row-value" style="font-weight:400">Tam ekranda yataya çevir
+                ${sub('Yatay videolar tam ekrana alınınca ekran kendiliğinden yatay döner')}</span>
+                <span class="toggle${prefs.fsLandscape ? ' on' : ''}"></span></button>
 `;
         findingBox.innerHTML = `
             <button class="row" data-set="bigSites"><span class="row-value" style="font-weight:400">Bilinen sitelerde gelişmiş bulma
@@ -155,6 +158,7 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
         if (key === 'background') setPref('background', !prefs.background);
         if (key === 'serverBackground') setPref('serverBackground', prefs.serverBackground === false);
         if (key === 'keepAwake') setPref('keepAwake', !prefs.keepAwake);
+        if (key === 'fsLandscape') setPref('fsLandscape', !prefs.fsLandscape);
         if (key === 'useYtdlp') setPref('useYtdlp', !prefs.useYtdlp);
         if (key === 'fullGalleries') setPref('fullGalleries', prefs.fullGalleries === false);
         if (key === 'bigSites') {

@@ -8,7 +8,8 @@ const DEFAULTS = {
     background: false,    // Background Fetch ile arka planda indir
     serverBackground: true, // kendi sunucun varsa indirme sunucuda yapılır (uygulama kapansa da sürer)
     concurrency: 3,       // aynı anda en fazla iş
-    keepAwake: true,      // kayıt/indirme sürerken ekranı açık tut (wake lock)
+    keepAwake: true,
+    fsLandscape: false,   // oynatıcı tam ekrana geçince (yatay videoda) ekranı yataya çevir      // kayıt/indirme sürerken ekranı açık tut (wake lock)
     recWhere: 'server',   // canlı kayıt: 'server' (kendi sunucum) | 'device'
     useYtdlp: false,      // büyük platformlar dışındaki sitelerde de önce yt-dlp'ye sor (sunucuda kuruluysa)
     libKeep: true,        // indirilenlerin bir kopyası Kitaplık'ta da tutulur

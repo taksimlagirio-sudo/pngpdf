@@ -16,7 +16,7 @@ import { canRemote, openRemoteOverlay } from './remote.js';
 import { canServerRecord, startServerRecording, captureIntoJob, serverDownloadIntoJob } from './serverrec.js';
 import { attachPreview, grabFrame, probePreview } from './preview.js';
 import { subLabel, subCode, loadCues, toSrt, toVtt, shiftCues } from './subs.js';
-import { embedSubtitles } from './mp4edit.js';
+import { embedSubtitles, editMp4, toProgressive } from './mp4edit.js';
 import { siteSettingFor, setSiteSetting, variantIndexFor } from './sitesettings.js';
 import { icon } from './icons.js';
 
@@ -87,6 +87,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     let autoHops = 0;
     let entryUrl = '';    // algılamanın başladığı adres (sayfadan videoya geçilse de)     // sayfadan medyaya otomatik geçişte sonsuz döngüyü engeller
     let remote = null;    // açık "kendim dokunayım" oturumu
+    let stickyAudio = false; // "Yalnızca ses" seçimi kalite değişince de korunur
     let bulkMode = false; // toplu eklemede: önizleme/konum sorusu/uyarılar yok
     let preview = null;   // açık önizleme oynatıcısı
     let seq = 0;          // eski analizlerin sonucu yenisinin üstüne yazılmasın
@@ -471,6 +472,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             return;
         }
         const mySeq = ++seq;
+        if (!page && !formats) stickyAudio = false; // yeni bir bağlantı: varsayılan video
         photosPage = page || null;
         if (!page) entryUrl = url; // "Son algılananlar"a yazılacak, kullanıcının verdiği adres
         analyzeBtn.disabled = true;
@@ -609,7 +611,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             showHidden: false,
             // Altyazı: varsayılan seçili olan sitenin Türkçe altyazısı (varsa).
             subs: new Set((d.subtitles || []).map((sub, i) => (/^tr/i.test(sub.language || '') && !sub.auto ? i : -1)).filter((i) => i >= 0).slice(0, 1)),
-            subMode: 'embed'
+            subMode: 'embed',
+            audioOnly: stickyAudio
         };
     }
 
@@ -793,6 +796,91 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         return variants[ui.variant] || null;
     }
 
+    /** Video mu, yalnızca ses mi? (görüntüsü olan sonuçlarda) */
+    function canAudioOnly() {
+        if (!info || info.unreachable || !info.downloadable) return false;
+        if (info.target === 'hls' || info.target === 'dash') return !info.details.audioOnly && !(ui.media && ui.media.live);
+        return info.kind === 'video' || Boolean(ui.audioUrl);
+    }
+
+    function audioChoiceHtml() {
+        if (!canAudioOnly()) return '';
+        return `<div class="sec"><span class="sec-label">Ne indirilsin</span>
+            <div class="seg">${[['', 'Video'], ['1', 'Yalnızca ses']].map(([v, l]) =>
+                `<button class="${Boolean(ui.audioOnly) === Boolean(v) ? 'on' : ''}" data-act="audio-only" data-v="${v}">${l}</button>`).join('')}</div>
+            ${ui.audioOnly ? `<span class="sec-hint">${ui.audioUrl ? 'Sitenin ayrı ses dosyası indirilir' : 'Video indirilir, sesi kalite kaybı olmadan ayrılır'} · M4A, telefonlarda ve arabada çalar.</span>` : ''}</div>`;
+    }
+
+    /**
+     * Gelen MP4'ü bellekte toplar, bitince sesini kayıpsız ayırıp asıl hedefe (.m4a) yazar.
+     * `realSinkFor`: prepareSink'in verdiği hedef açıcı.
+     */
+    function audioExtractSink(realSinkFor, finalName) {
+        return async () => {
+            const mem = await createSink('gecici.mp4', { mode: 'gallery', mime: 'video/mp4' });
+            return {
+                ...mem,
+                mode: 'memory',
+                name: finalName,
+                async close() {
+                    const blob = await mem.close();
+                    let out;
+                    try {
+                        out = (await editMp4(await toProgressive(blob), { audioOnly: true })).blob;
+                    } catch (err) {
+                        throw new Error(`Ses ayrılamadı: ${err.message}`);
+                    }
+                    const real = await realSinkFor(finalName, 'audio/mp4');
+                    await real.write(new Uint8Array(await out.arrayBuffer()));
+                    return real.close();
+                }
+            };
+        };
+    }
+
+    /** "Yalnızca ses" indirmesi. */
+    async function startAudioDownload(queueOnly) {
+        const prefs = getPrefs();
+        const name = cleanName();
+        const fileName = `${name}.m4a`;
+        const { saveMode, createSinkFor } = await prepareSink(fileName, 'audio/mp4', { subtitles: false });
+        const thumb = await currentThumb();
+        const source = jobSource();
+        const isHls = info.target === 'hls';
+        const extract = audioExtractSink(createSinkFor, fileName);
+        let run;
+        if (!isHls && info.target !== 'dash' && ui.audioUrl) {
+            // Sitenin ayrı ses dosyası (gelişmiş bulma): doğrudan o iner.
+            const url = ui.audioUrl;
+            if (prefs.serverBackground !== false && canServerRecord()) {
+                run = (job) => serverDownloadIntoJob(job, { url, name: fileName, page: source.page, createSinkFor });
+            } else {
+                run = (job) => downloadFile({ job, url, name: fileName, mode: prefs.conn, mime: 'audio/mp4', size: 0, createSinkFor });
+            }
+        } else if (isHls) {
+            const variant = currentVariant();
+            const range = ui.rangeOpen ? rangeSeconds() : null;
+            // Ayrı ses kanalı varsa yalnızca o, yoksa seçili kalite indirilip sesi ayrılır.
+            const videoUrl = ui.audioUrl || (variant ? variant.url : info.url);
+            const videoPlaylist = ui.audioUrl ? null : (ui.media ? ui.media.playlist : null);
+            run = (job) => downloadHlsVod({ job, videoUrl, videoPlaylist, audioUrl: null, name, range, mode: prefs.conn, createSinkFor: extract });
+        } else if (info.target === 'dash') {
+            const mpd = info.details.mpd;
+            const audioRep = mpd.audios[0] || null;
+            const range = ui.rangeOpen ? rangeSeconds() : null;
+            run = async (job) => {
+                const rep = audioRep || currentVariant();
+                const playlist = await dashPlaylist(mpd, rep, { mode: prefs.conn, signal: job.signal });
+                return downloadHlsVod({ job, videoPlaylist: playlist, name, range, mode: prefs.conn, createSinkFor: extract });
+            };
+        } else {
+            const url = info.url;
+            run = (job) => downloadFile({ job, url, name: `${name}.mp4`, mode: prefs.conn, mime: info.mime, size: info.size, createSinkFor: extract });
+        }
+        addJob({ name: fileName, kind: 'audio', thumb, saveMode, source, run });
+        if (!bulkMode) toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'Ses indiriliyor · İndirmeler');
+    }
+
     /** Gelişmiş bulmanın verdiği kaliteler (her biri ayrı dosya). */
     function formatsHtml() {
         const list = ui.formats;
@@ -819,6 +907,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     function currentExt() {
         if (info.unreachable) return '.mp4';
+        if (ui.audioOnly && canAudioOnly()) return '.m4a';
         if (info.target === 'hls') return info.details.audioOnly ? '.m4a' : '.mp4';
         if (info.target === 'dash') return '.mp4';
         if (ui.audioUrl) return '.mp4';
@@ -938,6 +1027,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     }
 
     function downloadSize() {
+        if (ui.audioOnly) return 0; // ses boyutu önceden bilinmiyor
         if (!['hls', 'dash'].includes(info.target)) return info.size || 0;
         if (!ui.media) return 0;
         const { start, end } = rangeSeconds();
@@ -952,6 +1042,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             const size = downloadSize();
             body = `
                 <div class="card-pad">
+                    ${audioChoiceHtml()}
                     ${formatsHtml()}
                     ${qualityHtml()}
                     ${rangeHtml()}
@@ -1367,6 +1458,10 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 subtitles: (link && link.subtitles) || (fromPage ? info.details.subtitles : null)
             });
         }
+        if (act === 'audio-only') {
+            ui.audioOnly = stickyAudio = Boolean(btn.dataset.v);
+            return render();
+        }
         if (act === 'format' && info && ui.formats) {
             const f = ui.formats[Number(btn.dataset.i)];
             if (!f || f.url === info.url) return;
@@ -1481,13 +1576,13 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     }
 
     /** "Konum seç" yönteminde dosya konumu hemen (dokunuş geçerliyken) sorulur. */
-    async function prepareSink(fileName, mime) {
+    async function prepareSink(fileName, mime, { subtitles = true } = {}) {
         let saveMode = effectiveSaveMode(getPrefs().save);
         // Toplu eklemede her dosya için konum sorulamaz (dokunuş tek); İndirilenler'e kaydedilir.
         if (bulkMode && saveMode === 'disk') saveMode = 'downloads';
         let diskSink = null;
         if (saveMode === 'disk') diskSink = await createSink(fileName, { mode: 'disk', mime });
-        const plan = bulkMode ? null : subtitlePlan(fileName);
+        const plan = bulkMode || !subtitles ? null : subtitlePlan(fileName);
         if (plan && plan.mode !== 'embed') queueSubtitleFiles(plan, fileName.replace(/\.[a-z0-9]{1,5}$/i, ''));
         if (plan && plan.mode !== 'srt') return { saveMode, createSinkFor: embedSink(plan, saveMode) };
         return {
@@ -1549,6 +1644,15 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     }
 
     async function startDownload(queueOnly) {
+        if (ui.audioOnly && canAudioOnly()) {
+            try {
+                return await startAudioDownload(queueOnly);
+            } catch (err) {
+                if (bulkMode) throw err;
+                if (err.name !== 'AbortError') setError(err.message);
+                return;
+            }
+        }
         const prefs = getPrefs();
         const isHls = info.target === 'hls' || (info.unreachable && info.kind === 'hls');
         const name = cleanName();
@@ -1742,6 +1846,9 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 // Seçilen kalite ilk varyant değilse eldeki liste ona ait değil; indirirken okunur.
                 if (ui.variant !== 0 && ui.media) ui.media = { ...ui.media, playlist: null };
             }
+            // "Yalnızca ses": sesi ayrı bir kalite yoksa video indirilip sesi ayrılır.
+            const v = variants[ui.variant];
+            ui.audioOnly = quality === 'audio' && !(v && v.audioOnly) && canAudioOnly();
             await startDownload(true);
         } finally {
             bulkMode = false;
