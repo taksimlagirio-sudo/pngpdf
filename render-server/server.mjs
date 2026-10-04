@@ -250,7 +250,7 @@ const PLAY_SELECTORS = [
  * Kayıt tutan bir sayfa açar: sayfanın (ve çerçevelerinin) yaptığı medya istekleri `state.found`a
  * toplanır. Hem otomatik koklama hem de kullanıcının dokunduğu etkileşimli oturum bunu kullanır.
  */
-async function openRecordedPage(pageUrl, contextOptions) {
+async function openRecordedPage(pageUrl, contextOptions, { interactive = false } = {}) {
     const browser = await getBrowser();
     const context = logins.attach(await browser.newContext({ storageState: logins.storageState(), ...contextOptions }));
     await context.addInitScript(CODEC_SPOOF);
@@ -258,10 +258,10 @@ async function openRecordedPage(pageUrl, contextOptions) {
     const state0 = { blockedAds: 0 };
     const blocked = new Set(); // engellenen reklam istekleri "başarısız istek" diye listeye girmesin
     await installRouting(context, { onBlocked: (url) => { state0.blockedAds++; blocked.add(url); } });
-    await installPageGuards(context);
+    await installPageGuards(context, { allowPopups: interactive });
     const page = await context.newPage();
-    // Tıklamanın açtığı reklam pencereleri hemen kapatılsın.
-    context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
+    // Tıklamanın açtığı reklam pencereleri hemen kapatılsın (etkileşimli oturum kendisi karar verir).
+    if (!interactive) context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
     const state = Object.assign(state0, { found: new Map(), firstMediaAt: 0, pending: [] });
 
     const record = (url, contentType, size, referer, { response = null, failed = false } = {}) => {
@@ -491,7 +491,7 @@ async function sniff(pageUrl, waitMs) {
 const MOBILE_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36';
 const SESSION_VIEWPORT = { width: 412, height: 800 };
 const MAX_SESSIONS = 2;
-const SESSION_IDLE_MS = 90 * 1000;
+const SESSION_IDLE_MS = 5 * 60 * 1000; // SMS/doğrulama kodu için uygulamadan çıkılabilir
 const SESSION_MAX_MS = 15 * 60 * 1000;
 const sessions = new Map();
 
@@ -519,9 +519,26 @@ async function openSession(pageUrl) {
     }
     const { context, page, state } = await openRecordedPage(pageUrl, {
         userAgent: MOBILE_UA, viewport: SESSION_VIEWPORT, deviceScaleFactor: 1.5, isMobile: true, hasTouch: true
-    });
-    const session = { id: randomBytes(12).toString('hex'), context, page, state, created: Date.now(), lastUsed: Date.now() };
+    }, { interactive: true });
+    // page: ekranda gösterilen sayfa; main: asıl sayfa. Giriş penceresi açılınca ekran ona geçer,
+    // pencere kapanınca (giriş bitince) asıl sayfaya dönülür.
+    const session = { id: randomBytes(12).toString('hex'), context, page, main: page, state, created: Date.now(), lastUsed: Date.now() };
     guardSession(page, { onReturn: () => { state.blockedAds = (state.blockedAds || 0) + 1; } });
+    context.on('page', async (popup) => {
+        if (popup === page) return;
+        await popup.waitForURL((u) => !/^about:/i.test(String(u)), { timeout: 5000 }).catch(() => {});
+        const url = popup.url();
+        if (/^about:/i.test(url) || await isAdRequest(url, page.url(), 'document')) {
+            state.blockedAds = (state.blockedAds || 0) + 1;
+            return popup.close().catch(() => {});
+        }
+        await popup.setViewportSize(SESSION_VIEWPORT).catch(() => {});
+        const previous = session.page;
+        session.page = popup;
+        popup.on('close', () => {
+            if (session.page === popup) session.page = previous.isClosed() ? session.main : previous;
+        });
+    });
     sessions.set(session.id, session);
     try {
         await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
@@ -535,11 +552,19 @@ async function openSession(pageUrl) {
     return session;
 }
 
+/** Gösterilen sayfa kapandıysa (giriş penceresi işini bitirdi) asıl sayfaya dönülür. */
+function activePage(session) {
+    if (session.page.isClosed()) session.page = session.main;
+    return session.page;
+}
+
 async function sessionState(session) {
+    activePage(session);
     return {
         id: session.id,
         title: await session.page.title().catch(() => ''),
         url: session.page.url(),
+        popup: session.page !== session.main, // giriş penceresi gösteriliyor
         width: SESSION_VIEWPORT.width,
         height: SESSION_VIEWPORT.height,
         items: foundItems(session.state)
@@ -549,7 +574,7 @@ async function sessionState(session) {
 const SESSION_KEYS = new Set(['Enter', 'Backspace', 'Escape', 'Tab']);
 
 async function sessionAction(session, action) {
-    const { page } = session;
+    const page = activePage(session);
     const { width, height } = SESSION_VIEWPORT;
     const fraction = (value) => Math.min(1, Math.max(0, Number(value) || 0));
     switch (action.type) {
@@ -567,7 +592,8 @@ async function sessionAction(session, action) {
             break;
         case 'key':
             if (!SESSION_KEYS.has(action.key)) throw new Error('Desteklenmeyen tuş');
-            await page.keyboard.press(action.key);
+            // Enter giriş penceresini kapatabilir (giriş bitti); kapanan sayfa hata sayılmaz.
+            await page.keyboard.press(action.key).catch((err) => { if (!page.isClosed()) throw err; });
             break;
         case 'back':
             await page.goBack({ timeout: 10000 }).catch(() => {});
@@ -578,7 +604,22 @@ async function sessionAction(session, action) {
         default:
             throw new Error('Bilinmeyen işlem');
     }
-    await page.waitForTimeout(300);
+    if (!page.isClosed()) await page.waitForTimeout(300).catch(() => {});
+}
+
+/** Odaktaki kutucuk: uygulama şifre kutusunda yazılanı gizler, e-postada uygun klavyeyi açar. */
+async function sessionFocus(session) {
+    for (const frame of activePage(session).frames()) {
+        const focus = await frame.evaluate(() => {
+            const el = document.activeElement;
+            if (!el || el === document.body || el.tagName === 'IFRAME') return null;
+            const editable = el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName);
+            if (!editable) return null;
+            return { type: (el.getAttribute('type') || el.tagName).toLowerCase(), label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || '' };
+        }).catch(() => null);
+        if (focus) return focus;
+    }
+    return null;
 }
 
 // HLS playlist'iyle aynı klasördeki .mp4 adlı fMP4 parçaları ayrı video gibi listelenmesin.
@@ -1829,14 +1870,14 @@ const server = http.createServer(async (req, res) => {
                 return sendJson(res, 200, { ok: true });
             }
             if (sub === '/shot' && req.method === 'GET') {
-                const image = await session.page.screenshot({ type: 'jpeg', quality: 55, timeout: 8000 });
+                const image = await activePage(session).screenshot({ type: 'jpeg', quality: 55, timeout: 8000 });
                 res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/jpeg', 'content-length': image.length, 'cache-control': 'no-store' });
                 return res.end(image);
             }
             if (sub === '/action' && req.method === 'POST') {
                 await sessionAction(session, await readJson(req));
                 logins.save(session.context).catch(() => {}); // giriş yapıldıysa hemen saklansın
-                return sendJson(res, 200, await sessionState(session));
+                return sendJson(res, 200, { ...await sessionState(session), focus: await sessionFocus(session) });
             }
         }
 

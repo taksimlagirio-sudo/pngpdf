@@ -242,10 +242,15 @@ const POPUP_GUARD = `(() => {
         w.window = w; w.self = w; w.opener = window;
         return w;
     };
-    try {
-        Object.defineProperty(window, 'open', { value: function () { return fake(); }, writable: false, configurable: false });
-    } catch (_) {
-        window.open = function () { return fake(); };
+    // "Kendim dokunayım"da pencere açmaya izin verilir: "Google/Apple ile giriş" gibi giriş pencereleri
+    // açılabilsin. Açılan pencere sunucuda reklam mı diye bakılır (reklamsa kapatılır).
+    const allowPopups = window.__indiriciAllowPopups === true;
+    if (!allowPopups) {
+        try {
+            Object.defineProperty(window, 'open', { value: function () { return fake(); }, writable: false, configurable: false });
+        } catch (_) {
+            window.open = function () { return fake(); };
+        }
     }
     // Otomatik tarama/kayıt sırasında sayfa başka bir siteye gitmeye kalkarsa (oynat düğmesine
     // basınca reklama yönlendirme) gitmeden iptal edilir. Kilit yalnızca sunucu "arm" deyince açılır.
@@ -273,7 +278,7 @@ const POPUP_GUARD = `(() => {
             } catch (_) {}
         });
     }
-    document.addEventListener('click', (e) => {
+    if (!allowPopups) document.addEventListener('click', (e) => {
         const a = e.target && e.target.closest && e.target.closest('a[target]');
         if (!a || /^_(self|parent|top)$/i.test(a.target)) return;
         try {
@@ -329,7 +334,8 @@ async function applyCosmetics(frame) {
  * Bağlamdaki her sayfaya pop-up korumasını ve kozmetik gizlemeyi kurar.
  * ADBLOCK=0 ile başlatılmışsa pop-up koruması yine kurulur (reklam penceresi işe yaramaz).
  */
-export async function installPageGuards(context) {
+export async function installPageGuards(context, { allowPopups = false } = {}) {
+    if (allowPopups) await context.addInitScript('window.__indiriciAllowPopups = true;');
     await context.addInitScript(POPUP_GUARD);
     if (process.env.ADBLOCK === '0') return;
     await getEngine();
@@ -368,6 +374,8 @@ export async function disarmOverlays(page) {
                 const r = el.getBoundingClientRect();
                 if (r.width * r.height < vw * vh * 0.35) continue;
                 if (el.querySelector('video, iframe, canvas, img[src]')) continue;
+                // Giriş formu, düğme ya da bağlantı içeren katman dokunulmaz yapılmaz (yazısız olsa da).
+                if (el.matches('form, [role="dialog"]') || el.querySelector('input, textarea, select, button, a[href], form, [role="button"], [contenteditable="true"]')) continue;
                 if (el.closest('video')) continue;
                 const seeThrough = Number(cs.opacity) < 0.15 || (alpha(cs.backgroundColor) < 0.15 && cs.backgroundImage === 'none');
                 const textless = (el.innerText || '').trim().length < 3;
