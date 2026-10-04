@@ -6,7 +6,7 @@ import { downloadFile } from './video.js';
 import { downloadMerged } from './merge.js';
 import { downloadHlsVod, recordHlsLive, loadPlaylist, audioFor, baseNameFor } from './hls.js';
 import { dashPlaylist } from './dash.js';
-import { recentList, addRecent, updateRecent, persistThumb } from './recent.js';
+import { recentList, addRecent, updateRecent, persistThumb, clearRecent } from './recent.js';
 import {
     addJob, createSink, effectiveSaveMode, canSaveToDisk, canShareFiles, canBackgroundFetch,
     askNotificationPermission
@@ -143,6 +143,49 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         start(url);
     }
 
+    /**
+     * Pano okunamazsa (izin verilmedi / tarayıcı desteklemiyor): bağlantının yapıştırılacağı bir
+     * kutu açılır; klavyenin pano önerisine ya da uzun basıp "Yapıştır"a dokunmak yeter.
+     */
+    async function pasteFallback() {
+        let denied = false;
+        try {
+            const st = await navigator.permissions.query({ name: 'clipboard-read' });
+            denied = st.state === 'denied';
+        } catch (_) { /* bu tarayıcıda sorgulanamıyor */ }
+        const el = document.createElement('div');
+        el.className = 'sheet-backdrop paste-sheet';
+        el.innerHTML = `<div class="paste-box">
+            <b>Bağlantıyı buraya yapıştır</b>
+            <input class="input" type="url" inputmode="url" placeholder="Uzun bas → Yapıştır" autocomplete="off">
+            <span class="paste-hint">${denied
+                ? 'Pano izni kapalı. Açmak için: adres çubuğundaki ⓘ (ya da ⋮ → ⓘ) → İzinler → Pano → İzin ver. Sonra "Yapıştır ve algıla" tek dokunuşla çalışır.'
+                : 'Tarayıcı panoyu okumaya izin vermedi. Klavyenin üstündeki pano önerisine dokunabilir ya da kutuya uzun basıp Yapıştır diyebilirsin.'}</span>
+            <div class="btn-row"><button class="btn-ghost" data-p="cancel">Vazgeç</button><button class="btn-ac" data-p="go">Algıla</button></div></div>`;
+        document.body.appendChild(el);
+        const input = el.querySelector('input');
+        const close = () => el.remove();
+        const go = () => {
+            const text = input.value;
+            if (onBulk && countLinks(text) > 1) {
+                close();
+                return onBulk(text);
+            }
+            const url = firstUrl(text);
+            if (!isHttpUrl(url)) return;
+            close();
+            urlInput.value = url;
+            start(url);
+        };
+        input.addEventListener('input', () => { if (isHttpUrl(firstUrl(input.value))) go(); });
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+        el.addEventListener('click', (e) => {
+            if (e.target === el || e.target.closest('[data-p="cancel"]')) close();
+            if (e.target.closest('[data-p="go"]')) go();
+        });
+        setTimeout(() => input.focus(), 50);
+    }
+
     /** Panodaki bağlantıyı yapıştırıp hemen algılar. */
     async function pasteAndAnalyze() {
         showShared('');
@@ -150,19 +193,31 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         try {
             text = await readClipboard();
         } catch (_) {
-            setError('Panoya erişilemedi. Bağlantıyı kutuya basılı tutup yapıştırın (tarayıcı pano izni isterse "İzin ver").');
-            urlInput.focus();
-            return;
+            return pasteFallback();
         }
         if (onBulk && countLinks(text) > 1) return onBulk(text);
         const url = firstUrl(text);
         if (!isHttpUrl(url)) {
-            setError('Panoda bir bağlantı yok. Önce paylaşılacak bağlantıyı kopyalayın.');
-            return;
+            // Pano boş görünüyorsa (bazı telefonlar boş döndürür) yapıştırma kutusu açılır.
+            return pasteFallback();
         }
         urlInput.value = url;
         start(url);
     }
+
+    /** Son algılananlar: istendiğinde (sonuç ekranındayken de) açılır. */
+    function showRecent() {
+        seq++;
+        if (controller) controller.abort();
+        closePreview();
+        stopProgress();
+        statusBox.innerHTML = '';
+        showShared('');
+        info = null;
+        renderIdle({ forceRecent: true });
+        analyzeBtn.disabled = false;
+    }
+    $('detectRecentBtn').addEventListener('click', showRecent);
 
     // Sunucuda yt-dlp kurulu mu (bir kez sorulur).
     let ytdlpCheck = null;
@@ -299,13 +354,26 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     /* ---------------- Boş ekran: ilk açılış ya da son algılananlar ---------------- */
 
-    function renderIdle() {
+    function followRow() {
+        if (!onFollow || !getRenderServer()) return '';
+        return `<button class="row follow-entry" data-act="open-follow"><span class="row-value" style="font-weight:600">📡 Yayın takibi
+            <span class="muted" style="display:block;font-size:12px;font-weight:400">Bir yayın açıldıkça kendiliğinden kaydet · zamanla · kanal takibi</span></span>
+            <span class="row-chev">›</span></button>`;
+    }
+
+    function renderIdle({ forceRecent = false } = {}) {
         if (info) return;
         const recent = recentList();
+        if (forceRecent && !recent.length) {
+            resultBox.innerHTML = `<div class="recent"><span class="sec-label">Son algılananlar</span>
+                <p class="muted" style="margin:0;font-size:13.5px">Henüz algılanan bir şey yok.</p></div>
+                <div class="rows filled">${followRow()}</div>`;
+            return;
+        }
         if (recent.length) {
             resultBox.innerHTML = `
                 <div class="recent">
-                    <span class="sec-label">Son algılananlar</span>
+                    <div class="recent-head"><span class="sec-label">Son algılananlar</span><button class="link-btn" data-act="recent-clear">Temizle</button></div>
                     ${recent.map((r) => `
                         <button class="recent-row" data-act="recent" data-url="${escapeHtml(r.url)}">
                             <span class="thumb recent-thumb">${r.thumb ? `<img src="${escapeHtml(r.thumb)}" alt="">` : ''}${r.duration
@@ -314,7 +382,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                                 <span class="recent-meta">${escapeHtml(r.meta || '')}</span></span>
                             <span class="recent-act">İndir</span>
                         </button>`).join('')}
-                </div>`;
+                </div>
+                ${followRow() ? `<div class="rows filled">${followRow()}</div>` : ''}`;
             return;
         }
         const canInstall = install && install.available && install.available();
@@ -325,6 +394,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 <div class="welcome-sub">Video, canlı yayın, sayfa ya da galeri.</div>
             </div>
             <div class="rows filled">
+                ${followRow()}
                 <button class="row" data-act="how-share"><span class="row-value" style="font-weight:600">Başka uygulamadan paylaş
                     <span class="muted" style="display:block;font-size:12px;font-weight:400">Paylaş → İndirici, otomatik algılanır</span></span>
                     <span class="row-chev">›</span></button>
@@ -1319,6 +1389,11 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             return;
         }
         if (act === 'setup') return openSetup ? openSetup(1) : navigate('settings');
+        if (act === 'open-follow') return navigate('follow');
+        if (act === 'recent-clear') {
+            clearRecent();
+            return renderIdle({ forceRecent: true });
+        }
         if (!info) return;
         if (act === 'rescan') return analyze(info.url, { noExtract: true });
         if (act === 'focus-url') {
