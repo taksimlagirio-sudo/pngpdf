@@ -40,7 +40,7 @@ import { findYtdlp, extractInfo, normalizeInfo } from './ytdlp.mjs';
 import { findGalleryDl, extractImages } from './gallerydl.mjs';
 import { createCookieJar } from './cookiejar.mjs';
 import { pairPage, redeemCode } from './pairing.mjs';
-import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd } from './adblock.mjs';
+import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd, installPageGuards, disarmOverlays } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '0.4.0';
@@ -249,6 +249,7 @@ async function openRecordedPage(pageUrl, contextOptions) {
     const state0 = { blockedAds: 0 };
     const blocked = new Set(); // engellenen reklam istekleri "başarısız istek" diye listeye girmesin
     await installRouting(context, { onBlocked: (url) => { state0.blockedAds++; blocked.add(url); } });
+    await installPageGuards(context);
     const page = await context.newPage();
     // Tıklamanın açtığı reklam pencereleri hemen kapatılsın.
     context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
@@ -341,7 +342,7 @@ async function nudgePlayback(page, started, nudge) {
     // oynat düğmesine yeniden basılması gerekir.
     if (nudge.steps && !nudge.steps.length) {
         nudge.emptiedAt = nudge.emptiedAt || Date.now();
-        if ((nudge.rounds || 1) < 3 && Date.now() - nudge.emptiedAt > 3000) {
+        if ((nudge.rounds || 1) < 3 && Date.now() - nudge.emptiedAt > 1500) {
             nudge.rounds = (nudge.rounds || 1) + 1;
             nudge.steps = null;
             nudge.emptiedAt = 0;
@@ -350,6 +351,11 @@ async function nudgePlayback(page, started, nudge) {
     if (!nudge.steps) {
         nudge.nextAt = Math.max(nudge.nextAt || 0, started + 2500);
         nudge.steps = [
+            async () => {
+                // Tıklamayı yutan görünmez reklam katmanları önce etkisizleştirilir.
+                await disarmOverlays(page);
+                return false;
+            },
             () => clickConsent(page),
             async () => {
                 for (const frame of page.frames()) {

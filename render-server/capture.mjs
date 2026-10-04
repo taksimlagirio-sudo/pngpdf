@@ -16,7 +16,7 @@ import path from 'node:path';
 import { randomBytes, createDecipheriv } from 'node:crypto';
 import { mergeFmp4 } from './fmp4.mjs';
 import { parsePlaylist, createMuxer } from './recorder.mjs';
-import { installRouting, guardNavigation } from './adblock.mjs';
+import { installRouting, guardNavigation, installPageGuards } from './adblock.mjs';
 
 const MAX_ACTIVE = Number(process.env.MAX_CAPTURES) || 4;
 const SPEED = 16;                 // Chrome'un izin verdiği en yüksek oynatma hızı
@@ -274,6 +274,7 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
             // Temiz oynatıcıda başka kökenden yayın istekleri: sunucuda alınıp CORS izniyle verilir.
             needsCors: (request) => playerMode && ['xhr', 'fetch', 'media'].includes(request.resourceType())
         });
+        await installPageGuards(context);
         await context.exposeBinding('__indiriciMse', (_source, type, id, payload, ms) => {
             if (cap.finishing) return;
             if (type === 'drm') {
