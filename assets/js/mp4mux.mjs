@@ -82,6 +82,36 @@ function fullbox(type, version, flags, ...parts) {
     return box(type, w8(version), be(flags, 3), ...parts);
 }
 
+/**
+ * Çok kayıtlı tablo gövdesi: kayıtlar tek bir diziye yazılır. Kayıtları ayrı parametre olarak
+ * vermek uzun videolarda (yüz binlerce kare) "Maximum call stack size exceeded" hatası verir.
+ * fields: her kaydın 32 bitlik alanları (int32 olanlar da aynı biçimde yazılır).
+ */
+export function table(rows, fields) {
+    const out = new Uint8Array(rows.length * fields * 4);
+    const dv = new DataView(out.buffer);
+    let o = 0;
+    for (const row of rows) {
+        for (let k = 0; k < fields; k++) {
+            const v = fields === 1 ? row : row[k];
+            dv.setUint32(o, v < 0 ? v + 4294967296 : v >>> 0);
+            o += 4;
+        }
+    }
+    return out;
+}
+
+/** 64 bitlik konum tablosu (co64). */
+export function table64(values) {
+    const out = new Uint8Array(values.length * 8);
+    const dv = new DataView(out.buffer);
+    values.forEach((v, i) => {
+        dv.setUint32(i * 8, Math.floor(v / 4294967296));
+        dv.setUint32(i * 8 + 4, v % 4294967296);
+    });
+    return out;
+}
+
 const MATRIX = concat([w32(0x10000), w32(0), w32(0), w32(0), w32(0x10000), w32(0), w32(0), w32(0), w32(0x40000000)]);
 
 /** Büyüyebilen sayı dizisi (çok sayıda örnek için bellek dostu). */
@@ -415,7 +445,7 @@ export class Mp4Builder {
         }
         const parts = [
             fullbox('stsd', 0, 0, w32(t.entries.length), ...t.entries),
-            fullbox('stts', 0, 0, w32(stts.length), ...stts.flatMap(([c, d]) => [w32(c), w32(d)]))
+            fullbox('stts', 0, 0, w32(stts.length), table(stts, 2))
         ];
         if (t.anyCtts) {
             const ctts = [];
@@ -424,25 +454,24 @@ export class Mp4Builder {
                 if (ctts.length && ctts[ctts.length - 1][1] === c) ctts[ctts.length - 1][0]++;
                 else ctts.push([1, c]);
             }
-            parts.push(fullbox('ctts', 1, 0, w32(ctts.length), ...ctts.flatMap(([c, o]) => [w32(c), wi32(o)])));
+            parts.push(fullbox('ctts', 1, 0, w32(ctts.length), table(ctts, 2)));
         }
         if (t.anyNonSync) {
             const sync = [];
-            for (let i = 0; i < n; i++) if (t.sync.a[i]) sync.push(w32(i + 1));
-            parts.push(fullbox('stss', 0, 0, w32(sync.length), ...sync));
+            for (let i = 0; i < n; i++) if (t.sync.a[i]) sync.push(i + 1);
+            parts.push(fullbox('stss', 0, 0, w32(sync.length), table(sync, 1)));
         }
         const stsc = [];
         t.chunks.forEach((c, i) => {
             const last = stsc[stsc.length - 1];
             if (!last || last[1] !== c.count || last[2] !== c.desc) stsc.push([i + 1, c.count, c.desc]);
         });
-        parts.push(fullbox('stsc', 0, 0, w32(stsc.length), ...stsc.flatMap((e) => e.map(w32))));
-        const sizes = new Uint8Array(n * 4);
-        for (let i = 0; i < n; i++) sizes.set(w32(t.sizes.a[i]), i * 4);
+        parts.push(fullbox('stsc', 0, 0, w32(stsc.length), table(stsc, 3)));
+        const sizes = table(t.sizes.a.subarray(0, n), 1);
         parts.push(fullbox('stsz', 0, 0, w32(0), w32(n), sizes));
         parts.push(use64
-            ? fullbox('co64', 0, 0, w32(t.chunks.length), ...t.chunks.map((c) => w64(c.offset)))
-            : fullbox('stco', 0, 0, w32(t.chunks.length), ...t.chunks.map((c) => w32(c.offset))));
+            ? fullbox('co64', 0, 0, w32(t.chunks.length), table64(t.chunks.map((c) => c.offset)))
+            : fullbox('stco', 0, 0, w32(t.chunks.length), table(t.chunks.map((c) => c.offset), 1)));
 
         const mediaHeader = t.mediaHeader || (video ? fullbox('vmhd', 0, 1, new Uint8Array(8)) : fullbox('smhd', 0, 0, new Uint8Array(4)));
         const dinf = box('dinf', fullbox('dref', 0, 0, w32(1), fullbox('url ', 0, 1)));

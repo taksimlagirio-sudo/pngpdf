@@ -149,9 +149,29 @@ function driveVideo(speed) {
     for (const v of window.__indiriciMedia || []) {
         if (v && v.tagName === 'VIDEO') videos.add(v);
     }
+    // Reklam oynatıcısındaki video (IMA, VAST, video.js/JW reklam katmanı) asıl video sayılmaz;
+    // oynuyorsa sonuna sarılır ki oynatıcı asıl videoya geçsin. "Reklamı geç" varsa basılır.
+    const AD_BOX = '[class*="ima-ad" i], [id*="ima-ad" i], [class*="videoAdUi" i], [class*="ytp-ad" i], ' +
+        '[class*="vast" i], [id*="vast" i], [class*="preroll" i], [id*="preroll" i], [class*="ad-container" i], ' +
+        '[id*="ad-container" i], [class*="adContainer" i], [class*="jw-flag-ads" i], [class*="vjs-ad-playing" i], ' +
+        '[class*="ad-playing" i], [class*="ad-showing" i]';
+    const isAd = (v) => { try { return Boolean(v.closest(AD_BOX)); } catch (_) { return false; } };
+    for (const b of document.querySelectorAll('.ytp-ad-skip-button, .ytp-skip-ad-button, .videoAdUiSkipButton, ' +
+        '.jw-skip, .vast-skip-button, .skip-ad, .skipAd, [class*="skip-ad" i], [class*="skipad" i], ' +
+        'button[aria-label*="skip ad" i], button[aria-label*="reklamı geç" i]')) {
+        const r = b.getBoundingClientRect();
+        if (r.width && r.height) { try { b.click(); } catch (_) { /* geçilemedi */ } }
+    }
     let best = null;
     let bestScore = -1;
     for (const v of videos) {
+        if (isAd(v)) {
+            v.muted = true;
+            if (isFinite(v.duration) && v.duration > 0 && !v.ended) {
+                try { v.currentTime = v.duration; } catch (_) { /* izin vermedi */ }
+            }
+            continue;
+        }
         const r = v.getBoundingClientRect();
         const dur = isFinite(v.duration) ? v.duration : (v.duration === Infinity ? 1e6 : 0);
         const score = dur * 1000 + r.width * r.height + (v.currentTime > 0 ? 1e9 : 0);

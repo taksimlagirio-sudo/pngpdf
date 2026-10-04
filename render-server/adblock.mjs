@@ -193,6 +193,39 @@ export function guardNavigation(page, { onReturn = () => {} } = {}) {
     };
 }
 
+/**
+ * Kullanıcının dokunduğu oturumda ("Kendim dokunayım"): kullanıcı başka sitelere gidebilir (giriş
+ * sayfası gibi), ama ana sayfa bir reklam adresine giderse ya da engellenen reklam yüzünden hata
+ * sayfasına düşerse son düzgün sayfaya dönülür.
+ */
+export function guardSession(page, { onReturn = () => {} } = {}) {
+    let lastGood = '';
+    let busy = false;
+    let returns = 0;
+    page.on('framenavigated', async (frame) => {
+        if (frame !== page.mainFrame() || busy) return;
+        const url = frame.url();
+        const errorPage = /^chrome-error:/i.test(url);
+        const ad = !errorPage && /^https?:/i.test(url) && await isAdRequest(url, lastGood, 'document');
+        if (!errorPage && !ad) {
+            if (/^https?:/i.test(url)) lastGood = url;
+            returns = 0;
+            return;
+        }
+        if (!lastGood || returns >= 5) return;
+        returns++;
+        busy = true;
+        onReturn(url);
+        page.goto(lastGood, { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {})
+            .finally(() => { busy = false; });
+    });
+    // Yüklenen sayfada tıklamayı yutan görünmez katmanlar etkisizleştirilir.
+    page.on('domcontentloaded', () => {
+        setTimeout(() => disarmOverlays(page).catch(() => {}), 1500);
+        setTimeout(() => disarmOverlays(page).catch(() => {}), 5000);
+    });
+}
+
 /* ---------------- Pop-up, tıklama tuzağı ve kozmetik engelleme ---------------- */
 
 // Her sayfaya (ve çerçeveye) ilk iş olarak eklenir:

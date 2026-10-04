@@ -49,7 +49,7 @@ import { findFfmpeg, analyzeAudio, createAudioJobs } from './audio.mjs';
 import { createInbox } from './inbox.mjs';
 import { mergeFmp4 } from './fmp4.mjs';
 import qrcode from './vendor/qrcode.mjs';
-import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd, installPageGuards, disarmOverlays } from './adblock.mjs';
+import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd, installPageGuards, disarmOverlays, guardSession } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '0.4.0';
@@ -521,6 +521,7 @@ async function openSession(pageUrl) {
         userAgent: MOBILE_UA, viewport: SESSION_VIEWPORT, deviceScaleFactor: 1.5, isMobile: true, hasTouch: true
     });
     const session = { id: randomBytes(12).toString('hex'), context, page, state, created: Date.now(), lastUsed: Date.now() };
+    guardSession(page, { onReturn: () => { state.blockedAds = (state.blockedAds || 0) + 1; } });
     sessions.set(session.id, session);
     try {
         await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });

@@ -297,7 +297,10 @@ window.addEventListener('popstate', (e) => {
     else history.back();
 });
 
-/* ---- Paylaşım uygulama açıkken gelirse sayfa yeniden yüklenmez (launch_handler) ---- */
+/* ---- Paylaşım uygulama açıkken gelirse (launch_handler) ----
+ * Manifest "navigate-existing" kullanır: "focus-existing" Android'de paylaşılan bağlantıyı düşürüyordu
+ * (uygulama öne gelir ama bağlantı gelmez, ikinci paylaşım gerekir). Açık pencere paylaşım adresine
+ * gider; bağlantı hem adres satırından hem launchQueue'dan okunur, aynısı iki kez işlenmez. */
 if ('launchQueue' in window) {
     let lastShared = shared || '';
     window.launchQueue.setConsumer((launch) => {
