@@ -68,6 +68,43 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
     } catch (_) { /* ilk açılış */ }
     for (const w of watches) w.busy = false;
 
+    /* Siteye nazik davranma: aralık ±%20 kaydırılır (makine düzeni olmasın), üst üste hatada aralık
+     * 2–4 katına çıkar (site sınırlıyorsa üstüne gidilmez) ve aynı siteye takipler toplamda en fazla
+     * SITE_GAP_MS'de bir gider. Kullanıcıya hem durumda hem bildirimle söylenir. */
+    const SITE_GAP_MS = 2 * 60000;
+    const siteLast = new Map();
+    const hostOf = (u) => {
+        try {
+            return new URL(u).host.replace(/^www\./, '');
+        } catch (_) {
+            return '';
+        }
+    };
+    const baseMin = (w) => (w.type === 'schedule' ? 1 : w.every || (w.type === 'channel' ? 30 : 5));
+    function scheduleNext(w) {
+        w.nextCheck = Date.now() + baseMin(w) * 60000 * (w.backoff || 1) * (0.8 + Math.random() * 0.4);
+    }
+    function markFailed(w) {
+        w.fails = (w.fails || 0) + 1;
+        const before = w.backoff || 1;
+        w.backoff = w.fails >= 2 ? 4 : 2;
+        if (before === 1) {
+            emit(w, 'backoff', 'Site yanıt vermiyor, daha seyrek bakılacak',
+                `${w.name} · ${w.error || 'sayfa açılmadı'} · artık ${Math.round(baseMin(w) * w.backoff)} dk'da bir bakılacak`, { quiet: true });
+        }
+        scheduleNext(w);
+    }
+    function markOk(w) {
+        if ((w.backoff || 1) > 1) {
+            emit(w, 'recovered', 'Site yeniden yanıt veriyor', `${w.name} · normal aralığa (${baseMin(w)} dk) dönüldü`, { quiet: true });
+        }
+        const was = w.backoff || 1;
+        w.backoff = 1;
+        w.fails = 0;
+        w.error = '';
+        if (was > 1) scheduleNext(w);
+    }
+
     const save = () => {
         try {
             fs.writeFileSync(file, JSON.stringify({ watches: watches.map(({ busy, ...w }) => w), events }));
@@ -118,12 +155,12 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
             w.error = rec.error || '';
         }
         w.recId = '';
-        w.nextCheck = Date.now() + (w.every || 5) * 60000;
+        scheduleNext(w);
     }
 
     async function checkLive(w) {
         w.lastCheck = Date.now();
-        w.nextCheck = Date.now() + (w.every || 5) * 60000;
+        scheduleNext(w);
         let result;
         try {
             result = await findLive(w.url);
@@ -131,16 +168,15 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
             result = { reachable: false, error: err.message };
         }
         if (!result.reachable) {
-            w.fails = (w.fails || 0) + 1;
             w.error = result.error || 'Sayfa açılmadı';
+            markFailed(w);
             if (w.fails >= 3 && w.state !== 'unreachable') {
                 w.state = 'unreachable';
                 emit(w, 'unreachable', 'Sayfaya ulaşılamıyor', `${w.name} · son ${w.fails} bakışta açılmadı`);
             }
             return;
         }
-        w.fails = 0;
-        w.error = '';
+        markOk(w);
         if (result.title && !w.nameSet) w.name = result.title.slice(0, 80);
         if (!result.live) {
             w.offlineSeen = true;
@@ -164,11 +200,12 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
 
     async function checkChannel(w) {
         w.lastCheck = Date.now();
-        w.nextCheck = Date.now() + (w.every || 30) * 60000;
+        scheduleNext(w);
         const r = await listEntries(w.url).catch((err) => ({ ok: false, reason: err.message }));
         if (!r.ok) {
-            w.fails = (w.fails || 0) + 1;
             w.error = r.reason || 'Liste alınamadı';
+            if (!r.missing && !r.login) markFailed(w);
+            else w.fails = (w.fails || 0) + 1;
             if (r.missing) {
                 w.error = 'Kanal takibi için sunucuda yt-dlp kurulu olmalı';
                 w.state = 'error';
@@ -177,8 +214,7 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
             w.state = r.login ? 'login' : w.fails >= 3 ? 'error' : w.state || 'ok';
             return;
         }
-        w.fails = 0;
-        w.error = '';
+        markOk(w);
         w.state = 'ok';
         if (r.title && !w.nameSet) w.name = r.title.slice(0, 80);
         const seen = new Set(w.seen || []);
@@ -263,12 +299,22 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
                 if (!due && w.state !== 'done') w.state = now < from ? 'scheduled' : w.state;
             }
             if (!due) continue;
+            // Aynı siteye başka bir takip az önce baktıysa bu bakış biraz ertelenir (zamanlı kayıt hariç).
+            const host = hostOf(w.url);
+            const last = siteLast.get(host) || 0;
+            if (w.type !== 'schedule' && host && now - last < SITE_GAP_MS) {
+                w.nextCheck = last + SITE_GAP_MS + Math.random() * 30000;
+                w.siteWait = true;
+                continue;
+            }
+            w.siteWait = false;
+            if (host) siteLast.set(host, now);
             w.busy = true;
             const job = w.type === 'channel' ? checkChannel(w) : checkLive(w);
             job.catch((err) => { w.error = err.message; })
                 .finally(() => {
                     w.busy = false;
-                    if (w.type === 'schedule' && w.state !== 'recording') w.nextCheck = Date.now() + 60000;
+                    if (w.type === 'schedule' && w.state !== 'recording') scheduleNext(w);
                     save();
                 });
         }
@@ -280,7 +326,7 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
     function publicWatch(w) {
         const { busy, seen, ...rest } = w;
         const rec = w.recId ? recorder.get(w.recId) : null;
-        return { ...rest, checking: Boolean(busy), rec: rec ? { mediaSec: rec.mediaSec, bytes: rec.bytes, startedAt: rec.startedAt, limitSec: rec.limitSec, quality: rec.quality } : null };
+        return { ...rest, checking: Boolean(busy), effectiveEvery: Math.round(baseMin(w) * (w.backoff || 1)), rec: rec ? { mediaSec: rec.mediaSec, bytes: rec.bytes, startedAt: rec.startedAt, limitSec: rec.limitSec, quality: rec.quality } : null };
     }
 
     const clean = (body, w = {}) => {

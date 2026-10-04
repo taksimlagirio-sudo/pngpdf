@@ -173,6 +173,10 @@ uygulama kapalıyken de sürer.
 Kayıtlar ve inen videolar Kitaplık → **Sunucum**'da görünür, 7 gün saklanır. Takip listesi `.watches.json`
 dosyasında durur.
 
+**Siteye nazik bakış:** her bakış sayfanın normal bir ziyaretidir. Bakış zamanları ±%20 kaydırılır;
+site yanıt vermezse (ör. HTTP 429/403) aralık 2, sonra 4 katına çıkar, site düzelince eski aralığa
+döner. İkisinde de bildirim gelir. Aynı siteye birden çok takip varsa siteye en fazla 2 dakikada bir gidilir.
+
 **Bildirimler:** takip eklerken "Bildirim gönder" açıksa uygulama bildirim izni ister; sunucu yayın
 başlayınca, kayıt bitince ve yeni video gelince telefonuna bildirim gönderir (Web Push, telefon kilitliyken
 de gelir). Bunun için sunucunun internete çıkabilmesi yeterli; anahtarlar `.push-keys.json` dosyasında

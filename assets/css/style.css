@@ -3515,3 +3515,7 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
 .row-ic .ic { width: 20px; height: 20px; }
 [data-theme-toggle] .ic { width: 18px; height: 18px; }
 .theme-btn-side { display: inline-flex; align-items: center; gap: 8px; }
+
+/* Takip: bakış sıklığı bilgisi */
+.fw-hint { margin: 0; padding: 10px 14px 12px; font-size: 12px; line-height: 1.45; color: var(--mt); border-top: 1px solid var(--ln); }
+.fw-hint.warn { color: var(--wr); }
