@@ -82,8 +82,13 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
                     <button class="rv-btn" data-r="reload">↻ Yenile</button>
                 </div>
                 <div class="remote-type">
-                    <input class="input" type="text" enterkeyhint="send" placeholder="Kutucuğa dokun, buraya yaz">
-                    <button class="rv-btn rv-send" data-r="type">Gönder</button>
+                    <input class="input" type="text" enterkeyhint="done" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Önce sayfadaki kutucuğa dokun, sonra buraya yaz">
+                    <button class="rv-btn rv-send" data-r="type">Yaz</button>
+                </div>
+                <div class="remote-keys">
+                    <button class="rv-btn" data-r="key" data-key="Backspace" title="Son harfi sil">⌫ Sil</button>
+                    <button class="rv-btn" data-r="key" data-key="Tab" title="Sonraki kutucuk">Sonraki ⇥</button>
+                    <button class="rv-btn" data-r="key" data-key="Enter" title="Gönder / Giriş yap">Enter ↵</button>
                 </div>
             </div>
             <div class="rv-side${captureId ? ' hidden' : ''}">
@@ -106,6 +111,18 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
     let frameUrl = null;
     let kick = null; // dokununca bekleme süresini kısaltıp hemen yeni görüntü al
     let foundKey = '';
+    let inPopup = false;
+
+    /** Sayfada odaklanan kutucuğa göre yazma alanı: şifre gizli yazılır, e-postada uygun klavye açılır. */
+    function showFocus(focus) {
+        const type = focus ? focus.type : '';
+        textInput.type = type === 'password' ? 'password' : 'text';
+        textInput.inputMode = type === 'email' ? 'email' : type === 'tel' || type === 'number' ? 'numeric' : 'text';
+        textInput.placeholder = !focus ? 'Önce sayfadaki kutucuğa dokun, sonra buraya yaz'
+            : type === 'password' ? 'Şifre (gizli yazılır)'
+                : `${focus.label ? focus.label.slice(0, 40) : 'Kutucuğa'} yaz`;
+        if (focus) textInput.focus({ preventScroll: true });
+    }
 
     const setStatus = (text, isError = false) => {
         status.textContent = text;
@@ -146,6 +163,12 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
                 body: JSON.stringify(body)
             });
             if (state.items) renderFound(state.items);
+            if ('focus' in state) showFocus(state.focus);
+            if (!captureId && 'popup' in state && state.popup !== inPopup) {
+                inPopup = state.popup;
+                setStatus(inPopup ? 'Giriş penceresi açıldı. Giriş bitince pencere kapanır ve sayfaya dönülür.'
+                    : 'Sayfaya dönüldü. Giriş yaptıysan bu site için saklandı.');
+            }
         } catch (err) {
             setStatus(err.message, true);
             if (err.status === 404) stop();
@@ -220,6 +243,7 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
         if (r === 'back') return action({ type: 'back' });
         if (r === 'reload') return action({ type: 'reload' });
         if (r === 'type') return sendText();
+        if (r === 'key') return sendText().then(() => action({ type: 'key', key: btn.dataset.key }));
         if (r === 'pick') {
             const url = btn.dataset.url;
             close();
@@ -227,14 +251,18 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
         }
     });
 
+    // Yazılan metin sayfadaki kutucuğa gönderilir; Enter'a ayrıca basılmaz (kullanıcı adından sonra
+    // form erken gönderilmesin). Enter/Sonraki/Sil düğmeleri önce bekleyen metni yazar.
     async function sendText() {
         const text = textInput.value;
         textInput.value = '';
         if (text) await action({ type: 'type', text });
-        await action({ type: 'key', key: 'Enter' });
     }
     textInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') sendText();
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            sendText();
+        }
     });
 
     const onKey = (e) => {

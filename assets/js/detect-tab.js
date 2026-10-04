@@ -853,7 +853,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             const url = info.url;
             run = (job) => downloadFile({ job, url, name: `${name}.mp4`, mode: prefs.conn, mime: info.mime, size: info.size, createSinkFor: extract });
         }
-        addJob({ name: fileName, kind: 'audio', thumb, saveMode, source, run });
+        addJob({ name: fileName, kind: 'audio', thumb, saveMode, source, resume: resumeRecipe(), run });
         if (!bulkMode) toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'Ses indiriliyor · İndirmeler');
     }
 
@@ -1135,6 +1135,41 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         const embedOk = /\.mp4$/i.test(fileExt) && effectiveSaveMode(getPrefs().save) !== 'disk';
         if (!embedOk && mode !== 'srt') mode = 'srt';
         return { chosen, mode, range };
+    }
+
+    /**
+     * Sayfa yeniden yüklenirse (paylaşım, güncelleme, Android'in kapatması) telefonda inen iş yarıda
+     * kalır; bu tarif saklanır ve "Yeniden başlat" ile aynı video aynı kalitede yeniden bulunup indirilir.
+     * Bir aralığı (klip) indirenler saklanmaz.
+     */
+    function resumeRecipe() {
+        if (ui.rangeOpen) return null;
+        const src = jobSource();
+        if (!src.media && !src.page) return null;
+        const v = currentVariant();
+        const height = (v && (v.height || Number(String(v.resolution || '').split('x')[1]))) || 0;
+        const quality = ui.audioOnly ? 'audio' : ui.variant && height ? String(height) : 'best';
+        return { media: src.media, page: src.page, quality, title: cleanName(), pair: ui.audioUrl || null };
+    }
+
+    /** Saklanan tariften işi yeniden kurar: önce bilinen video adresi, açılmazsa sayfa yeniden bulunur. */
+    async function resumeFrom(r) {
+        const opts = { mode: getPrefs().conn, noExtract: !getPrefs().useYtdlp };
+        let result = r.media ? await analyzeUrl(r.media, opts).catch(() => null) : null;
+        let pair = r.pair || null;
+        if (r.page && (!result || result.unreachable || result.target === 'page')) {
+            result = await analyzeUrl(r.page, opts);
+            pair = null;
+            if (result.target === 'page') {
+                const link = (result.details.links || [])[0];
+                if (!link) throw new Error('Sayfada video bulunamadı');
+                const pick = link.formats ? link.formats[variantIndexFor(link.formats, r.quality === 'audio' ? '720' : r.quality)] : link;
+                result = await analyzeUrl(pick.url, opts);
+                pair = pick.audioUrl || null;
+            }
+        }
+        if (!result) throw new Error('Video yeniden bulunamadı');
+        await enqueueResult(result, { quality: r.quality, page: r.page, title: r.title, pair });
     }
 
     /** Ayrı .srt dosyaları (küçük işler). */
@@ -1697,7 +1732,25 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         const name = cleanName();
         // "Arka planda indir" + kendi sunucun: dosya sunucuda iner, bitince telefona alınır.
         const viaServer = prefs.serverBackground !== false && canServerRecord() && !info.unreachable && info.target !== 'dash' && !ui.rangeOpen;
-        const serverJob = (opts, createSinkFor) => (job) => serverDownloadIntoJob(job, { ...opts, page: jobSource().page, createSinkFor });
+        // Sunucu indiremezse (tek kullanımlık/oturumlu adres sunucuya 403/404 döner, sunucu kapalı...)
+        // aynı iş telefonda, eskisi gibi (gerekirse "aç ve kaydet" yedeğiyle) sürer.
+        const serverFirst = (opts, createSinkFor, localRun) => async (job) => {
+            try {
+                return await serverDownloadIntoJob(job, { ...opts, page: jobSource().page, createSinkFor });
+            } catch (err) {
+                if (job.signal.aborted || job.status !== 'active' || err.name === 'AbortError') throw err;
+                if (job.hooks.cancel) job.hooks.cancel(); // sunucudaki yarım iş silinsin
+                job.hooks.cancel = null;
+                job.serverDl = null;
+                job.captureId = null;
+                job.bytes = 0;
+                job.samples = [];
+                job.received = 0;
+                job.total = 0;
+                job.setDetail(`Sunucu indiremedi (${shortError(err)}); telefonda indiriliyor`);
+                return localRun(job);
+            }
+        };
         try {
             if (info.target === 'dash') {
                 const mpd = info.details.mpd;
@@ -1711,7 +1764,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                     kind: 'hls',
                     thumb: null,
                     saveMode,
-                    source: jobSource(),
+                    source: jobSource(), resume: resumeRecipe(),
                     run: withCaptureFallback(async (job) => {
                         job.setDetail('Parça listesi hazırlanıyor...');
                         const [videoPlaylist, audioPlaylist] = await Promise.all([
@@ -1734,9 +1787,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 const range = ui.rangeOpen ? rangeSeconds() : null;
                 const videoPlaylist = ui.media ? ui.media.playlist : null;
                 const audioUrl = ui.audioUrl;
+                const localRun = withCaptureFallback((job) => downloadHlsVod({
+                    job, videoUrl, videoPlaylist, audioUrl, name, range, mode: prefs.conn, createSinkFor
+                }), { mediaUrl: info.url, kind: 'hls', name, saveMode, createSinkFor });
                 if (viaServer && !isServerStream(videoUrl) && !(ui.media && ui.media.live)) {
-                    addJob({ name: name + ext, kind: 'hls', thumb, saveMode, source: jobSource(), now: true,
-                        run: serverJob({ url: videoUrl, audioUrl: audioUrl || '', name: name + ext, hls: true }, createSinkFor) });
+                    addJob({ name: name + ext, kind: 'hls', thumb, saveMode, source: jobSource(), resume: resumeRecipe(), now: true,
+                        run: serverFirst({ url: videoUrl, audioUrl: audioUrl || '', name: name + ext, hls: true }, createSinkFor, localRun) });
                     if (!bulkMode) toast('Sunucunda indiriliyor · İndirmeler');
                     return;
                 }
@@ -1745,10 +1801,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                     kind: 'hls',
                     thumb,
                     saveMode,
-                    source: jobSource(),
-                    run: withCaptureFallback((job) => downloadHlsVod({
-                        job, videoUrl, videoPlaylist, audioUrl, name, range, mode: prefs.conn, createSinkFor
-                    }), { mediaUrl: info.url, kind: 'hls', name, saveMode, createSinkFor })
+                    source: jobSource(), resume: resumeRecipe(),
+                    run: localRun
                 });
             } else {
                 const fileName = name + currentExt();
@@ -1757,37 +1811,28 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 const url = info.url;
                 // Sunucudaki yt-dlp akışı açılmazsa sunucu kendi adresini açamaz; sayfa açılıp kaydedilir.
                 const mediaUrl = isServerStream(url) ? '' : url;
+                const audioUrl = ui.audioUrl;
+                const localRun = audioUrl
+                    ? withCaptureFallback((job) => downloadMerged({
+                        job, videoUrl: url, audioUrl, name, mode: prefs.conn, size: info.size, createSinkFor
+                    }), { mediaUrl, kind: 'video', name, saveMode, createSinkFor })
+                    : withCaptureFallback((job) => downloadFile({
+                        job, url, name: fileName, mode: prefs.conn, background: prefs.background,
+                        mime: info.mime, size: info.size, createSinkFor
+                    }), { mediaUrl, kind: info.kind, name, saveMode, createSinkFor });
                 if (viaServer) {
-                    addJob({ name: fileName, kind: 'video', thumb, saveMode, source: jobSource(), now: true,
-                        run: serverJob({ url, audioUrl: ui.audioUrl || '', name: fileName }, createSinkFor) });
+                    addJob({ name: fileName, kind: 'video', thumb, saveMode, source: jobSource(), resume: resumeRecipe(), now: true,
+                        run: serverFirst({ url, audioUrl: audioUrl || '', name: fileName }, createSinkFor, localRun) });
                     if (!bulkMode) toast('Sunucunda indiriliyor · İndirmeler');
-                    return;
-                }
-                if (ui.audioUrl) {
-                    const audioUrl = ui.audioUrl;
-                    addJob({
-                        name: fileName,
-                        kind: 'video',
-                        thumb,
-                        saveMode,
-                        source: jobSource(),
-                        run: withCaptureFallback((job) => downloadMerged({
-                            job, videoUrl: url, audioUrl, name, mode: prefs.conn, size: info.size, createSinkFor
-                        }), { mediaUrl, kind: 'video', name, saveMode, createSinkFor })
-                    });
-                    if (!bulkMode) toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'İndirme başladı · İndirmeler');
                     return;
                 }
                 addJob({
                     name: fileName,
-                    kind: ['video', 'audio', 'image'].includes(info.kind) ? info.kind : 'file',
+                    kind: audioUrl ? 'video' : ['video', 'audio', 'image'].includes(info.kind) ? info.kind : 'file',
                     thumb,
                     saveMode,
-                    source: jobSource(),
-                    run: withCaptureFallback((job) => downloadFile({
-                        job, url, name: fileName, mode: prefs.conn, background: prefs.background,
-                        mime: info.mime, size: info.size, createSinkFor
-                    }), { mediaUrl, kind: info.kind, name, saveMode, createSinkFor })
+                    source: jobSource(), resume: resumeRecipe(),
+                    run: localRun
                 });
             }
             if (!bulkMode) toast(queueOnly ? 'Sıraya eklendi · İndirmeler' : 'İndirme başladı · İndirmeler');
@@ -1897,6 +1942,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     return {
         enqueueResult,
+        resumeFrom,
         paste: pasteAndAnalyze,
         prefill(url, autoStart, { shared = false } = {}) {
             const link = firstUrl(url);
