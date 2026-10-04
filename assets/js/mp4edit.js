@@ -7,7 +7,7 @@
 //
 // DOM kullanmaz; tarayıcıda ve Node'da (Blob olan sürümlerde) çalışır.
 
-import { Mp4Builder } from './mp4mux.mjs';
+import { Mp4Builder, table, table64 } from './mp4mux.mjs';
 
 const TEXT = new TextEncoder();
 
@@ -437,30 +437,30 @@ export async function editMp4(blob, opts = {}, info = null) {
         movieDur = Math.max(movieDur, trackMovie);
 
         const stts = rle(durs);
-        const sttsBox = fullBox('stts', 0, 0, w32(stts.length), ...stts.flatMap(([c, d]) => [w32(c), w32(d)]));
+        const sttsBox = fullBox('stts', 0, 0, w32(stts.length), table(stts, 2));
         let cttsBox = new Uint8Array(0);
         if (t.ctts) {
             const c = rle(Array.from(t.ctts.subarray(s.a, s.z)));
-            cttsBox = fullBox('ctts', t.cttsVersion, 0, w32(c.length), ...c.flatMap(([cnt, off]) => [w32(cnt), w32(off)]));
+            cttsBox = fullBox('ctts', t.cttsVersion, 0, w32(c.length), table(c, 2));
         }
         let stssBox = new Uint8Array(0);
         if (t.sync) {
             const idx = [];
             for (let k = s.a; k < s.z; k++) if (t.sync[k]) idx.push(k - s.a + 1);
-            stssBox = fullBox('stss', 0, 0, w32(idx.length), ...idx.map(w32));
+            stssBox = fullBox('stss', 0, 0, w32(idx.length), table(idx, 1));
         }
-        const stszBox = fullBox('stsz', 0, 0, w32(0), w32(n), ...Array.from(t.sizes.subarray(s.a, s.z), w32));
+        const stszBox = fullBox('stsz', 0, 0, w32(0), w32(n), table(t.sizes.subarray(s.a, s.z), 1));
         const stscRuns = rle(my.map((c) => c.z - c.a));
         const stscEntries = [];
         let chunkNo = 1;
         for (const [cnt, per] of stscRuns) {
-            stscEntries.push(w32(chunkNo), w32(per), w32(1));
+            stscEntries.push([chunkNo, per, 1]);
             chunkNo += cnt;
         }
-        const stscBox = fullBox('stsc', 0, 0, w32(stscRuns.length), ...stscEntries);
+        const stscBox = fullBox('stsc', 0, 0, w32(stscRuns.length), table(stscEntries, 3));
         const stcoBox = use64
-            ? fullBox('co64', 0, 0, w32(my.length), ...my.map((c) => w64(c.offset)))
-            : fullBox('stco', 0, 0, w32(my.length), ...my.map((c) => w32(c.offset)));
+            ? fullBox('co64', 0, 0, w32(my.length), table64(my.map((c) => c.offset)))
+            : fullBox('stco', 0, 0, w32(my.length), table(my.map((c) => c.offset), 1));
         const stbl = box('stbl', t.stsd, sttsBox, cttsBox, stssBox, stszBox, stscBox, stcoBox);
         const dinf = t.dinf || box('dinf', fullBox('dref', 0, 0, w32(1), fullBox('url ', 0, 1)));
         const minf = box('minf', ...t.mediaHeader, dinf, stbl);
@@ -549,8 +549,8 @@ function textTrak(t, id, { width, height, use64 }) {
     const stsd = fullBox('stsd', 0, 0, w32(1), tx3g);
     const stts = rle(t.durs);
     const stbl = box('stbl', stsd,
-        fullBox('stts', 0, 0, w32(stts.length), ...stts.flatMap(([c, d]) => [w32(c), w32(d)])),
-        fullBox('stsz', 0, 0, w32(0), w32(t.sizes.length), ...t.sizes.map(w32)),
+        fullBox('stts', 0, 0, w32(stts.length), table(stts, 2)),
+        fullBox('stsz', 0, 0, w32(0), w32(t.sizes.length), table(t.sizes, 1)),
         fullBox('stsc', 0, 0, w32(1), w32(1), w32(t.sizes.length), w32(1)),
         use64 ? fullBox('co64', 0, 0, w32(1), w64(t.offset)) : fullBox('stco', 0, 0, w32(1), w32(t.offset)));
     const minf = box('minf', fullBox('nmhd', 0, 0), box('dinf', fullBox('dref', 0, 0, w32(1), fullBox('url ', 0, 1))), stbl);
