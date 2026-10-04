@@ -270,7 +270,8 @@ export function createViewer({ toast, edit = null }) {
                     ${isAudio ? `<span class="vw-audio-art">${icon('music')}</span>` : ''}
                     <button class="vw-x" data-v="close" aria-label="Kapat">${icon('close')}</button>
                     <span class="vw-spd-badge">${speedLabel(speed)}</span>
-                    ${isAudio ? '' : `<button class="vw-tv" data-v="tv">${icon('cast')} TV'de oynat</button>`}
+                    ${isAudio ? '' : `<button class="vw-tv" data-v="tv" aria-label="TV'de oynat">${icon('cast')}<span>TV'de oynat</span></button>`}
+                    <span class="vw-stitle">${escapeHtml(item.name.replace(/\.[a-z0-9]{2,4}$/i, ''))}</span>
                     <button class="vw-skip back" data-v="back10" aria-label="10 saniye geri">${icon('back10')}<span>10</span></button>
                     <button class="vw-play" data-v="play" aria-label="Oynat/duraklat">${icon('play')}</button>
                     <button class="vw-skip fwd" data-v="fwd10" aria-label="10 saniye ileri">${icon('fwd10')}<span>10</span></button>
