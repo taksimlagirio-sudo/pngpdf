@@ -499,6 +499,7 @@ async function closeSession(id) {
     const session = sessions.get(id);
     if (!session) return;
     sessions.delete(id);
+    clearTimeout(session.saveTimer);
     cookieJar.add(await session.context.cookies().catch(() => []));
     await logins.save(session.context);
     await session.context.close().catch(() => {});
@@ -558,6 +559,12 @@ function activePage(session) {
     return session.page;
 }
 
+/** Girişleri art arda dokunuşlarda bir kez sakla (her saklama tüm çerezleri okur). */
+function saveLoginsSoon(session) {
+    clearTimeout(session.saveTimer);
+    session.saveTimer = setTimeout(() => logins.save(session.context).catch(() => {}), 1500);
+}
+
 async function sessionState(session) {
     activePage(session);
     return {
@@ -607,17 +614,27 @@ async function sessionAction(session, action) {
     if (!page.isClosed()) await page.waitForTimeout(300).catch(() => {});
 }
 
-/** Odaktaki kutucuk: uygulama şifre kutusunda yazılanı gizler, e-postada uygun klavyeyi açar. */
+/**
+ * Odaktaki kutucuk: uygulama şifre kutusunda yazılanı gizler, e-postada uygun klavyeyi açar.
+ * Önce ana sayfaya bakılır; odak bir çerçevedeyse (giriş formu iframe'de) yalnızca o çerçeveye.
+ * Her bakış kısa süreyle sınırlı: meşgul bir reklam çerçevesi dokunuşları bekletmesin.
+ */
 async function sessionFocus(session) {
-    for (const frame of activePage(session).frames()) {
-        const focus = await frame.evaluate(() => {
-            const el = document.activeElement;
-            if (!el || el === document.body || el.tagName === 'IFRAME') return null;
-            const editable = el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName);
-            if (!editable) return null;
-            return { type: (el.getAttribute('type') || el.tagName).toLowerCase(), label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || '' };
-        }).catch(() => null);
-        if (focus) return focus;
+    const probe = () => {
+        const el = document.activeElement;
+        if (!el || el === document.body) return null;
+        if (el.tagName === 'IFRAME') return { frame: el.src || el.name || true };
+        const editable = el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName);
+        if (!editable) return null;
+        return { type: (el.getAttribute('type') || el.tagName).toLowerCase(), label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || '' };
+    };
+    const quick = (frame) => Promise.race([frame.evaluate(probe).catch(() => null), new Promise((r) => setTimeout(() => r(null), 400))]);
+    const page = activePage(session);
+    const top = await quick(page.mainFrame());
+    if (!top || !top.frame) return top;
+    for (const frame of page.mainFrame().childFrames().slice(0, 6)) {
+        const focus = await quick(frame);
+        if (focus && !focus.frame) return focus;
     }
     return null;
 }
@@ -1870,14 +1887,24 @@ const server = http.createServer(async (req, res) => {
                 return sendJson(res, 200, { ok: true });
             }
             if (sub === '/shot' && req.method === 'GET') {
-                const image = await activePage(session).screenshot({ type: 'jpeg', quality: 55, timeout: 8000 });
+                // Sayfa o an meşgulse (ağır yükleme) son görüntü verilir; ekran "yüklenemedi" diye kesilmesin.
+                let image;
+                try {
+                    image = await activePage(session).screenshot({ type: 'jpeg', quality: 55, timeout: 8000 });
+                    session.lastShot = image;
+                } catch (err) {
+                    if (!session.lastShot) throw err;
+                    image = session.lastShot;
+                }
                 res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/jpeg', 'content-length': image.length, 'cache-control': 'no-store' });
                 return res.end(image);
             }
             if (sub === '/action' && req.method === 'POST') {
-                await sessionAction(session, await readJson(req));
-                logins.save(session.context).catch(() => {}); // giriş yapıldıysa hemen saklansın
-                return sendJson(res, 200, { ...await sessionState(session), focus: await sessionFocus(session) });
+                const action = await readJson(req);
+                await sessionAction(session, action);
+                saveLoginsSoon(session); // giriş yapıldıysa saklansın (her dokunuşta değil, kısa aralıkla)
+                const focus = ['tap', 'key'].includes(action.type) ? await sessionFocus(session) : undefined;
+                return sendJson(res, 200, { ...await sessionState(session), ...(focus === undefined ? {} : { focus }) });
             }
         }
 
