@@ -3184,3 +3184,45 @@ kbd { font: 600 11px/1 var(--mono); padding: 3px 6px; border-radius: 5px; border
     .hp-long { display: none; }
     .hp-short { display: inline; }
 }
+
+/* Kitaplık: devam et, seçim, koleksiyonlar */
+.lib-resume { display: flex; gap: 10px; overflow-x: auto; scrollbar-width: none; margin: 0 -20px; padding: 0 20px; }
+.lib-rcard { flex: none; width: 168px; display: flex; flex-direction: column; gap: 4px; border: 0; background: none; color: var(--tx); text-align: left; padding: 0; cursor: pointer; font: inherit; }
+.lib-rthumb { position: relative; height: 94px; border-radius: 12px; overflow: hidden; background: var(--stripe) center / cover no-repeat; }
+.lib-rplay { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; display: grid; place-items: center; font-size: 13px; }
+.lib-rbar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(255,255,255,.25); }
+.lib-rbar i { display: block; height: 100%; background: var(--ac); }
+.lib-rcard b { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-rcard small { font-size: 12px; color: var(--mt); }
+.lib-selbar { display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 3; padding: 10px 0; background: var(--bg); }
+.lib-selbar b { flex: 1; font-size: 20px; }
+.lib-pick { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; background: rgba(0,0,0,.25); display: grid; place-items: center; font-size: 13px; font-weight: 800; color: var(--onac); }
+.lib-pick.on { background: var(--ac); border-color: var(--ac); }
+.lib-pick.row { position: static; flex: none; border-color: var(--ln); }
+.lib-tile:has(.lib-pick.on) { outline: 2px solid var(--ac); outline-offset: 1px; }
+.lib-pick-btn { margin-left: auto; }
+.lib-chip.tag { font-weight: 600; }
+.lib-pick-actions { position: sticky; bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) - 8px); display: grid; grid-template-columns: 1.4fr 1fr .8fr; gap: 8px; padding: 10px 0; background: linear-gradient(transparent, var(--bg) 25%); }
+.lib-pick-actions button { height: 44px; }
+.lib-pick-actions .danger { color: var(--er); }
+.lib-pick-actions button:disabled { opacity: .4; }
+.lib-sheet { z-index: 65; }
+.coll-sheet { display: flex; flex-direction: column; gap: 14px; padding: 10px 20px calc(env(safe-area-inset-bottom) + 16px); }
+.sheet-grip { align-self: center; width: 40px; height: 4px; border-radius: 2px; background: var(--ln); }
+.coll-title { font-size: 19px; }
+.coll-grid { display: flex; gap: 10px; overflow-x: auto; scrollbar-width: none; }
+.coll-card { flex: none; width: 82px; display: flex; flex-direction: column; align-items: center; gap: 5px; border: 0; background: none; color: var(--tx); font: inherit; cursor: pointer; padding: 0; }
+.coll-card b { font-size: 13px; } .coll-card small { font: 500 11px/1 var(--mono); color: var(--mt); }
+.coll-cover { width: 76px; height: 76px; border-radius: 14px; overflow: hidden; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; border: 2px solid transparent; }
+.coll-cover i { background: var(--stripe) center / cover no-repeat; }
+.coll-cover.plus { display: grid; place-items: center; grid-template-columns: 1fr; border: 1.5px dashed var(--ln); font-size: 26px; color: var(--mt); }
+.coll-card.on .coll-cover { border-color: var(--ac); }
+.coll-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+.coll-tags .lib-chip.on { border-color: var(--ac); background: var(--acs); }
+.coll-newtag { height: 36px; width: 110px; border-radius: 999px; border: 1px dashed var(--ln); background: none; color: var(--tx); padding: 0 14px; font: 500 13px/1 inherit; }
+.coll-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 10px; border-top: 1px solid var(--ln); color: var(--mt); font-size: 13px; }
+.coll-bar .btn-ac { height: 46px; padding: 0 26px; }
+.vw-resume { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: rgba(0,0,0,.55); z-index: 3; }
+.vw-resume .btn-ac, .vw-resume .btn-ghost { height: 44px; padding: 0 18px; }
+.vw-resume .btn-ghost { color: #fff; border-color: rgba(255,255,255,.4); background: rgba(0,0,0,.3); }
+.coll-sheet { background: var(--sf); border-radius: 22px 22px 0 0; border-top: 1px solid var(--ln); }

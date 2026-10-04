@@ -242,3 +242,44 @@ export function probeMedia(blob, wantFrame = true) {
         el.src = url;
     });
 }
+
+/* ---- İzleme ilerlemesi ("Devam et") ---- */
+
+const PROGRESS_KEY = 'indirici.progress'; // sunucudaki öğeler için (kitaplıkta kaydı olmayanlar)
+
+function progressMap() {
+    try {
+        return JSON.parse(localStorage.getItem(PROGRESS_KEY) || '{}');
+    } catch (_) {
+        return {};
+    }
+}
+
+/** Kalınan yer; bitmeye 15 sn kala izlenmiş sayılır. */
+export async function saveProgress(item, time, duration) {
+    const done = duration && time > duration - 15;
+    const patch = { resumeAt: done ? 0 : Math.floor(time), watchedAt: Date.now(), watched: Boolean(done) || item.watched || false };
+    if (duration && !item.duration) patch.duration = duration;
+    Object.assign(item, patch);
+    if (item.server) {
+        const map = progressMap();
+        map[item.id] = { t: patch.resumeAt, at: patch.watchedAt, d: duration || 0 };
+        const keys = Object.keys(map).sort((a, b) => map[b].at - map[a].at).slice(0, 100);
+        try {
+            localStorage.setItem(PROGRESS_KEY, JSON.stringify(Object.fromEntries(keys.map((k) => [k, map[k]]))));
+        } catch (_) { /* depolama dolu */ }
+        emit();
+        return;
+    }
+    await libUpdate(item.id, patch).catch(() => {});
+}
+
+/** Sunucu öğelerine kayıtlı ilerlemeyi işler. */
+export function applyProgress(items) {
+    const map = progressMap();
+    for (const it of items) {
+        const p = map[it.id];
+        if (p) Object.assign(it, { resumeAt: p.t, watchedAt: p.at, duration: it.duration || p.d });
+    }
+    return items;
+}

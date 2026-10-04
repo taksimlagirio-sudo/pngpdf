@@ -1,6 +1,6 @@
 // Kitaplık görüntüleyicileri: video/ses oynatıcı, fotoğraf görüntüleyici ve dikey "Akış".
 import { escapeHtml, formatSize, clock, saveBlob } from './util.js';
-import { libFile, libRemove, libUpdate, libAdd } from './library.js';
+import { libFile, libRemove, libUpdate, libAdd, saveProgress } from './library.js';
 import { canShareFiles } from './downloads.js';
 import { itemWhere } from './library-tab.js';
 
@@ -176,6 +176,7 @@ export function createViewer({ toast, edit = null }) {
             video.addEventListener('timeupdate', paint);
             video.addEventListener('loadedmetadata', () => {
                 paint();
+                offerResume();
                 const tracks = video.audioTracks;
                 const tb = el.querySelector('[data-track] b');
                 if (tracks && tracks.length > 1) {
@@ -211,6 +212,33 @@ export function createViewer({ toast, edit = null }) {
                 }, 310);
             });
             video.play().catch(() => {});
+            // İzleme ilerlemesi ("Devam et" için) 10 sn'de bir ve kapanırken kaydedilir.
+            let lastSave = 0;
+            video.addEventListener('timeupdate', () => {
+                if (Date.now() - lastSave < 10000 || video.currentTime < 5) return;
+                lastSave = Date.now();
+                saveProgress(item, video.currentTime, video.duration || item.duration);
+            });
+            video.addEventListener('ended', () => saveProgress(item, video.duration || 0, video.duration || 0));
+        }
+
+        /** Daha önce yarıda bırakıldıysa: "12:40'tan devam et / Baştan başla". */
+        function offerResume() {
+            const d = video.duration || item.duration || 0;
+            if (!(item.resumeAt > 10) || (d && item.resumeAt > d - 15)) return;
+            const box = document.createElement('div');
+            box.className = 'vw-resume';
+            box.innerHTML = `<button class="btn-ac" data-r="go">Kaldığın yerden devam et · ${clock(item.resumeAt)}</button><button class="btn-ghost" data-r="start">Baştan başla</button>`;
+            el.querySelector('.vw-stage').appendChild(box);
+            video.pause();
+            box.addEventListener('click', (e) => {
+                const b = e.target.closest('[data-r]');
+                if (!b) return;
+                e.stopPropagation();
+                video.currentTime = b.dataset.r === 'go' ? item.resumeAt : 0;
+                video.play().catch(() => {});
+                box.remove();
+            });
         }
 
         function paintAb() {
@@ -245,6 +273,7 @@ export function createViewer({ toast, edit = null }) {
         }
 
         function close() {
+            if (video && video.currentTime > 5) saveProgress(item, video.currentTime, video.duration || item.duration);
             if (video) video.pause();
             if (document.pictureInPictureElement === video) document.exitPictureInPicture().catch(() => {});
             if (src) src.revoke();

@@ -1,7 +1,7 @@
 // "Kitaplık" sekmesi: indirilen videolar, fotoğraflar, sesler ve kayıtlar (bu cihazda ve sunucumda).
 import { $, escapeHtml, formatSize, clock, getRenderServer, renderApi } from './util.js';
 import { getPrefs, setPref, onPrefs } from './prefs.js';
-import { libList, onLibrary, libUsage, libRemove, libPersist, libClean } from './library.js';
+import { libList, onLibrary, libUsage, libRemove, libPersist, libClean, libUpdate, applyProgress } from './library.js';
 
 const KIND_LABEL = { video: 'Video', photo: 'Fotoğraf', audio: 'Ses', rec: 'Kayıt', file: 'Dosya' };
 const TYPES = [['Tümü', null], ['Video', 'video'], ['Fotoğraf', 'photo'], ['Ses', 'audio'], ['Kayıt', 'rec']];
@@ -68,9 +68,9 @@ function hostOf(url) {
     }
 }
 
-export function initLibraryTab({ toast, viewer }) {
+export function initLibraryTab({ toast, viewer, onMerge = null }) {
     const root = $('libraryView');
-    const ui = { source: 'all', type: null, query: '', searching: false, selected: null, collection: null };
+    const ui = { source: 'all', type: null, query: '', searching: false, selected: null, collection: null, picking: false, picked: new Set() };
     const desktop = () => window.matchMedia('(min-width: 960px)').matches;
     let items = [];
     let remote = [];
@@ -85,7 +85,8 @@ export function initLibraryTab({ toast, viewer }) {
         const c = ui.collection;
         return all()
             .filter((i) => ui.source === 'all' || (ui.source === 'server' ? i.server : !i.server))
-            .filter((i) => !c || (c.kind === 'rec' ? i.rec : c.kind === 'edited' ? i.edited : c.kind === 'page' ? i.page === c.value : i.site === c.value))
+            .filter((i) => !c || (c.kind === 'rec' ? i.rec : c.kind === 'edited' ? i.edited : c.kind === 'page' ? i.page === c.value
+                : c.kind === 'coll' ? (i.collections || []).includes(c.value) : c.kind === 'tag' ? (i.tags || []).includes(c.value) : i.site === c.value))
             .filter((i) => !q || `${i.name} ${i.site || ''}`.toLocaleLowerCase('tr').includes(q));
     }
 
@@ -116,7 +117,8 @@ export function initLibraryTab({ toast, viewer }) {
         const icon = item.thumb ? '' : `<span class="lib-ph">${item.kind === 'audio' ? '♪' : item.kind === 'photo' ? '▣' : '▶'}</span>`;
         if (style === 'list') {
             const [where, cls] = itemWhere(item);
-            return `<button class="lib-row${ui.selected === item.id ? ' sel' : ''}" data-l="open" data-id="${escapeHtml(item.id)}">
+            return `<button class="lib-row${ui.selected === item.id ? ' sel' : ''}${ui.picking && ui.picked.has(item.id) ? ' picked' : ''}" data-l="open" data-id="${escapeHtml(item.id)}">
+                ${ui.picking ? `<span class="lib-pick row${ui.picked.has(item.id) ? ' on' : ''}">${ui.picked.has(item.id) ? '✓' : ''}</span>` : ''}
                 <span class="lib-row-th" style="${thumbStyle(item)}">${icon}${item.rec ? '<span class="lib-dot"></span>' : ''}</span>
                 <span class="lib-row-main"><span class="lib-row-n">${escapeHtml(item.name)}</span>
                     <span class="lib-row-m">${escapeHtml(itemMeta(item))}</span></span>
@@ -124,7 +126,8 @@ export function initLibraryTab({ toast, viewer }) {
         }
         const ratio = style === 'wall' && item.width && item.height ? Math.min(1.9, Math.max(0.5, item.height / item.width)) : 1;
         return `<button class="lib-tile${ui.selected === item.id ? ' sel' : ''}" data-l="open" data-id="${escapeHtml(item.id)}" style="${thumbStyle(item)};aspect-ratio:1/${ratio.toFixed(3)}">
-            ${icon}<span class="lib-badges">${tileBadges(item)}</span><span class="lib-dur">${escapeHtml(tileLabel(item))}</span></button>`;
+            ${icon}<span class="lib-badges">${tileBadges(item)}</span><span class="lib-dur">${escapeHtml(tileLabel(item))}</span>
+            ${ui.picking ? `<span class="lib-pick${ui.picked.has(item.id) ? ' on' : ''}">${ui.picked.has(item.id) ? '✓' : ''}</span>` : ''}</button>`;
     }
 
     function render() {
@@ -147,7 +150,16 @@ export function initLibraryTab({ toast, viewer }) {
         if (ui.selected && !shown.some((i) => i.id === ui.selected)) ui.selected = null;
         if (!ui.selected && shown.length && desktop()) ui.selected = shown[0].id;
         visible = shown;
+        const resume = ui.picking || ui.query || ui.collection || (ui.type && ui.type !== 'video') ? []
+            : all().filter((i) => i.kind !== 'photo' && i.resumeAt > 10 && (!i.duration || i.resumeAt < i.duration - 15))
+                .sort((a, b) => (b.watchedAt || 0) - (a.watchedAt || 0)).slice(0, 10);
+        const colls = collectionsOf(all());
+        const tags = tagsOf(all());
+        const pickBar = ui.picking ? `<div class="lib-selbar"><b>${ui.picked.size} seçili</b>
+                <button class="link-btn" data-l="pick-all">Tümü</button>
+                <button class="link-btn" data-l="pick-cancel">Vazgeç</button></div>` : '';
         root.innerHTML = `<div class="lib-layout"><div class="lib-main">
+            ${pickBar}
             ${ui.searching ? `<div class="lib-search"><input class="input" type="search" data-l-q placeholder="Ad ya da site ara" value="${escapeHtml(ui.query)}"></div>` : ''}
             ${usageHtml()}
             <div class="lib-ctrls">
@@ -155,7 +167,16 @@ export function initLibraryTab({ toast, viewer }) {
                 <div class="seg lib-seg">${SOURCES.map(([k, l]) => `<button class="${ui.source === k ? 'on' : ''}" data-l="source" data-v="${k}">${l}</button>`).join('')}</div>
                 <div class="seg lib-seg">${STYLES.map(([k, l]) => `<button class="${style === k ? 'on' : ''}" data-l="style" data-v="${k}">${l}</button>`).join('')}</div>
             </div>
-            <div class="lib-chips">${TYPES.map(([l, k], i) => `<button class="lib-chip${ui.type === k ? ' on' : ''}" data-l="type" data-v="${k || ''}">${l} <small>${counts[i]}</small></button>`).join('')}</div>
+            <div class="lib-chips">${TYPES.map(([l, k], i) => `<button class="lib-chip${ui.type === k ? ' on' : ''}" data-l="type" data-v="${k || ''}">${l} <small>${counts[i]}</small></button>`).join('')}
+                ${!ui.picking ? '<button class="lib-chip lib-pick-btn" data-l="pick-start">Seç</button>' : ''}</div>
+            ${colls.length || tags.length ? `<div class="lib-chips lib-colls">${colls.map((c) => `<button class="lib-chip${ui.collection && ui.collection.kind === 'coll' && ui.collection.value === c.name ? ' on' : ''}" data-l="coll" data-v="${escapeHtml(c.name)}">▦ ${escapeHtml(c.name)} <small>${c.items.length}</small></button>`).join('')}
+                ${tags.map((t) => `<button class="lib-chip tag${ui.collection && ui.collection.kind === 'tag' && ui.collection.value === t ? ' on' : ''}" data-l="tag" data-v="${escapeHtml(t)}">#${escapeHtml(t)}</button>`).join('')}</div>` : ''}
+            ${resume.length ? `<div class="lib-group"><div class="lib-ghead"><span>Devam et</span><span>${resume.length}</span></div>
+                <div class="lib-resume">${resume.map((i) => `<button class="lib-rcard" data-l="resume" data-id="${escapeHtml(i.id)}">
+                    <span class="lib-rthumb" style="${thumbStyle(i)}"><span class="lib-rplay">▶</span>
+                        <span class="lib-rbar"><i style="width:${i.duration ? Math.min(100, (i.resumeAt / i.duration) * 100) : 30}%"></i></span></span>
+                    <b>${escapeHtml(i.name.replace(/\.[^.]+$/, ''))}</b>
+                    <small>${i.duration ? `kalan ${Math.max(1, Math.round((i.duration - i.resumeAt) / 60))} dk` : clock(i.resumeAt)}</small></button>`).join('')}</div></div>` : ''}
             ${empty ? `<div class="empty">Kitaplık boş.<br>İndirdiğin videolar, fotoğraflar ve kayıtların bir kopyası burada durur;
                 buradan izler, düzenler ve yeniden paylaşırsın.</div>`
                 : !list.length ? '<div class="empty">Bu seçimde öğe yok.</div>'
@@ -165,7 +186,11 @@ export function initLibraryTab({ toast, viewer }) {
                     <div class="lib-${style}">${g.items.map((i) => tileHtml(i, style)).join('')}</div>
                 </div>`).join('')}
             ${ui.collection ? `<button class="lib-coll-chip" data-l="coll-clear">${escapeHtml(ui.collection.label)} ✕</button>` : ''}
-            ${anyVisual ? '<button class="lib-feed-btn" data-l="feed">▶ Akışta izle</button>' : ''}
+            ${ui.picking ? `<div class="lib-pick-actions">
+                <button class="btn-ghost" data-l="pick-coll"${ui.picked.size ? '' : ' disabled'}>Koleksiyona ekle</button>
+                <button class="btn-ghost" data-l="pick-merge"${pickedVideos().length >= 2 ? '' : ' disabled'}>Birleştir</button>
+                <button class="btn-ghost danger" data-l="pick-delete"${ui.picked.size ? '' : ' disabled'}>Sil</button></div>`
+                : anyVisual ? '<button class="lib-feed-btn" data-l="feed">▶ Akışta izle</button>' : ''}
             </div><aside class="lib-insp">${inspectorHtml()}</aside></div>`;
         renderSide();
         if (ui.searching || focusSearch) {
@@ -174,6 +199,29 @@ export function initLibraryTab({ toast, viewer }) {
             input.focus();
             input.setSelectionRange(input.value.length, input.value.length);
         }
+    }
+
+    function collectionsOf(list) {
+        const map = new Map();
+        for (const i of list) for (const c of i.collections || []) {
+            if (!map.has(c)) map.set(c, []);
+            map.get(c).push(i);
+        }
+        return [...map].map(([name, items]) => ({ name, items })).sort((a, b) => b.items.length - a.items.length);
+    }
+
+    function tagsOf(list) {
+        const set = new Map();
+        for (const i of list) for (const t of i.tags || []) set.set(t, (set.get(t) || 0) + 1);
+        return [...set].sort((a, b) => b[1] - a[1]).map(([t]) => t).slice(0, 20);
+    }
+
+    function pickedItems() {
+        return all().filter((i) => ui.picked.has(i.id));
+    }
+
+    function pickedVideos() {
+        return pickedItems().filter((i) => i.kind === 'video' && !i.server);
     }
 
     function selectedItem() {
@@ -216,7 +264,7 @@ export function initLibraryTab({ toast, viewer }) {
             if (i.page) pages.set(i.page, (pages.get(i.page) || 0) + 1);
             if (i.site) sites.set(i.site, (sites.get(i.site) || 0) + 1);
         }
-        const colls = [];
+        const colls = collectionsOf(list).slice(0, 6).map((c) => ({ kind: 'coll', value: c.name, label: c.name }));
         const topPage = [...pages].filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1])[0];
         if (topPage) {
             const inPage = list.filter((i) => i.page === topPage[0]);
@@ -250,7 +298,7 @@ export function initLibraryTab({ toast, viewer }) {
     async function refresh({ server = false } = {}) {
         items = await libList();
         usage = await libUsage();
-        if (server) remote = await serverItems();
+        if (server) remote = applyProgress(await serverItems());
         render();
     }
 
@@ -265,6 +313,41 @@ export function initLibraryTab({ toast, viewer }) {
         if (act === 'style') setPref('libStyle', btn.dataset.v);
         if (act === 'type') ui.type = btn.dataset.v || null;
         if (act === 'storage') return openStorage();
+        if (act === 'open' && ui.picking) {
+            const id = btn.dataset.id;
+            if (ui.picked.has(id)) ui.picked.delete(id); else ui.picked.add(id);
+            return render();
+        }
+        if (act === 'pick-start') {
+            ui.picking = true;
+            ui.picked.clear();
+        }
+        if (act === 'pick-cancel') {
+            ui.picking = false;
+            ui.picked.clear();
+        }
+        if (act === 'pick-all') visible.forEach((i) => ui.picked.add(i.id));
+        if (act === 'pick-coll') return openCollectionSheet();
+        if (act === 'pick-merge' && onMerge) return onMerge(pickedVideos());
+        if (act === 'pick-delete') {
+            const list = pickedItems().filter((i) => !i.server);
+            if (!list.length) return;
+            const only = list.filter((i) => !i.exportedAt).length;
+            if (!confirm(`${list.length} öğe kitaplıktan silinsin mi?${only ? `\n${only} tanesi yalnızca burada; silinirse geri gelmez.` : ''}`)) return;
+            libRemove(list.map((i) => i.id)).then(() => {
+                ui.picking = false;
+                ui.picked.clear();
+                toast(`${list.length} öğe silindi`);
+            });
+            return;
+        }
+        if (act === 'coll') ui.collection = ui.collection && ui.collection.kind === 'coll' && ui.collection.value === btn.dataset.v ? null : { kind: 'coll', value: btn.dataset.v, label: btn.dataset.v };
+        if (act === 'tag') ui.collection = ui.collection && ui.collection.kind === 'tag' && ui.collection.value === btn.dataset.v ? null : { kind: 'tag', value: btn.dataset.v, label: '#' + btn.dataset.v };
+        if (act === 'resume') {
+            const item = all().find((i) => i.id === btn.dataset.id);
+            if (item) viewer.open([item], 0);
+            return;
+        }
         if (act === 'open') {
             if (desktop() && ui.selected !== btn.dataset.id) {
                 ui.selected = btn.dataset.id;
@@ -284,6 +367,100 @@ export function initLibraryTab({ toast, viewer }) {
         }
         render();
     });
+    // Uzun basınca seçim modu açılır.
+    let pressTimer = null;
+    root.addEventListener('pointerdown', (e) => {
+        const tile = e.target.closest('[data-l="open"]');
+        if (!tile || ui.picking) return;
+        pressTimer = setTimeout(() => {
+            ui.picking = true;
+            ui.picked = new Set([tile.dataset.id]);
+            suppressClick = true;
+            render();
+        }, 550);
+    });
+    let suppressClick = false;
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) => root.addEventListener(ev, () => clearTimeout(pressTimer)));
+    root.addEventListener('click', (e) => {
+        if (suppressClick) {
+            suppressClick = false;
+            e.stopImmediatePropagation();
+        }
+    }, true);
+
+    /* ---- Koleksiyona ekle / etiketler ---- */
+    function openCollectionSheet() {
+        const items = pickedItems().filter((i) => !i.server);
+        if (!items.length) return toast('Sunucudaki öğeler koleksiyona eklenemez');
+        const colls = collectionsOf(all());
+        const tags = tagsOf(all());
+        const st = { coll: null, newName: '', tags: new Set(), newTag: '' };
+        const el = document.createElement('div');
+        el.className = 'sheet-backdrop lib-sheet';
+        document.body.appendChild(el);
+        const cover = (list) => `<span class="coll-cover">${[0, 1, 2, 3].map((k) => `<i style="${list[k] ? thumbStyle(list[k]) : ''}"></i>`).join('')}</span>`;
+        const draw = () => {
+            el.innerHTML = `<div class="sheet coll-sheet">
+                <span class="sheet-grip"></span>
+                <b class="coll-title">Koleksiyona ekle</b>
+                <div class="coll-grid">
+                    <button class="coll-card new${st.coll === '' ? ' on' : ''}" data-c="new"><span class="coll-cover plus">+</span><b>Yeni</b></button>
+                    ${colls.map((c) => `<button class="coll-card${st.coll === c.name ? ' on' : ''}" data-c="pick" data-v="${escapeHtml(c.name)}">${cover(c.items)}<b>${escapeHtml(c.name)}</b><small>${c.items.length} öğe</small></button>`).join('')}
+                </div>
+                ${st.coll === '' ? `<input class="input" data-c-name placeholder="Koleksiyon adı" value="${escapeHtml(st.newName)}">` : ''}
+                <span class="sec-label">Etiketler</span>
+                <div class="coll-tags">${[...new Set([...tags, ...st.tags])].map((t) => `<button class="lib-chip tag${st.tags.has(t) ? ' on' : ''}" data-c="tag" data-v="${escapeHtml(t)}">#${escapeHtml(t)}</button>`).join('')}
+                    <input class="coll-newtag" data-c-tag placeholder="+ etiket" value="${escapeHtml(st.newTag)}"></div>
+                <div class="coll-bar"><span>${st.coll ? escapeHtml(st.coll) : st.coll === '' ? 'Yeni koleksiyon' : st.tags.size ? `${st.tags.size} etiket` : 'Bir koleksiyon seç'}</span>
+                    <button class="btn-ac" data-c="save">Ekle</button></div></div>`;
+            const nameInput = el.querySelector('[data-c-name]');
+            if (nameInput && document.activeElement !== nameInput) nameInput.focus();
+        };
+        const close = () => el.remove();
+        el.addEventListener('click', async (e) => {
+            if (e.target === el) return close();
+            const b = e.target.closest('[data-c]');
+            if (!b) return;
+            const c = b.dataset.c;
+            if (c === 'new') st.coll = st.coll === '' ? null : '';
+            if (c === 'pick') st.coll = st.coll === b.dataset.v ? null : b.dataset.v;
+            if (c === 'tag') {
+                if (st.tags.has(b.dataset.v)) st.tags.delete(b.dataset.v); else st.tags.add(b.dataset.v);
+            }
+            if (c === 'save') {
+                const name = st.coll === '' ? st.newName.trim() : st.coll;
+                if (st.coll === '' && !name) return toast('Koleksiyona bir ad ver');
+                if (!name && !st.tags.size) return toast('Bir koleksiyon ya da etiket seç');
+                for (const it of items) {
+                    const patch = {};
+                    if (name) patch.collections = [...new Set([...(it.collections || []), name])];
+                    if (st.tags.size) patch.tags = [...new Set([...(it.tags || []), ...st.tags])];
+                    await libUpdate(it.id, patch);
+                }
+                toast(`${items.length} öğe ${name ? `"${name}" koleksiyonuna eklendi` : 'etiketlendi'}`);
+                ui.picking = false;
+                ui.picked.clear();
+                close();
+                return render();
+            }
+            draw();
+        });
+        el.addEventListener('input', (e) => {
+            if (e.target.matches('[data-c-name]')) st.newName = e.target.value;
+        });
+        el.addEventListener('keydown', (e) => {
+            if (e.target.matches('[data-c-tag]') && e.key === 'Enter') {
+                const t = e.target.value.trim().replace(/^#/, '').replace(/\s+/g, '-').toLocaleLowerCase('tr');
+                if (t) st.tags.add(t);
+                st.newTag = '';
+                draw();
+                const input = el.querySelector('[data-c-tag]');
+                if (input) input.focus();
+            }
+        });
+        draw();
+    }
+
     root.addEventListener('dblclick', (e) => {
         const btn = e.target.closest('[data-l="open"]');
         if (btn && desktop()) openSelected(btn.dataset.id);
