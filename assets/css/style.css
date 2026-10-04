@@ -2614,7 +2614,7 @@ html.remote-open, html.remote-open body { overflow: hidden; }
     background: rgba(0,0,0,.6); color: #fff; font: 600 11px/1 var(--mono); pointer-events: none; }
 .rv-live i { width: 7px; height: 7px; border-radius: 50%; background: #D93B3B; animation: rec-blink 1.2s infinite; }
 @keyframes rec-blink { 50% { opacity: .3; } }
-.remote-controls { display: grid; grid-template-columns: 1fr 1fr 1.4fr 1.4fr; gap: 8px; }
+.remote-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .remote-type { display: flex; gap: 8px; }
 .remote-type .input { flex: 1; min-width: 0; height: 42px; }
 .remote-type .rv-btn { height: 42px; }
@@ -3755,3 +3755,5 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
     body[data-view="detect"] .strip { bottom: calc(var(--tabbar-h) - 22px + env(safe-area-inset-bottom) + 86px); }
     body[data-view="detect"]:has(#view-detect .dl-sticky) .strip { bottom: calc(var(--tabbar-h) - 22px + env(safe-area-inset-bottom) + 10px); }
 }
+/* Canlı görüntüde parmakla kaydırma uygulamanın sayfasını kaydırmasın. */
+.remote-screen img { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
