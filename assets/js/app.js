@@ -162,7 +162,7 @@ document.addEventListener('click', (e) => {
 const viewer = createViewer({ toast });
 const editor = createEditor({ toast });
 viewer.setEditor((item, list) => editor.open(item, list));
-libraryTab = initLibraryTab({ toast, viewer });
+libraryTab = initLibraryTab({ toast, viewer, onMerge: (items) => editor.merge(items) });
 
 settingsTab = initSettings({
     install,

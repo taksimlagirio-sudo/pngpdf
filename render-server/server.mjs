@@ -44,6 +44,7 @@ import { createCookieJar } from './cookiejar.mjs';
 import { pairPage, redeemCode, networkAddresses, tailscaleName } from './pairing.mjs';
 import { createLibStore } from './libstore.mjs';
 import { createTv } from './tv.mjs';
+import { findFfmpeg, analyzeAudio, createAudioJobs } from './audio.mjs';
 import qrcode from './vendor/qrcode.mjs';
 import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd, installPageGuards, disarmOverlays } from './adblock.mjs';
 
@@ -1266,6 +1267,35 @@ async function handleTv(req, res, url) {
     return sendJson(res, 404, { error: 'Bulunamadı' });
 }
 
+const audioJobs = createAudioJobs({ outDir: path.join(HERE, '.audio') });
+
+async function handleAudio(req, res, url) {
+    if (url.pathname === '/audio/analyze' && req.method === 'POST') {
+        const body = await readJson(req);
+        const file = sourceFile(body.source);
+        if (!file) return sendJson(res, 404, { error: 'Dosya sunucuda bulunamadı' });
+        return sendJson(res, 200, await analyzeAudio(file.path));
+    }
+    if (url.pathname === '/audio/export' && req.method === 'POST') {
+        const body = await readJson(req);
+        const file = sourceFile(body.source);
+        if (!file) return sendJson(res, 404, { error: 'Dosya sunucuda bulunamadı' });
+        return sendJson(res, 200, await audioJobs.start({ ...body, file: file.path, name: String(body.name || 'ses').slice(0, 100) }));
+    }
+    const m = url.pathname.match(/^\/audio\/job\/([0-9a-f]{16})(\/file)?$/);
+    if (!m) return sendJson(res, 404, { error: 'Bulunamadı' });
+    if (m[2] && (req.method === 'GET' || req.method === 'HEAD')) {
+        const file = audioJobs.file(m[1]);
+        return file ? sendFileRange(req, res, file) : sendJson(res, 404, { error: 'Dosya hazır değil' });
+    }
+    if (!m[2] && req.method === 'GET') {
+        const j = audioJobs.get(m[1]);
+        return j ? sendJson(res, 200, j) : sendJson(res, 404, { error: 'İş bulunamadı' });
+    }
+    if (!m[2] && req.method === 'DELETE') return sendJson(res, 200, { ok: audioJobs.remove(m[1]) });
+    return sendJson(res, 404, { error: 'Bulunamadı' });
+}
+
 async function handleLibrary(req, res, url) {
     if (url.pathname === '/library' && req.method === 'GET') return sendJson(res, 200, libstore.list());
     if (url.pathname === '/library/sync' && req.method === 'POST') return sendJson(res, 200, libstore.sync(await readJson(req, 4 * 1024 * 1024)));
@@ -1418,6 +1448,7 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/watch' || url.pathname.startsWith('/watch/')) return await handleWatch(req, res, url);
         if (url.pathname === '/tv' || url.pathname.startsWith('/tv/')) return await handleTv(req, res, url);
         if (url.pathname === '/library' || url.pathname.startsWith('/library/')) return await handleLibrary(req, res, url);
+        if (url.pathname.startsWith('/audio/')) return await handleAudio(req, res, url);
         if (url.pathname === '/list' && req.method === 'POST') {
             // Çalma listesi/kanal: içindeki videoların adresleri (toplu ekleme için).
             const body = await readJson(req);
@@ -1443,7 +1474,8 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/health' && req.method === 'GET') {
             return sendJson(res, 200, { ok: true, name: 'indirici-render-server', version: VERSION, adblock: adblockStatus(), logins: { enabled: logins.enabled, sites: logins.sites().length },
                 ytdlp: await findYtdlp().then((t) => (t ? { version: t.version } : null)),
-                gallerydl: await findGalleryDl().then((t) => (t ? { version: t.version } : null)) });
+                gallerydl: await findGalleryDl().then((t) => (t ? { version: t.version } : null)),
+                ffmpeg: await findFfmpeg().then((t) => (t ? { version: t.version } : null)) });
         }
 
         if (url.pathname === '/extract' && req.method === 'POST') {

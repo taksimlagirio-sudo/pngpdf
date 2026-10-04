@@ -574,3 +574,111 @@ export async function embedSubtitles(blob, tracks) {
     const r = await editMp4(src, { start: 0, end: info.duration, textTracks: tracks }, info);
     return new Blob([r.blob], { type: blob.type || 'video/mp4' });
 }
+
+/* ---------------- Kayıpsız birleştirme ---------------- */
+
+const sameBytes = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+/**
+ * Birleştirme için önemli kodek ayarları: görüntüde kodek yapılandırması (avcC/hvcC/vpcC/av1C:
+ * SPS/PPS) ve ölçü, seste kodek + örnekleme hızı + kanal sayısı. Bit hızı gibi alanlar önemsiz.
+ */
+function codecKey(t) {
+    const st = t.stsd;
+    const entry = boxes(st, 16, st.length)[0];
+    if (!entry) return '';
+    if (t.handler === 'vide') {
+        const config = boxes(st, entry.start + 8 + 78, entry.end).find((x) => /^(avcC|hvcC|vpcC|av1C)$/.test(x.type));
+        return `${entry.type}|${Math.round(t.width)}x${Math.round(t.height)}|${config ? Array.from(st.subarray(config.body, config.end)).join(',') : ''}`;
+    }
+    const channels = (st[entry.start + 8 + 16] << 8) | st[entry.start + 8 + 17];
+    const rate = u32(st, entry.start + 8 + 24) >>> 16;
+    return `${entry.type}|${channels}|${rate}|${t.timescale}`;
+}
+
+/** Örnek açıklamasının kodek ve çözünürlük özeti ("avc1 640×360", "mp4a"). */
+function codecOf(t) {
+    const entry = t.stsd.subarray(16);
+    const fourcc4 = String.fromCharCode(entry[4], entry[5], entry[6], entry[7]);
+    return t.handler === 'vide' ? `${fourcc4} ${Math.round(t.width)}×${Math.round(t.height)}` : fourcc4;
+}
+
+/**
+ * Parçalar kayıpsız birleştirilebilir mi? Aynı izler, aynı kodek ve ayarlar gerekir.
+ * @returns {Promise<{ok: boolean, reason?: string, infos: object[], blobs: Blob[], duration: number}>}
+ */
+export async function checkConcat(sources) {
+    const blobs = [];
+    const infos = [];
+    for (const b of sources) {
+        const p = await toProgressive(b);
+        blobs.push(p);
+        infos.push(await readMp4(p));
+    }
+    const duration = infos.reduce((n, i) => n + i.duration, 0);
+    const first = infos[0];
+    for (let k = 1; k < infos.length; k++) {
+        const info = infos[k];
+        const handlers = (x) => x.tracks.map((t) => t.handler).sort().join(',');
+        if (handlers(info) !== handlers(first)) return { ok: false, reason: `${k + 1}. parçada ses/görüntü izleri farklı`, infos, blobs, duration };
+        for (const t of info.tracks) {
+            const ref = first.tracks.find((x) => x.handler === t.handler);
+            if (codecKey(t) !== codecKey(ref)) {
+                return { ok: false, reason: `${k + 1}. parça farklı ayarlarla kaydedilmiş (${codecOf(t)} / ${codecOf(ref)})`, infos, blobs, duration };
+            }
+        }
+    }
+    return { ok: true, infos, blobs, duration };
+}
+
+/** Uygun parçaları tek MP4'te birleştirir (yeniden kodlamaz). */
+export async function concatMp4(sources) {
+    const check = await checkConcat(sources);
+    if (!check.ok) throw new Error(check.reason);
+    const { infos, blobs } = check;
+    // Tek sanal dosya: parçalar art arda; konumlar her parçanın başlangıcı kadar kaydırılır.
+    const combined = new Blob(blobs);
+    const bases = [];
+    let pos = 0;
+    for (const b of blobs) {
+        bases.push(pos);
+        pos += b.size;
+    }
+    const tracks = infos[0].tracks.map((ref) => {
+        const parts = infos.map((info, k) => ({ t: info.tracks.find((x) => x.handler === ref.handler), k }));
+        const count = parts.reduce((n, p) => n + p.t.count, 0);
+        const out = {
+            ...ref, count,
+            sizes: new Uint32Array(count), dts: new Float64Array(count), durs: new Uint32Array(count), offsets: new Float64Array(count),
+            ctts: ref.ctts ? new Int32Array(count) : null, sync: ref.sync ? new Uint8Array(count) : null
+        };
+        let i = 0;
+        let time = 0;
+        for (const { t, k } of parts) {
+            // Her parça, en uzun izi kadar yer kaplar: ses/görüntü kaymasın diye son örnek uzatılır.
+            const fileDur = infos[k].duration * t.timescale;
+            const scale = ref.timescale / t.timescale;
+            for (let j = 0; j < t.count; j++, i++) {
+                out.sizes[i] = t.sizes[j];
+                out.offsets[i] = t.offsets[j] + bases[k];
+                out.dts[i] = time;
+                let d = Math.round(t.durs[j] * scale);
+                if (j === t.count - 1) {
+                    const used = t.dts[j] - t.dts[0] - (j === 0 ? 0 : 0);
+                    const pad = Math.round((fileDur - (t.dts[j] + t.durs[j] - t.dts[0])) * scale);
+                    if (pad > 0 && pad < ref.timescale * 2) d += pad;
+                    void used;
+                }
+                out.durs[i] = d;
+                time += d;
+                if (out.ctts) out.ctts[i] = t.ctts ? Math.round(t.ctts[j] * scale) : 0;
+                if (out.sync) out.sync[i] = t.sync ? t.sync[j] : 1;
+            }
+        }
+        out.duration = time / ref.timescale;
+        return out;
+    });
+    const info = { tracks, movieScale: 1000, duration: Math.max(...tracks.map((t) => t.duration)) };
+    const r = await editMp4(combined, { start: 0, end: info.duration }, info);
+    return r;
+}

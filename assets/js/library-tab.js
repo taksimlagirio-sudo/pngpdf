@@ -409,7 +409,13 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
         }
         if (act === 'pick-all') visible.forEach((i) => ui.picked.add(i.id));
         if (act === 'pick-coll') return openCollectionSheet();
-        if (act === 'pick-merge' && onMerge) return onMerge(pickedVideos());
+        if (act === 'pick-merge' && onMerge) {
+            const list = pickedVideos();
+            ui.picking = false;
+            ui.picked.clear();
+            render();
+            return onMerge(list);
+        }
         if (act === 'pick-delete') {
             const list = pickedItems().filter((i) => !i.server);
             if (!list.length) return;

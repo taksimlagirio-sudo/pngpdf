@@ -1,8 +1,10 @@
 // Düzenleyiciler: video (kes, böl, kare al, sesi çıkar, sessiz, döndür) ve fotoğraf (kırp, ayarla,
 // filtre, boyut/biçim). Sonuç her zaman kitaplığa "kopya" olarak eklenir; asıl dosyaya dokunulmaz.
-import { escapeHtml, formatSize, clock } from './util.js';
+import { escapeHtml, formatSize, clock, getRenderServer, renderApi, checkRenderServer } from './util.js';
+import { uploadItem } from './sync.js';
 import { libFile, libAdd } from './library.js';
-import { readMp4, editMp4, estimateSize, snapStart, toProgressive, rotationOf } from './mp4edit.js';
+import { encodeGif, encodeWebp } from './anim.js';
+import { readMp4, editMp4, estimateSize, snapStart, toProgressive, rotationOf, checkConcat, concatMp4 } from './mp4edit.js';
 
 function overlay(cls) {
     const el = document.createElement('div');
@@ -36,7 +38,7 @@ function pickRecorderType(audioOnly) {
 /**
  * Aralığı oynatıp yeniden kaydeder (gerçek zamanlı sürer). Döndürme tuvalde yapılır.
  */
-async function reencode(blob, { start, end, mute, audioOnly, rotate, onProgress, isCancelled }) {
+async function reencode(blob, { start, end, mute, audioOnly, rotate, onProgress, isCancelled, maxWidth = 0, fps = 30 }) {
     const type = pickRecorderType(audioOnly);
     if (!type) throw new Error('Bu tarayıcı yeniden kodlayamıyor; "Kayıpsız"ı açık bırak');
     const url = URL.createObjectURL(blob);
@@ -62,8 +64,9 @@ async function reencode(blob, { start, end, mute, audioOnly, rotate, onProgress,
         let canvas = null;
         let draw = null;
         if (!audioOnly) {
-            const w = video.videoWidth;
-            const h = video.videoHeight;
+            const k = maxWidth && video.videoWidth > maxWidth ? maxWidth / video.videoWidth : 1;
+            const w = Math.round((video.videoWidth * k) / 2) * 2;
+            const h = Math.round((video.videoHeight * k) / 2) * 2;
             const turned = rotate === 90 || rotate === 270;
             canvas = document.createElement('canvas');
             canvas.width = turned ? h : w;
@@ -76,7 +79,7 @@ async function reencode(blob, { start, end, mute, audioOnly, rotate, onProgress,
                 ctx.drawImage(video, -w / 2, -h / 2, w, h);
                 ctx.restore();
             };
-            tracks.push(...canvas.captureStream(30).getVideoTracks());
+            tracks.push(...canvas.captureStream(fps).getVideoTracks());
         }
         if (!tracks.length) throw new Error('Kaydedilecek iz yok');
         const recorder = new MediaRecorder(new MediaStream(tracks), { mimeType: type, videoBitsPerSecond: 6e6 });
@@ -195,6 +198,7 @@ export function createEditor({ toast, onSaved = () => {} }) {
                     <button data-e="extract"${isAudio ? ' disabled' : ''}><b>♪</b>Sesi çıkar</button>
                     <button data-e="mute"${isAudio ? ' disabled' : ''}><b>∅</b>Sessiz</button>
                     <button data-e="rotate"${isAudio ? ' disabled' : ''}><b>⟲</b>Döndür</button>
+                    <button data-e="clip"${isAudio ? ' disabled' : ''}><b>GIF</b>Klip</button>
                 </div>
                 <div class="ed-side">
                     <span class="ed-side-t ed-desk">Dışa aktar</span>
@@ -466,9 +470,16 @@ export function createEditor({ toast, onSaved = () => {} }) {
             }
             if (a === 'save') return save();
             if (a === 'split') return save('split');
+            if (a === 'extract') {
+                close();
+                return openAudio(item);
+            }
+            if (a === 'clip') {
+                close();
+                return openClip(item, { start: st.start, end: Math.min(st.end, st.start + 60) });
+            }
             if (a === 'frame') return frame();
             remember();
-            if (a === 'extract') st.out = 'audio';
             if (a === 'mute') st.mute = !st.mute;
             if (a === 'rotate') st.rotate = (st.rotate + 90) % 360;
             if (a === 'lossless') st.lossless = !st.lossless;
@@ -973,10 +984,521 @@ export function createEditor({ toast, onSaved = () => {} }) {
         render();
     }
 
+    /* ---------------- Klip (GIF / WebP / sessiz MP4) ---------------- */
+
+    const CLIP_FORMATS = [['gif', 'GIF'], ['webp', 'WebP'], ['mp4', 'Sessiz MP4']];
+    const CLIP_HINTS = {
+        gif: 'GIF her yerde oynar ama en büyük dosya olur.',
+        webp: 'WebP çok daha küçük; tarayıcılar ve mesajlaşma uygulamaları gösterir.',
+        mp4: 'Sessiz MP4 en küçüğü; sosyal medyada GIF yerine kullanılır.'
+    };
+    const MAX_CLIP = 60;
+
+    async function openClip(item, range = null) {
+        const el = overlay('ed-clip');
+        let blob;
+        try {
+            blob = await libFile(item.id);
+        } catch (err) {
+            toast(err.message);
+            return closeOverlay(el);
+        }
+        const url = URL.createObjectURL(blob);
+        const st = { start: range ? range.start : 0, end: range ? range.end : 6, fmt: 'gif', width: 480, fps: 15, loop: true, busy: false, cancelled: false };
+        let duration = item.duration || 0;
+        const history = [];
+        el.innerHTML = `<div class="ed clip">
+            <div class="ed-top"><button class="back-btn" data-k="close" aria-label="Kapat">←</button><span class="ed-title">Klip oluştur</span>
+                <button class="link-btn" data-k="undo">Geri al</button></div>
+            <div class="ed-stage"><video playsinline muted src="${url}"></video>
+                <span class="clip-badge loop">↻ DÖNGÜ</span><span class="clip-badge fmt"></span><span class="clip-prog"><i></i></span></div>
+            <div class="ed-strip" data-strip><div class="ed-thumbs"></div><div class="ed-sel"></div></div>
+            <div class="clip-times"><span data-k-a></span><b data-k-len></b><span data-k-b></span></div>
+            <div class="rows filled clip-rows"></div>
+            <div class="clip-est"><span>Tahmini boyut</span><b data-k-est></b></div>
+            <p class="wz-note" data-k-hint></p>
+            <div class="ed-progress hidden"><div class="stage-bar"><div></div></div><span></span><button class="link-btn" data-k="cancel">İptal</button></div>
+            <div class="ed-bar"><button class="btn-big" data-k="go" style="flex:1">Klip oluştur</button></div></div>`;
+        const video = el.querySelector('video');
+        const strip = el.querySelector('[data-strip]');
+
+        function estimate() {
+            const len = st.end - st.start;
+            const h = Math.round(st.width * ((video.videoHeight || 9) / (video.videoWidth || 16)));
+            const px = st.width * h;
+            const frames = len * st.fps;
+            if (st.fmt === 'gif') return px * frames * 0.1;
+            if (st.fmt === 'webp') return px * frames * 0.025;
+            return (st.width >= 720 ? 2.5e6 : 1.2e6) / 8 * len;
+        }
+
+        function paint() {
+            const d = duration || 1;
+            const sel = el.querySelector('.ed-sel');
+            sel.style.left = `${(st.start / d) * 100}%`;
+            sel.style.width = `${((st.end - st.start) / d) * 100}%`;
+            el.querySelector('[data-k-a]').textContent = clock(st.start);
+            el.querySelector('[data-k-b]').textContent = clock(st.end);
+            el.querySelector('[data-k-len]').textContent = `${Math.round(st.end - st.start)} sn · en fazla ${MAX_CLIP} sn`;
+            el.querySelector('.clip-badge.fmt').textContent = `${CLIP_FORMATS.find(([k]) => k === st.fmt)[1].toUpperCase()} · ${st.width} px`;
+            el.querySelector('.clip-badge.loop').classList.toggle('hidden', !st.loop);
+            const seg = (key, opts) => `<div class="seg seg-fit">${opts.map(([v, l]) => `<button class="${String(st[key]) === String(v) ? 'on' : ''}" data-k="set" data-key="${key}" data-v="${v}">${l}</button>`).join('')}</div>`;
+            el.querySelector('.clip-rows').innerHTML = `
+                <div class="row"><span class="row-value" style="font-weight:400">Biçim</span>${seg('fmt', CLIP_FORMATS)}</div>
+                <div class="row"><span class="row-value" style="font-weight:400">Boyut</span>${seg('width', [[480, '480 px'], [720, '720 px']])}</div>
+                <div class="row"><span class="row-value" style="font-weight:400">Kare hızı</span>${seg('fps', [[10, '10'], [15, '15'], [24, '24']])}</div>
+                <button class="row" data-k="loop"><span class="row-value" style="font-weight:400">Döngü önizlemesi<span class="muted row-sub">Başa sarıp tekrar oynar</span></span><span class="toggle${st.loop ? ' on' : ''}"></span></button>`;
+            el.querySelector('[data-k-est]').textContent = `~${formatSize(estimate())}`;
+            el.querySelector('[data-k-hint]').textContent = CLIP_HINTS[st.fmt];
+        }
+
+        const setRange = (a, b) => {
+            st.start = Math.max(0, Math.min(a, duration - 0.5));
+            st.end = Math.max(st.start + 0.5, Math.min(b, duration, st.start + MAX_CLIP));
+            paint();
+        };
+
+        video.addEventListener('loadedmetadata', () => {
+            if (!duration) duration = video.duration || 0;
+            setRange(st.start, Math.min(st.end, duration));
+            video.currentTime = st.start;
+            video.play().catch(() => {});
+            thumbs();
+        });
+        video.addEventListener('timeupdate', () => {
+            const p = (video.currentTime - st.start) / Math.max(0.1, st.end - st.start);
+            el.querySelector('.clip-prog i').style.width = `${Math.max(0, Math.min(1, p)) * 100}%`;
+            if (video.currentTime >= st.end || video.currentTime < st.start - 0.5) {
+                if (st.loop) video.currentTime = st.start;
+                else video.pause();
+            }
+        });
+
+        let drag = null;
+        const at = (e) => {
+            const r = strip.getBoundingClientRect();
+            return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * duration;
+        };
+        strip.addEventListener('pointerdown', (e) => {
+            if (!duration) return;
+            history.push([st.start, st.end]);
+            const v = at(e);
+            drag = Math.abs(v - st.start) <= Math.abs(v - st.end) ? 'a' : 'b';
+            strip.setPointerCapture(e.pointerId);
+            move(v);
+        });
+        strip.addEventListener('pointermove', (e) => drag && move(at(e)));
+        strip.addEventListener('pointerup', () => {
+            drag = null;
+            video.currentTime = st.start;
+            video.play().catch(() => {});
+        });
+        function move(v) {
+            if (drag === 'a') setRange(Math.min(v, st.end - 0.5), Math.min(st.end, v + MAX_CLIP));
+            else setRange(Math.max(st.start, v - MAX_CLIP), Math.max(v, st.start + 0.5));
+            video.currentTime = drag === 'a' ? st.start : st.end;
+        }
+
+        async function thumbs() {
+            const box = el.querySelector('.ed-thumbs');
+            const probe = document.createElement('video');
+            probe.muted = true;
+            probe.src = url;
+            await new Promise((r) => { probe.onloadeddata = r; probe.onerror = r; });
+            const c = document.createElement('canvas');
+            c.height = 60;
+            c.width = Math.round(60 * ((probe.videoWidth || 16) / (probe.videoHeight || 9)));
+            for (let k = 0; k < 10 && el.isConnected; k++) {
+                probe.currentTime = ((k + 0.5) / 10) * duration;
+                await new Promise((r) => { probe.onseeked = r; setTimeout(r, 3000); });
+                try {
+                    c.getContext('2d').drawImage(probe, 0, 0, c.width, c.height);
+                    const span = document.createElement('span');
+                    span.style.backgroundImage = `url(${c.toDataURL('image/jpeg', 0.6)})`;
+                    box.appendChild(span);
+                } catch (_) { return; }
+            }
+        }
+
+        function progress(p, text) {
+            const box = el.querySelector('.ed-progress');
+            box.classList.toggle('hidden', p === null);
+            if (p === null) return;
+            box.querySelector('.stage-bar div').style.width = `${Math.max(0, Math.min(1, p)) * 100}%`;
+            box.querySelector('span').textContent = text;
+        }
+
+        /** Kareleri sırayla (atlayarak) yakalar. */
+        async function captureFrames(kind) {
+            const grab = document.createElement('video');
+            grab.muted = true;
+            grab.src = url;
+            await new Promise((r, j) => { grab.onloadeddata = r; grab.onerror = () => j(new Error('Video açılamadı')); });
+            const w = Math.min(st.width, grab.videoWidth) & ~1;
+            const h = Math.round((w * grab.videoHeight) / grab.videoWidth) & ~1;
+            const c = document.createElement('canvas');
+            c.width = w;
+            c.height = h;
+            const ctx = c.getContext('2d', { willReadFrequently: kind === 'gif' });
+            const frames = [];
+            const count = Math.max(1, Math.round((st.end - st.start) * st.fps));
+            for (let n = 0; n < count; n++) {
+                if (st.cancelled) throw new Error('İptal edildi');
+                grab.currentTime = st.start + n / st.fps;
+                await new Promise((r) => { grab.onseeked = r; setTimeout(r, 4000); });
+                ctx.drawImage(grab, 0, 0, w, h);
+                frames.push(kind === 'gif' ? ctx.getImageData(0, 0, w, h) : await new Promise((r) => c.toBlob(r, 'image/webp', 0.8)));
+                progress((n + 1) / count * 0.7, `Kareler alınıyor · ${n + 1}/${count}`);
+            }
+            return { frames, w, h };
+        }
+
+        async function create() {
+            st.busy = true;
+            st.cancelled = false;
+            video.pause();
+            el.classList.add('busy');
+            const base = baseName(item.name);
+            try {
+                let out;
+                let ext;
+                if (st.fmt === 'mp4') {
+                    progress(0, 'Kaydediliyor…');
+                    out = await reencode(blob, {
+                        start: st.start, end: st.end, mute: true, audioOnly: false, rotate: 0, maxWidth: st.width, fps: st.fps,
+                        onProgress: (p) => progress(p, `Kaydediliyor · %${Math.round(p * 100)}`), isCancelled: () => st.cancelled
+                    });
+                    ext = out.type.includes('mp4') ? 'mp4' : 'webm';
+                } else {
+                    const { frames, w, h } = await captureFrames(st.fmt);
+                    const delay = 1000 / st.fps;
+                    progress(0.7, 'Kodlanıyor…');
+                    await new Promise((r) => setTimeout(r, 30));
+                    out = st.fmt === 'gif'
+                        ? encodeGif(frames, delay, { onProgress: (p) => progress(0.7 + p * 0.3, 'GIF kodlanıyor…') })
+                        : await encodeWebp(frames, w, h, delay, { onProgress: (p) => progress(0.7 + p * 0.3, 'WebP birleştiriliyor…') });
+                    ext = st.fmt;
+                }
+                await libAdd(out, { name: `${base}-klip.${ext}`, page: item.page, edited: true, from: item.id });
+                toast(`Klip kitaplıkta · ${formatSize(out.size)}`);
+                close();
+                onSaved();
+            } catch (err) {
+                toast(err.message);
+            } finally {
+                st.busy = false;
+                el.classList.remove('busy');
+                progress(null);
+            }
+        }
+
+        function close() {
+            st.cancelled = true;
+            video.pause();
+            URL.revokeObjectURL(url);
+            closeOverlay(el);
+        }
+
+        el.addEventListener('click', (e) => {
+            const b = e.target.closest('[data-k]');
+            if (!b) return;
+            const k = b.dataset.k;
+            if (k === 'close') return close();
+            if (k === 'cancel') {
+                st.cancelled = true;
+                return;
+            }
+            if (st.busy) return;
+            if (k === 'go') return create();
+            if (k === 'undo') {
+                const prev = history.pop();
+                if (prev) setRange(prev[0], prev[1]);
+                return;
+            }
+            if (k === 'loop') {
+                st.loop = !st.loop;
+                if (st.loop) video.play().catch(() => {});
+            }
+            if (k === 'set') st[b.dataset.key] = b.dataset.key === 'fmt' ? b.dataset.v : Number(b.dataset.v);
+            paint();
+        });
+        paint();
+    }
+
+    /* ---------------- Ses araçları ---------------- */
+
+    async function openAudio(item) {
+        const el = overlay('ed-audio');
+        const st = { normalize: true, trim: true, format: 'mp3', bitrate: 192, info: null, source: '', ffmpeg: false, busy: false, status: 'Hazırlanıyor…' };
+        const isVideo = item.kind === 'video';
+        const draw = () => {
+            const i = st.info;
+            const dur = (i && i.duration) || item.duration || 0;
+            const lead = st.trim && i ? i.lead : 0;
+            const tail = st.trim && i ? i.tail : 0;
+            const keep = Math.max(0, dur - lead - tail);
+            const size = st.ffmpeg ? (st.bitrate * 1000 / 8) * keep : item.size * (isVideo ? 0.1 : 1);
+            const bars = i && i.peaks ? i.peaks : [];
+            const cutA = dur ? lead / dur : 0;
+            const cutB = dur ? 1 - tail / dur : 1;
+            el.innerHTML = `<div class="ed au">
+                <div class="ed-top"><button class="back-btn" data-a="close" aria-label="Kapat">←</button><span class="ed-title">Ses araçları</span></div>
+                <div><div class="au-name">${escapeHtml(baseName(item.name))}</div>
+                    <div class="au-meta">${[dur ? clock(dur) : '', i && i.channels, i && i.codec ? `kaynak ${(item.name.split('.').pop() || '').toUpperCase()}` : ''].filter(Boolean).join(' · ')}</div></div>
+                <div class="au-wave">${bars.length ? bars.map((v, k) => {
+                    const x = k / bars.length;
+                    return `<i class="${x < cutA || x > cutB ? 'cut' : ''}" style="height:${Math.max(4, v * 100)}%"></i>`;
+                }).join('') : `<span class="au-wait">${escapeHtml(st.status)}</span>`}</div>
+                ${i ? `<div class="au-times"><span>−${clock(lead)} baştan</span><span>${clock(keep)} kalır</span><span>−${clock(tail)} sondan</span></div>` : ''}
+                <div class="rows filled">
+                    <button class="row" data-a="normalize"${st.ffmpeg ? '' : ' disabled'}><span class="row-value" style="font-weight:400">Ses seviyesini eşitle<span class="muted row-sub">Kısık yerler yükselir, bağırışlar kısılır</span></span><span class="toggle${st.normalize && st.ffmpeg ? ' on' : ''}"></span></button>
+                    <button class="row" data-a="trim"${st.ffmpeg ? '' : ' disabled'}><span class="row-value" style="font-weight:400">Baştaki ve sondaki sessizliği kırp<span class="muted row-sub">${i ? `Baştan ${Math.round(i.lead)} sn, sondan ${Math.round(i.tail)} sn kırpılacak` : 'Sessizlik aranıyor'}</span></span><span class="toggle${st.trim && st.ffmpeg ? ' on' : ''}"></span></button>
+                    <div class="row"><span class="row-value" style="font-weight:400">Biçim</span><div class="seg seg-fit">${[['mp3', 'MP3'], ['m4a', 'M4A']].map(([k, l]) => `<button class="${st.format === k ? 'on' : ''}" data-a="format" data-v="${k}"${!st.ffmpeg && k === 'mp3' ? ' disabled' : ''}>${l}</button>`).join('')}</div></div>
+                    <div class="row"><span class="row-value" style="font-weight:400">Kalite</span><div class="seg seg-fit">${[128, 192, 320].map((k) => `<button class="${st.bitrate === k ? 'on' : ''}" data-a="bitrate" data-v="${k}"${st.ffmpeg ? '' : ' disabled'}>${k}${k === 320 ? ' kbps' : ''}</button>`).join('')}</div></div>
+                </div>
+                <p class="wz-note">${!st.ffmpeg ? 'Eşitleme, kırpma ve MP3 için sunucunda ffmpeg kurulu olmalı (Termux: pkg install ffmpeg). Şimdilik ses kayıpsız M4A olarak çıkarılır.'
+                    : st.format === 'mp3' ? 'MP3 her cihazda ve arabada çalar.' : 'M4A aynı kalitede daha küçük; telefonlarda yerleşik çalar.'}</p>
+                <div class="ed-progress hidden"><div class="stage-bar"><div></div></div><span></span></div>
+                <div class="ed-bar"><span data-e-size>~${formatSize(size)} · ${st.ffmpeg ? st.format.toUpperCase() : 'M4A'}</span><button class="btn-big" data-a="go"${st.busy ? ' disabled' : ''}>Sesi dışa aktar</button></div></div>`;
+        };
+        const progress = (p, text) => {
+            const box = el.querySelector('.ed-progress');
+            box.classList.toggle('hidden', p === null);
+            if (p === null) return;
+            box.querySelector('.stage-bar div').style.width = `${p * 100}%`;
+            box.querySelector('span').textContent = text;
+        };
+        const close = () => closeOverlay(el);
+
+        draw();
+        // Sunucuda ffmpeg varsa dosya oraya gönderilip incelenir.
+        (async () => {
+            const server = getRenderServer();
+            if (!server) {
+                st.status = 'Dalga biçimi için kendi sunucun gerekli';
+                return draw();
+            }
+            try {
+                const health = await checkRenderServer(server);
+                st.ffmpeg = Boolean(health && health.ffmpeg);
+                if (!st.ffmpeg) {
+                    st.format = 'm4a';
+                    st.status = 'Sunucuda ffmpeg yok';
+                    return draw();
+                }
+                st.status = 'Sunucuna gönderiliyor…';
+                draw();
+                st.source = item.server && item.serverKind ? `${item.serverKind}:${item.serverId}` : (await uploadItem(item), `library:${item.id}`);
+                st.status = 'İnceleniyor…';
+                draw();
+                st.info = await renderApi('/audio/analyze', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: st.source }) }, 300000);
+                draw();
+            } catch (err) {
+                st.status = err.message;
+                draw();
+            }
+        })();
+
+        async function exportAudio() {
+            st.busy = true;
+            draw();
+            const name = baseName(item.name);
+            try {
+                if (!st.ffmpeg) {
+                    // Sunucusuz: ses izi kayıpsız ayrılır.
+                    const src = await toProgressive(await libFile(item.id));
+                    const r = await editMp4(src, { audioOnly: true });
+                    await libAdd(r.blob, { name: `${name}.m4a`, page: item.page, edited: true, from: item.id });
+                } else {
+                    const i = st.info || {};
+                    const job0 = await renderApi('/audio/export', {
+                        method: 'POST', headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ source: st.source, duration: i.duration || item.duration || 0, normalize: st.normalize, lead: st.trim ? i.lead || 0 : 0, tail: st.trim ? i.tail || 0 : 0, format: st.format, bitrate: st.bitrate, name })
+                    }, 30000);
+                    let job = job0;
+                    while (job.state === 'running') {
+                        progress(job.progress, `Hazırlanıyor · %${Math.round(job.progress * 100)}`);
+                        await new Promise((r) => setTimeout(r, 1000));
+                        job = await renderApi(`/audio/job/${job0.id}`, {}, 10000);
+                    }
+                    if (job.state !== 'done') throw new Error(job.error || 'Ses hazırlanamadı');
+                    progress(1, 'Telefona alınıyor…');
+                    const server = getRenderServer();
+                    const res = await fetch(`${server.url}/audio/job/${job0.id}/file?token=${encodeURIComponent(server.token)}`);
+                    if (!res.ok) throw new Error(`Alınamadı (HTTP ${res.status})`);
+                    const blob = await res.blob();
+                    await libAdd(new Blob([blob], { type: st.format === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }), { name: `${name}.${st.format}`, page: item.page, edited: true, from: item.id });
+                    renderApi(`/audio/job/${job0.id}`, { method: 'DELETE' }, 10000).catch(() => {});
+                }
+                toast('Ses kitaplığa kaydedildi');
+                close();
+                onSaved();
+            } catch (err) {
+                toast(err.message);
+                st.busy = false;
+                progress(null);
+                draw();
+            }
+        }
+
+        el.addEventListener('click', (e) => {
+            const b = e.target.closest('[data-a]');
+            if (!b || b.disabled) return;
+            const a = b.dataset.a;
+            if (a === 'close') return close();
+            if (st.busy) return;
+            if (a === 'go') return exportAudio();
+            if (a === 'normalize') st.normalize = !st.normalize;
+            if (a === 'trim') st.trim = !st.trim;
+            if (a === 'format') st.format = b.dataset.v;
+            if (a === 'bitrate') st.bitrate = Number(b.dataset.v);
+            draw();
+        });
+    }
+
+    /* ---------------- Birleştir ---------------- */
+
+    function openMerge(items) {
+        const el = overlay('ed-merge');
+        // Parçalar adlarına göre (…-1, …-2) sıralanır; sürükleyerek değiştirilebilir.
+        const sorted = [...items].sort((a, b) => a.name.localeCompare(b.name, 'tr', { numeric: true }));
+        const rows = sorted.map((item) => ({ item, on: true }));
+        const firstName = baseName(items[0].name).replace(/[-_ ]*(\d+|kısım|part)\s*$/i, '');
+        const st = { name: `${firstName || 'birlesik'}-tamami`, check: null, checking: false, busy: false, seq: 0 };
+        const ext = (it) => ((it.name.split('.').pop() || '').toUpperCase());
+        const meta = (it) => [it.duration ? clock(it.duration) : '', it.height ? `${it.height}p` : '', ext(it)].filter(Boolean).join(' · ');
+        const picked = () => rows.filter((r) => r.on);
+
+        async function verify() {
+            const my = ++st.seq;
+            st.checking = true;
+            st.check = null;
+            draw();
+            const list = picked();
+            if (list.length < 2) {
+                st.checking = false;
+                return draw();
+            }
+            try {
+                const blobs = await Promise.all(list.map((r) => libFile(r.item.id)));
+                const c = await checkConcat(blobs);
+                if (my !== st.seq) return;
+                st.check = c;
+            } catch (err) {
+                if (my !== st.seq) return;
+                st.check = { ok: false, reason: /MP4/.test(err.message) ? 'Yalnızca MP4 parçalar birleştirilebilir' : err.message };
+            }
+            st.checking = false;
+            draw();
+        }
+
+        function draw() {
+            const list = picked();
+            const total = list.reduce((n, r) => n + (r.item.duration || 0), 0);
+            const h = list[0] && list[0].item.height;
+            const card = st.checking ? '<div class="mg-card idle">Parçalar inceleniyor…</div>'
+                : list.length < 2 ? '<div class="mg-card idle">Birleştirmek için en az iki parça seç.</div>'
+                : st.check && st.check.ok ? `<div class="mg-card ok">✓ <span><b>Kayıpsız birleştirilebilir</b>Hepsi ${h ? `${h}p · ` : ''}${ext(list[0].item)}. Yeniden kodlanmaz, saniyeler sürer.</span></div>`
+                : st.check ? `<div class="mg-card warn">! <span><b>Kayıpsız birleştirilemiyor</b>${escapeHtml(st.check.reason || '')}. Aynı kaynaktan, aynı kalitede kaydedilmiş parçalar birleştirilebilir.</span></div>` : '';
+            el.innerHTML = `<div class="ed mg">
+                <div class="ed-top"><button class="back-btn" data-m="close" aria-label="Kapat">←</button><span class="ed-title">Birleştir</span></div>
+                <div class="mg-head"><b>${list.length} parça · sürükleyerek sırala</b><span class="mono">${clock(total)}</span></div>
+                <div class="mg-list">${rows.map((r, i) => `<div class="mg-row${r.on ? '' : ' off'}" data-i="${i}">
+                    <span class="mg-grip" data-m="grip">⋮⋮</span><span class="mg-n">${i + 1}</span>
+                    <span class="mg-th" style="${r.item.thumb ? `background-image:url('${r.item.thumb}')` : ''}"></span>
+                    <span class="mg-main"><b>${escapeHtml(r.item.name)}</b><small>${escapeHtml(meta(r.item))}</small></span>
+                    <span class="mg-arrows"><button data-m="up" data-i="${i}"${i === 0 ? ' disabled' : ''}>▲</button><button data-m="down" data-i="${i}"${i === rows.length - 1 ? ' disabled' : ''}>▼</button></span>
+                    <button class="mg-check${r.on ? ' on' : ''}" data-m="toggle" data-i="${i}">${r.on ? '✓' : ''}</button></div>`).join('')}</div>
+                <div class="mg-bar">${list.map((r, k) => `<span style="flex:${Math.max(1, r.item.duration || 1)}" title="${escapeHtml(r.item.name)}">${k + 1} · ${clock(r.item.duration)}</span>`).join('')}</div>
+                ${card}
+                <label class="mg-name"><span>Dosya adı</span><input data-m-name value="${escapeHtml(st.name)}" spellcheck="false"><span>.mp4</span></label>
+                <div class="ed-bar"><span data-e-size>${list.length} parça · ${clock(total)}</span>
+                    <button class="btn-big" data-m="go"${st.check && st.check.ok && !st.busy ? '' : ' disabled'}>${st.busy ? 'Birleştiriliyor…' : 'Birleştir'}</button></div>
+            </div>`;
+        }
+
+        function close() {
+            st.seq++;
+            closeOverlay(el);
+        }
+
+        // Sürükleyerek sıralama
+        let drag = null;
+        el.addEventListener('pointerdown', (e) => {
+            if (!e.target.closest('[data-m="grip"]')) return;
+            const row = e.target.closest('.mg-row');
+            drag = { from: Number(row.dataset.i), row };
+            row.classList.add('drag');
+            el.setPointerCapture(e.pointerId);
+            e.preventDefault();
+        });
+        el.addEventListener('pointermove', (e) => {
+            if (!drag) return;
+            const over = document.elementFromPoint(e.clientX, e.clientY);
+            const target = over && over.closest('.mg-row');
+            if (!target || target === drag.row) return;
+            const to = Number(target.dataset.i);
+            const [moved] = rows.splice(drag.from, 1);
+            rows.splice(to, 0, moved);
+            drag.from = to;
+            draw();
+            drag.row = el.querySelector(`.mg-row[data-i="${to}"]`);
+            drag.row.classList.add('drag');
+        });
+        el.addEventListener('pointerup', () => {
+            if (!drag) return;
+            drag = null;
+            verify();
+        });
+
+        el.addEventListener('input', (e) => {
+            if (e.target.matches('[data-m-name]')) st.name = e.target.value;
+        });
+        el.addEventListener('click', async (e) => {
+            const b = e.target.closest('[data-m]');
+            if (!b || b.disabled) return;
+            const m = b.dataset.m;
+            const i = Number(b.dataset.i);
+            if (m === 'close') return close();
+            if (m === 'up' || m === 'down') {
+                const j = m === 'up' ? i - 1 : i + 1;
+                [rows[i], rows[j]] = [rows[j], rows[i]];
+                return verify();
+            }
+            if (m === 'toggle') {
+                rows[i].on = !rows[i].on;
+                return verify();
+            }
+            if (m === 'go') {
+                st.busy = true;
+                draw();
+                try {
+                    const blobs = await Promise.all(picked().map((r) => libFile(r.item.id)));
+                    const r = await concatMp4(blobs);
+                    const name = (st.name.trim() || 'birlesik').replace(/[\\/:*?"<>|]+/g, '_');
+                    await libAdd(r.blob, { name: `${name}.mp4`, page: items[0].page, edited: true, from: items[0].id });
+                    toast(`Birleştirildi · ${clock(r.duration)} · kitaplıkta`);
+                    close();
+                    onSaved();
+                } catch (err) {
+                    toast(err.message);
+                    st.busy = false;
+                    draw();
+                }
+            }
+        });
+        draw();
+        verify();
+    }
+
     return {
+        merge: openMerge,
+        audio: openAudio,
+        clip: openClip,
         open(item, list = []) {
             if (item.kind === 'photo') return openPhoto(item, list);
-            if (item.kind === 'video' || item.kind === 'audio') return openVideo(item);
+            if (item.kind === 'audio') return openAudio(item);
+            if (item.kind === 'video') return openVideo(item);
             toast('Bu dosya düzenlenemiyor');
         }
     };

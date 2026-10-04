@@ -1,5 +1,5 @@
 // Service worker: çevrimdışı kabuk + arka plan indirmeleri (Background Fetch)
-const VERSION = 'v45';
+const VERSION = 'v46';
 const SHELL_CACHE = `shell-${VERSION}`;
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -26,6 +26,7 @@ const SHELL_FILES = [
     './assets/js/sync.js',
     './assets/js/cast.js',
     './assets/js/editor.js',
+    './assets/js/anim.js',
     './assets/js/mp4edit.js',
     './assets/js/images.js',
     './assets/js/settings.js',
