@@ -354,7 +354,8 @@ const EARLY_URL = 'https://indirici-kurallar.invalid/early';
 const earlyDone = new WeakMap(); // page → Set(hostname)
 
 const EARLY = `(() => {
-    if (window.__indiriciEarly || !/^https?:$/.test(location.protocol)) return;
+    // Yalnızca ana sayfada: her reklam çerçevesi için ayrı istek telefonu yavaşlatıyordu.
+    if (window.__indiriciEarly || window.top !== window || !/^https?:$/.test(location.protocol)) return;
     window.__indiriciEarly = true;
     try {
         const x = new XMLHttpRequest();
@@ -415,38 +416,64 @@ function earlyApplied(frame, hostname) {
 // Sayfaya sonradan eklenen öğeler (geç yüklenen reklam alanları) izlenir: yeni sınıf/kimlikler
 // sunucuya bildirilir, onlara uyan gizleme kuralları sayfaya eklenir.
 const DOM_WATCH = `(() => {
-    if (window.__indiriciDomWatch || typeof window.__indiriciDom !== 'function') return;
+    // Yalnızca ana sayfada ve yalnızca eklenen öğeler (sınıf değişimleri değil): telefonda hafif kalsın.
+    if (window.__indiriciDomWatch || window.top !== window || typeof window.__indiriciDom !== 'function') return;
     window.__indiriciDomWatch = true;
     const seen = new Set();
-    let classes = [], ids = [], hrefs = [], timer = 0;
+    let classes = [], ids = [], timer = 0, sends = 0;
     const take = (el) => {
-        if (!el || el.nodeType !== 1) return;
         if (el.classList) el.classList.forEach((c) => { if (!seen.has('.' + c)) { seen.add('.' + c); classes.push(c); } });
         if (el.id && !seen.has('#' + el.id)) { seen.add('#' + el.id); ids.push(el.id); }
-        if (el.tagName === 'A' && el.href && hrefs.length < 200 && !seen.has(el.href)) { seen.add(el.href); hrefs.push(el.href); }
     };
     const flush = () => {
         timer = 0;
-        if (!classes.length && !ids.length && !hrefs.length) return;
-        const data = { classes, ids, hrefs };
-        classes = []; ids = []; hrefs = [];
+        if (!classes.length && !ids.length) return;
+        if (++sends > 80) return mo.disconnect(); // sürekli değişen sayfada sonsuza kadar sürmesin
+        const data = { classes, ids, hrefs: [] };
+        classes = []; ids = [];
         try { window.__indiriciDom(data); } catch (_) {}
     };
-    new MutationObserver((records) => {
+    const mo = new MutationObserver((records) => {
         for (const r of records) {
             for (const node of r.addedNodes) {
                 if (node.nodeType !== 1) continue;
                 take(node);
-                if (seen.size < 20000) node.querySelectorAll('[class], [id], a[href]').forEach(take);
+                const all = node.getElementsByTagName('*');
+                for (let i = 0; i < all.length && i < 400; i++) take(all[i]);
             }
-            if (r.type === 'attributes') take(r.target);
         }
-        if (!timer) timer = setTimeout(flush, 400);
-    }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'id'] });
+        if (!timer && (classes.length || ids.length)) timer = setTimeout(flush, 800);
+    });
+    mo.observe(document, { childList: true, subtree: true });
 })();`;
+
+// Aynı çerçeve için kurallar sırayla hesaplanır; bekleyen yeni öğeler bir sonrakine eklenir.
+const domBusy = new WeakMap(); // frame → { running, pending }
 
 async function cosmeticsForDom(frame, dom) {
     if (!rawEngine || !dom) return;
+    const st = domBusy.get(frame) || { running: false, pending: null };
+    domBusy.set(frame, st);
+    if (st.running) {
+        st.pending = st.pending
+            ? { classes: [...st.pending.classes, ...(dom.classes || [])], ids: [...st.pending.ids, ...(dom.ids || [])], hrefs: [] }
+            : { classes: [...(dom.classes || [])], ids: [...(dom.ids || [])], hrefs: [] };
+        return;
+    }
+    st.running = true;
+    try {
+        await applyDomCosmetics(frame, dom);
+        while (st.pending) {
+            const next = st.pending;
+            st.pending = null;
+            await applyDomCosmetics(frame, next);
+        }
+    } finally {
+        st.running = false;
+    }
+}
+
+async function applyDomCosmetics(frame, dom) {
     let url;
     try {
         url = frame.url();
@@ -550,11 +577,12 @@ export async function disarmOverlays(page) {
             };
             let n = 0;
             for (const el of document.querySelectorAll('body *')) {
+                // Önce boyut (ucuz), sonra stil: büyük sayfalarda her öğenin stilini okumak yavaş.
+                const r = el.getBoundingClientRect();
+                if (r.width * r.height < vw * vh * 0.35) continue;
                 const cs = getComputedStyle(el);
                 if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
                 if (cs.pointerEvents === 'none' || cs.display === 'none' || cs.visibility === 'hidden') continue;
-                const r = el.getBoundingClientRect();
-                if (r.width * r.height < vw * vh * 0.35) continue;
                 if (el.querySelector('video, iframe, canvas, img[src]')) continue;
                 // Giriş formu, düğme ya da bağlantı içeren katman dokunulmaz yapılmaz (yazısız olsa da).
                 if (el.matches('form, [role="dialog"]') || el.querySelector('input, textarea, select, button, a[href], form, [role="button"], [contenteditable="true"]')) continue;

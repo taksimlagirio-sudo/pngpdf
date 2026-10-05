@@ -70,7 +70,8 @@ export function effectiveSaveMode(mode = getPrefs().save) {
  * - disk: dosya konumu sorulur, veri doğrudan diske yazılır (bellek şişmez). Kullanıcı hareketi
  *   gerektirdiği için tıklama işleyicisinden, başka bir await'ten önce çağrılmalı.
  * - downloads: bellekte biriktirilir, bitince İndirilenler'e kaydedilir.
- * - gallery: bellekte biriktirilir; bitince "Galeriye" düğmesi sistem paylaşım sayfasını açar.
+ * - gallery: downloads gibi kendiliğinden İndirilenler'e kaydedilir (telefonun galerisi bu klasörü
+ *   gösterir); ayrıca "Galeriye" ile paylaşım sayfasından başka bir uygulamaya da gönderilebilir.
  * Bellekte biriken parçalar belirli aralıklarla Blob'a katlanır: tarayıcı büyük Blob'ları diske
  * taşıyabildiği için uzun kayıtlarda JS belleği dolmaz.
  */
@@ -115,7 +116,7 @@ export async function createSink(name, { mode = effectiveSaveMode(), mime = 'app
         pendingBytes = 0;
     };
     return {
-        mode: mode === 'gallery' ? 'gallery' : 'downloads',
+        mode: mode === 'gallery' ? 'gallery' : mode === 'memory' ? 'memory' : 'downloads',
         name,
         async write(chunk) {
             if (!head) {
@@ -135,7 +136,9 @@ export async function createSink(name, { mode = effectiveSaveMode(), mime = 'app
             const blob = new Blob(head ? [head, ...parts] : parts, { type: mime });
             parts = [];
             head = null;
-            if (mode !== 'gallery') saveBlob(blob, name);
+            // Galeri seçiliyken de dokunmayı beklemeden kaydedilir; "memory" yalnızca bellekte tutar
+            // (ara dosyalar: altyazı gömme, sesi ayırma).
+            if (mode !== 'memory') saveBlob(blob, name);
             return blob;
         },
         async abort() {
@@ -1138,7 +1141,7 @@ function renderFinished(job) {
         subCls = 'ok';
         btns.push(btn(job, 'save', 'Kaydet', 'primary'));
     } else if (job.status === 'done') {
-        if (job.hooks.save || (job.blob && !job.saved && job.saveMode === 'gallery')) {
+        if (job.hooks.save && !job.saved) {
             subCls = 'ok';
             if (job.blob && canShareFiles) btns.push(btn(job, 'share', 'Galeriye', 'primary'));
             btns.push(btn(job, 'save', 'Kaydet', job.blob && canShareFiles ? '' : 'primary'));
@@ -1199,7 +1202,7 @@ function renderAside(list) {
         html += '<div class="sec-label" style="padding-top:8px">Geçmiş</div>';
         html += finished.map((job) => {
             let right;
-            if (job.status === 'pending-save' || (job.status === 'done' && (job.hooks.save || (job.blob && !job.saved && job.saveMode === 'gallery')))) {
+            if (job.status === 'pending-save' || (job.status === 'done' && job.hooks.save && !job.saved)) {
                 right = btn(job, job.blob && canShareFiles && !job.hooks.save ? 'share' : 'save', job.blob && canShareFiles && !job.hooks.save ? 'Galeriye' : 'Kaydet', 'primary');
             } else if (job.status === 'done') {
                 right = `<span style="font-size:12px;font-weight:600;color:var(--ok)">${job.bytes ? formatSize(job.bytes) + ' ' : ''}✓</span>`;

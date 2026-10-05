@@ -49,7 +49,7 @@ import { findFfmpeg, analyzeAudio, createAudioJobs } from './audio.mjs';
 import { createInbox } from './inbox.mjs';
 import { mergeFmp4 } from './fmp4.mjs';
 import qrcode from './vendor/qrcode.mjs';
-import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd, installPageGuards, disarmOverlays, guardSession } from './adblock.mjs';
+import { installRouting, isAdRequest, warmAdblock, guardNavigation, adblockStatus, countVideoAd, installPageGuards, disarmOverlays } from './adblock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '0.4.0';
@@ -254,11 +254,15 @@ async function openRecordedPage(pageUrl, contextOptions, { interactive = false }
     const browser = await getBrowser();
     const context = logins.attach(await browser.newContext({ storageState: logins.storageState(), bypassCSP: true, ...contextOptions }));
     await context.addInitScript(CODEC_SPOOF);
-    // Reklamlar engellenir: reklam videoları listeye düşmesin, oynatıcı reklamla oyalanmasın.
+    // Otomatik taramada reklamlar engellenir: reklam videoları listeye düşmesin, oynatıcı reklamla
+    // oyalanmasın. "Kendim dokunayım" ekranında (interactive) hiçbir şey engellenmez ve sayfaya
+    // eklenmez: sayfa olduğu gibi, normal bir tarayıcıdaki hızıyla davranır.
     const state0 = { blockedAds: 0 };
     const blocked = new Set(); // engellenen reklam istekleri "başarısız istek" diye listeye girmesin
-    await installRouting(context, { onBlocked: (url) => { state0.blockedAds++; blocked.add(url); } });
-    await installPageGuards(context, { allowPopups: interactive });
+    if (!interactive) {
+        await installRouting(context, { onBlocked: (url) => { state0.blockedAds++; blocked.add(url); } });
+        await installPageGuards(context);
+    }
     const page = await context.newPage();
     // Tıklamanın açtığı reklam pencereleri hemen kapatılsın (etkileşimli oturum kendisi karar verir).
     if (!interactive) context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
@@ -499,6 +503,9 @@ async function closeSession(id) {
     const session = sessions.get(id);
     if (!session) return;
     sessions.delete(id);
+    clearTimeout(session.saveTimer);
+    for (const send of session.viewers || []) send.end();
+    if (session.cast) session.cast.detach().catch(() => {});
     cookieJar.add(await session.context.cookies().catch(() => []));
     await logins.save(session.context);
     await session.context.close().catch(() => {});
@@ -520,23 +527,17 @@ async function openSession(pageUrl) {
     const { context, page, state } = await openRecordedPage(pageUrl, {
         userAgent: MOBILE_UA, viewport: SESSION_VIEWPORT, deviceScaleFactor: 1.5, isMobile: true, hasTouch: true
     }, { interactive: true });
-    // page: ekranda gösterilen sayfa; main: asıl sayfa. Giriş penceresi açılınca ekran ona geçer,
-    // pencere kapanınca (giriş bitince) asıl sayfaya dönülür.
-    const session = { id: randomBytes(12).toString('hex'), context, page, main: page, state, created: Date.now(), lastUsed: Date.now() };
-    guardSession(page, { onReturn: () => { state.blockedAds = (state.blockedAds || 0) + 1; } });
+    // page: ekranda gösterilen sayfa; main: asıl sayfa. Sayfa yeni pencere açınca (giriş penceresi,
+    // yeni sekme) ekran ona geçer; pencere kapanınca (ya da ondan Geri ile çıkılınca) önceki sayfaya dönülür.
+    const session = { id: randomBytes(12).toString('hex'), context, page, main: page, state, created: Date.now(), lastUsed: Date.now(),
+        viewers: new Set(), frame: null };
     context.on('page', async (popup) => {
         if (popup === page) return;
-        await popup.waitForURL((u) => !/^about:/i.test(String(u)), { timeout: 5000 }).catch(() => {});
-        const url = popup.url();
-        if (/^about:/i.test(url) || await isAdRequest(url, page.url(), 'document')) {
-            state.blockedAds = (state.blockedAds || 0) + 1;
-            return popup.close().catch(() => {});
-        }
         await popup.setViewportSize(SESSION_VIEWPORT).catch(() => {});
         const previous = session.page;
-        session.page = popup;
+        setActivePage(session, popup);
         popup.on('close', () => {
-            if (session.page === popup) session.page = previous.isClosed() ? session.main : previous;
+            if (session.page === popup) setActivePage(session, previous.isClosed() ? session.main : previous);
         });
     });
     sessions.set(session.id, session);
@@ -549,13 +550,59 @@ async function openSession(pageUrl) {
             throw new Error(`Sayfa açılamadı: ${err.message.split('\n')[0]}`);
         }
     }
+    startCast(session).catch(() => {});
     return session;
 }
 
 /** Gösterilen sayfa kapandıysa (giriş penceresi işini bitirdi) asıl sayfaya dönülür. */
 function activePage(session) {
-    if (session.page.isClosed()) session.page = session.main;
+    if (session.page.isClosed()) setActivePage(session, session.main);
     return session.page;
+}
+
+function setActivePage(session, page) {
+    session.page = page;
+    startCast(session).catch(() => {});
+}
+
+/**
+ * Canlı görüntü: tarayıcının ekran yayını (screencast). Sayfa değiştikçe kare gelir (değişmezse hiç
+ * gelmez); kareler açık "/stream" bağlantılarına anında iletilir. Telefonu yormamak için saniyede
+ * en fazla ~12 kare.
+ */
+async function startCast(session) {
+    const page = session.page;
+    if (session.castPage === page || page.isClosed()) return;
+    session.castPage = page;
+    if (session.cast) {
+        const old = session.cast;
+        session.cast = null;
+        old.send('Page.stopScreencast').catch(() => {});
+        old.detach().catch(() => {});
+    }
+    const cdp = await session.context.newCDPSession(page);
+    if (session.castPage !== page) return cdp.detach().catch(() => {});
+    session.cast = cdp;
+    let lastAck = 0;
+    cdp.on('Page.screencastFrame', ({ data, sessionId }) => {
+        session.frame = Buffer.from(data, 'base64');
+        for (const send of session.viewers) send(session.frame);
+        const wait = Math.max(0, 80 - (Date.now() - lastAck));
+        setTimeout(() => {
+            lastAck = Date.now();
+            cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+        }, wait);
+    });
+    await cdp.send('Page.startScreencast', {
+        format: 'jpeg', quality: 60, everyNthFrame: 1,
+        maxWidth: Math.round(SESSION_VIEWPORT.width * 1.5), maxHeight: Math.round(SESSION_VIEWPORT.height * 1.5)
+    });
+}
+
+/** Girişleri art arda dokunuşlarda bir kez sakla (her saklama tüm çerezleri okur). */
+function saveLoginsSoon(session) {
+    clearTimeout(session.saveTimer);
+    session.saveTimer = setTimeout(() => logins.save(session.context).catch(() => {}), 1500);
 }
 
 async function sessionState(session) {
@@ -580,6 +627,17 @@ async function sessionAction(session, action) {
     switch (action.type) {
         case 'tap':
             await page.touchscreen.tap(fraction(action.x) * width, fraction(action.y) * height);
+            return; // sonuç canlı görüntüde görünür; beklemeye gerek yok
+        case 'wheel': {
+            // Parmakla kaydırma: parmağın altındaki öğe kaydırılır (iç listeler, kaydırmalı galeriler).
+            const dx = Math.max(-4000, Math.min(4000, Number(action.dx) || 0));
+            const dy = Math.max(-4000, Math.min(4000, Number(action.dy) || 0));
+            await page.mouse.move(fraction(action.x) * width, fraction(action.y) * height);
+            await page.mouse.wheel(dx, dy);
+            return;
+        }
+        case 'forward':
+            await page.goForward({ timeout: 10000 }).catch(() => {});
             break;
         case 'scroll': {
             const dy = Math.max(-3, Math.min(3, Number(action.dy) || 0)) * height;
@@ -595,29 +653,42 @@ async function sessionAction(session, action) {
             // Enter giriş penceresini kapatabilir (giriş bitti); kapanan sayfa hata sayılmaz.
             await page.keyboard.press(action.key).catch((err) => { if (!page.isClosed()) throw err; });
             break;
-        case 'back':
-            await page.goBack({ timeout: 10000 }).catch(() => {});
+        case 'back': {
+            const went = await page.goBack({ timeout: 10000 }).catch(() => null);
+            // Açılan pencerede geri gidilecek yer yoksa pencere kapanır, önceki sayfaya dönülür.
+            if (!went && page !== session.main) await page.close().catch(() => {});
             break;
+        }
         case 'reload':
             await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
             break;
         default:
             throw new Error('Bilinmeyen işlem');
     }
-    if (!page.isClosed()) await page.waitForTimeout(300).catch(() => {});
+    if (!page.isClosed()) await page.waitForTimeout(150).catch(() => {});
 }
 
-/** Odaktaki kutucuk: uygulama şifre kutusunda yazılanı gizler, e-postada uygun klavyeyi açar. */
+/**
+ * Odaktaki kutucuk: uygulama şifre kutusunda yazılanı gizler, e-postada uygun klavyeyi açar.
+ * Önce ana sayfaya bakılır; odak bir çerçevedeyse (giriş formu iframe'de) yalnızca o çerçeveye.
+ * Her bakış kısa süreyle sınırlı: meşgul bir reklam çerçevesi dokunuşları bekletmesin.
+ */
 async function sessionFocus(session) {
-    for (const frame of activePage(session).frames()) {
-        const focus = await frame.evaluate(() => {
-            const el = document.activeElement;
-            if (!el || el === document.body || el.tagName === 'IFRAME') return null;
-            const editable = el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName);
-            if (!editable) return null;
-            return { type: (el.getAttribute('type') || el.tagName).toLowerCase(), label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || '' };
-        }).catch(() => null);
-        if (focus) return focus;
+    const probe = () => {
+        const el = document.activeElement;
+        if (!el || el === document.body) return null;
+        if (el.tagName === 'IFRAME') return { frame: el.src || el.name || true };
+        const editable = el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName);
+        if (!editable) return null;
+        return { type: (el.getAttribute('type') || el.tagName).toLowerCase(), label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || '' };
+    };
+    const quick = (frame) => Promise.race([frame.evaluate(probe).catch(() => null), new Promise((r) => setTimeout(() => r(null), 400))]);
+    const page = activePage(session);
+    const top = await quick(page.mainFrame());
+    if (!top || !top.frame) return top;
+    for (const frame of page.mainFrame().childFrames().slice(0, 6)) {
+        const focus = await quick(frame);
+        if (focus && !focus.frame) return focus;
     }
     return null;
 }
@@ -1857,7 +1928,7 @@ const server = http.createServer(async (req, res) => {
             if ((await handleJobs(req, res, url)) !== false) return;
         }
 
-        const sessionMatch = url.pathname.match(/^\/session\/([0-9a-f]{24})(\/shot|\/action)?$/);
+        const sessionMatch = url.pathname.match(/^\/session\/([0-9a-f]{24})(\/shot|\/action|\/stream)?$/);
         if (sessionMatch) {
             const [, id, sub = ''] = sessionMatch;
             const session = sessions.get(id);
@@ -1869,15 +1940,56 @@ const server = http.createServer(async (req, res) => {
                 await closeSession(id);
                 return sendJson(res, 200, { ok: true });
             }
+            if (sub === '/stream' && req.method === 'GET') {
+                // Canlı görüntü (MJPEG): <img src> ile gösterilir, her yeni kare hemen gider.
+                res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'multipart/x-mixed-replace; boundary=kare', 'cache-control': 'no-store', connection: 'keep-alive' });
+                const send = (buf) => {
+                    res.write(`--kare\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`);
+                    res.write(buf);
+                    res.write('\r\n');
+                };
+                send.end = () => res.end();
+                if (session.frame) send(session.frame);
+                session.viewers.add(send);
+                const alive = setInterval(() => {
+                    session.lastUsed = Date.now(); // görüntü açık oldukça oturum kapanmasın
+                    if (session.frame) send(session.frame); // bazı tarayıcılar son kareyi bir sonraki gelince gösterir
+                }, 4000);
+                req.on('close', () => {
+                    clearInterval(alive);
+                    session.viewers.delete(send);
+                });
+                return;
+            }
+            if (sub === '/shot' && req.method === 'GET' && session.frame && session.castPage === session.page) {
+                res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/jpeg', 'content-length': session.frame.length, 'cache-control': 'no-store' });
+                return res.end(session.frame);
+            }
             if (sub === '/shot' && req.method === 'GET') {
-                const image = await activePage(session).screenshot({ type: 'jpeg', quality: 55, timeout: 8000 });
+                // Sayfa o an meşgulse (ağır yükleme) son görüntü verilir; ekran "yüklenemedi" diye kesilmesin.
+                let image;
+                try {
+                    image = await activePage(session).screenshot({ type: 'jpeg', quality: 55, timeout: 8000 });
+                    session.lastShot = image;
+                } catch (err) {
+                    if (!session.lastShot) throw err;
+                    image = session.lastShot;
+                }
                 res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/jpeg', 'content-length': image.length, 'cache-control': 'no-store' });
                 return res.end(image);
             }
             if (sub === '/action' && req.method === 'POST') {
-                await sessionAction(session, await readJson(req));
-                logins.save(session.context).catch(() => {}); // giriş yapıldıysa hemen saklansın
-                return sendJson(res, 200, { ...await sessionState(session), focus: await sessionFocus(session) });
+                const action = await readJson(req);
+                await sessionAction(session, action);
+                saveLoginsSoon(session); // giriş yapıldıysa saklansın (her dokunuşta değil, kısa aralıkla)
+                // Dokunuş ve kaydırma hızlı yanıtlanır (sonuç canlı görüntüde); diğerleri sayfa durumunu da döner.
+                if (action.type === 'wheel') return sendJson(res, 200, { ok: true, popup: session.page !== session.main });
+                if (action.type === 'tap') {
+                    const focus = await sessionFocus(session);
+                    return sendJson(res, 200, { ok: true, popup: session.page !== session.main, focus });
+                }
+                const focus = action.type === 'key' ? await sessionFocus(session) : undefined;
+                return sendJson(res, 200, { ...await sessionState(session), ...(focus === undefined ? {} : { focus }) });
             }
         }
 

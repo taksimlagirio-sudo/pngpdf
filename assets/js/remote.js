@@ -1,5 +1,6 @@
-// "Kendim dokunayım": sayfa kendi sunucunda açık kalır, ekran görüntüsü burada gösterilir ve
-// dokunuşlar sunucudaki sayfaya iletilir. Çerez onayı, yaş onayı, birden çok "oynat" gibi
+// "Kendim dokunayım": sayfa kendi sunucunda açık kalır, canlı görüntüsü burada gösterilir;
+// dokunuşlar ve parmakla kaydırma sunucudaki sayfaya iletilir. Bu ekranda reklam engellenmez:
+// sayfa normal bir tarayıcıdaki gibi davranır. Çerez onayı, yaş onayı, birden çok "oynat" gibi
 // otomatik geçilemeyen adımlar böyle elle geçilir; bu sırada gelen medya canlı listelenir.
 import { escapeHtml, renderApi, renderBlob, getRenderServer } from './util.js';
 import { rememberManifests } from './detect.js';
@@ -65,20 +66,20 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
                         <div class="rv-url">${escapeHtml(where)}<span class="rv-desk"> · sunucunda açık</span></div></div>
                     <div class="rv-head-btns">
                         <button class="rv-btn rv-desk" data-r="back">${icon('back')} Geri</button>
+                        <button class="rv-btn rv-desk" data-r="forward">İleri</button>
                         <button class="rv-btn rv-desk" data-r="reload">↻ Yenile</button>
                         <button class="rv-btn" data-r="close">Kapat</button>
                     </div>
                 </div>
                 <div class="rv-hint remote-status">Sayfa sunucunda açılıyor…</div>
                 <div class="remote-screen">
-                    <img alt="Sunucuda açılan sayfa">
+                    <img alt="Sunucuda açılan sayfa" draggable="false">
                     <span class="remote-dot hidden"></span>
                     <span class="rv-live hidden"><i></i>canlı</span>
                 </div>
                 <div class="remote-controls rv-mob">
-                    <button class="rv-btn" data-r="up" title="Yukarı kaydır">↑</button>
-                    <button class="rv-btn" data-r="down" title="Aşağı kaydır">↓</button>
                     <button class="rv-btn" data-r="back">${icon('back')} Geri</button>
+                    <button class="rv-btn" data-r="forward">İleri</button>
                     <button class="rv-btn" data-r="reload">↻ Yenile</button>
                 </div>
                 <div class="remote-type">
@@ -164,11 +165,7 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
             });
             if (state.items) renderFound(state.items);
             if ('focus' in state) showFocus(state.focus);
-            if (!captureId && 'popup' in state && state.popup !== inPopup) {
-                inPopup = state.popup;
-                setStatus(inPopup ? 'Giriş penceresi açıldı. Giriş bitince pencere kapanır ve sayfaya dönülür.'
-                    : 'Sayfaya dönüldü. Giriş yaptıysan bu site için saklandı.');
-            }
+            noteState(state);
         } catch (err) {
             setStatus(err.message, true);
             if (err.status === 404) stop();
@@ -203,9 +200,52 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
         }
     }
 
+    /**
+     * Canlı görüntü: sunucu her yeni kareyi hemen gönderir (MJPEG). Açılamazsa eski yönteme
+     * (yarım saniyede bir ekran görüntüsü) dönülür. Bulunan medya ayrıca 1,5 sn'de bir sorulur.
+     */
+    function startStream() {
+        const server = getRenderServer();
+        let fellBack = false;
+        const fallback = () => {
+            if (fellBack || !alive) return;
+            fellBack = true;
+            img.removeAttribute('src');
+            loop();
+        };
+        img.addEventListener('load', () => live.classList.remove('hidden'), { once: true });
+        img.addEventListener('error', fallback, { once: true });
+        img.src = `${server.url}${base()}/stream?token=${encodeURIComponent(server.token || '')}`;
+        (async () => {
+            while (alive) {
+                await new Promise((r) => setTimeout(r, 1500));
+                if (!alive || fellBack) break;
+                try {
+                    const st = await renderApi(base(), {}, 10000);
+                    renderFound(st.items || []);
+                    noteState(st);
+                } catch (err) {
+                    if (err.status === 404) {
+                        setStatus(err.message, true);
+                        return stop();
+                    }
+                }
+            }
+        })();
+    }
+
+    function noteState(state) {
+        if (!captureId && 'popup' in state && state.popup !== inPopup) {
+            inPopup = state.popup;
+            setStatus(inPopup ? 'Yeni pencere açıldı. Kapanınca ya da Geri ile önceki sayfaya dönülür.'
+                : 'Sayfaya dönüldü. Giriş yaptıysan bu site için saklandı.');
+        }
+    }
+
     function stop() {
         alive = false;
         if (kick) kick();
+        img.removeAttribute('src'); // canlı görüntü bağlantısı kapansın
     }
 
     function close() {
@@ -222,25 +262,87 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
         onClose();
     }
 
-    img.addEventListener('click', (e) => {
+    /* ---- Dokunma ve parmakla kaydırma ----
+     * Kısa dokunuş: o noktaya tıklanır. Sürükleme: parmağın altındaki öğe aynı miktarda kaydırılır
+     * (sayfa, iç liste ya da galeri); hızlı bırakılırsa kayma biraz sürer. Kaydırmalar birikip
+     * tek istekte gider, sırada beklemez. */
+    let pageW = 412;
+    let pageH = 800;
+    let drag = null;
+    const wheel = { dx: 0, dy: 0, x: 0.5, y: 0.5, busy: false };
+    async function flushWheel() {
+        if (wheel.busy) return;
+        wheel.busy = true;
+        try {
+            while (Math.abs(wheel.dx) + Math.abs(wheel.dy) >= 1 && alive && id) {
+                const body = { type: 'wheel', x: wheel.x, y: wheel.y, dx: Math.round(wheel.dx), dy: Math.round(wheel.dy) };
+                wheel.dx = 0;
+                wheel.dy = 0;
+                await renderApi(`${base()}/action`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 10000)
+                    .catch(() => {});
+            }
+        } finally {
+            wheel.busy = false;
+        }
+    }
+    const point = (e) => {
         const rect = img.getBoundingClientRect();
-        const x = (e.clientX - rect.left) / rect.width;
-        const y = (e.clientY - rect.top) / rect.height;
-        dot.style.left = `${x * 100}%`;
-        dot.style.top = `${y * 100}%`;
-        dot.classList.remove('hidden');
-        setTimeout(() => dot.classList.add('hidden'), 600);
-        action({ type: 'tap', x, y });
+        return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height, sx: pageW / rect.width, sy: pageH / rect.height };
+    };
+    img.addEventListener('pointerdown', (e) => {
+        if (e.button !== undefined && e.button > 0) return;
+        img.setPointerCapture(e.pointerId);
+        const p = point(e);
+        drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY, lt: e.timeStamp, vx: 0, vy: 0, moved: false, p };
     });
+    img.addEventListener('pointermove', (e) => {
+        if (!drag || e.pointerId !== drag.id) return;
+        if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 8) return;
+        drag.moved = true;
+        const dx = e.clientX - drag.lx;
+        const dy = e.clientY - drag.ly;
+        const dt = Math.max(1, e.timeStamp - drag.lt);
+        drag.vx = 0.7 * drag.vx + 0.3 * (dx / dt);
+        drag.vy = 0.7 * drag.vy + 0.3 * (dy / dt);
+        drag.lx = e.clientX;
+        drag.ly = e.clientY;
+        drag.lt = e.timeStamp;
+        wheel.x = drag.p.x;
+        wheel.y = drag.p.y;
+        wheel.dx -= dx * drag.p.sx;
+        wheel.dy -= dy * drag.p.sy;
+        flushWheel();
+    });
+    const endDrag = (e) => {
+        if (!drag || e.pointerId !== drag.id) return;
+        const d = drag;
+        drag = null;
+        if (!d.moved) {
+            dot.style.left = `${d.p.x * 100}%`;
+            dot.style.top = `${d.p.y * 100}%`;
+            dot.classList.remove('hidden');
+            setTimeout(() => dot.classList.add('hidden'), 500);
+            action({ type: 'tap', x: d.p.x, y: d.p.y });
+            return;
+        }
+        // Hızlı bırakılan kaydırma: parmak hızına göre biraz daha kayar.
+        if (e.type === 'pointerup' && Math.hypot(d.vx, d.vy) > 0.4) {
+            wheel.dx -= d.vx * 280 * d.p.sx;
+            wheel.dy -= d.vy * 280 * d.p.sy;
+            flushWheel();
+        }
+    };
+    img.addEventListener('pointerup', endDrag);
+    img.addEventListener('pointercancel', endDrag);
+    img.addEventListener('contextmenu', (e) => e.preventDefault());
 
     container.addEventListener('click', (e) => {
         const btn = e.target.closest('button[data-r]');
         if (!btn) return;
         const r = btn.dataset.r;
         if (r === 'close') return close();
-        if (r === 'up') return action({ type: 'scroll', dy: -0.6 });
-        if (r === 'down') return action({ type: 'scroll', dy: 0.6 });
         if (r === 'back') return action({ type: 'back' });
+        if (r === 'forward') return action({ type: 'forward' });
         if (r === 'reload') return action({ type: 'reload' });
         if (r === 'type') return sendText();
         if (r === 'key') return sendText().then(() => action({ type: 'key', key: btn.dataset.key }));
@@ -293,10 +395,12 @@ export function openRemoteView(container, pageUrl, { onPick = () => {}, shortUrl
                 return;
             }
             id = state.id;
+            pageW = state.width;
+            pageH = state.height;
             img.style.aspectRatio = `${state.width} / ${state.height}`;
-            setStatus('Dokunduğun yer sunucudaki sayfada tıklanır. Video başlayınca aşağıda çıkar.');
+            setStatus('Dokun: tıklar · Parmağını sürükle: kaydırır. Video başlayınca aşağıda çıkar.');
             renderFound(state.items);
-            loop();
+            startStream();
         } catch (err) {
             setStatus(err.message, true);
             alive = false;

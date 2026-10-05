@@ -273,7 +273,10 @@ export function initImagesTab({ toast }) {
                     job.attachResult(files[0].blob);
                     job.progress(chosen.length, chosen.length);
                     const bytes = files.reduce((n, f) => n + f.blob.size, 0);
-                    job.done(`${files.length} resim · ${formatSize(bytes)}${failed ? ` · ${failed} indirilemedi` : ''} · "Galeriye" ile hepsi birden`);
+                    // Kendiliğinden İndirilenler'e (galeride görünür); "Galeriye" ile ayrıca paylaşılabilir.
+                    files.forEach((f) => saveBlob(f.blob, f.name));
+                    job.saved = true;
+                    job.done(`${files.length} resim · ${formatSize(bytes)}${failed ? ` · ${failed} indirilemedi` : ''} · kaydedildi`);
                 }
             });
             toast(`${chosen.length} resim hazırlanıyor · İndirmeler`);
@@ -381,7 +384,8 @@ async function fetchImage(job, it, mode, save) {
     job.addBytes(blob.size);
     if (!save) return new Uint8Array(await blob.arrayBuffer());
     const saveMode = job.saveMode;
-    if (saveMode === 'downloads' || saveMode === 'disk') {
+    // Galeri seçiliyken de kendiliğinden kaydedilir (İndirilenler'deki resimler galeride görünür).
+    if (saveMode === 'downloads' || saveMode === 'disk' || saveMode === 'gallery') {
         saveBlob(blob, it.name);
         job.saved = true;
     }

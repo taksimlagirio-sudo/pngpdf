@@ -2,7 +2,8 @@
 // tarayıcıdaki kayıt parça kaçırır; sunucu (bilgisayar veya Termux) ise uyumaz. Kayıt orada sürer,
 // uygulama yalnızca durumu izler; bitince dosya sunucudan indirilir.
 import { renderApi, getRenderServer, formatSize, hms, pumpToSink, sleep } from './util.js';
-import { addJob, getJobs, createSink } from './downloads.js';
+import { addJob, getJobs, createSink, effectiveSaveMode } from './downloads.js';
+import { getPrefs } from './prefs.js';
 
 const POLL_MS = 2000;
 
@@ -263,13 +264,18 @@ export function restoreServerRecordings() {
 async function doRestore() {
     if (!canServerRecord()) return;
     const pending = pendingTransfers();
+    const lists = {};
     for (const kind of ['record', 'capture']) {
-        let items = [];
         try {
-            ({ items = [] } = await renderApi(`/${kind}`, {}, 8000));
+            lists[kind] = (await renderApi(`/${kind}`, {}, 8000)).items || [];
         } catch (_) {
-            continue; // sunucu kapalı veya eski sürüm
+            lists[kind] = null; // sunucu kapalı veya eski sürüm
         }
+    }
+    if (lists.record && lists.capture) seedAutoSaved([...lists.record, ...lists.capture]);
+    for (const kind of ['record', 'capture']) {
+        const items = lists[kind];
+        if (!items) continue;
         for (const state of items) {
             if (getJobs().some((j) => j.serverRec === state.id || j.captureId === state.id)) continue;
             // Sunucuda indirme: bitince (ya da sürüyorsa bitince) telefona alınır.
@@ -314,6 +320,74 @@ async function doRestore() {
             if (!items.some((i) => i.id === id)) setPendingTransfer(id, null);
         }
     } catch (_) { /* sunucu kapalı */ }
+}
+
+/* ---- Biten sunucu kaydı kendiliğinden telefona ----
+ * Canlı yayın kaydı ya da "aç ve kaydet" sunucuda bitince dosya hemen bu cihaza alınır (İndirilenler'e
+ * kaydedilir, galeride görünür; Kitaplık'a eklenir). Uygulama o an kapalıysa açılınca alınır.
+ * Hangi kayıtların alındığı saklanır ki her açılışta yeniden inmesin; özellik ilk açıldığında
+ * sunucuda zaten bitmiş olanlar "alınmış" sayılır (eski kayıtlar topluca inmesin). */
+const AUTO_KEY = 'indirici.autoSaved';
+let autoSaved = null;
+function loadAutoSaved() {
+    if (autoSaved) return autoSaved;
+    try {
+        const raw = localStorage.getItem(AUTO_KEY);
+        autoSaved = raw ? new Set(JSON.parse(raw)) : null;
+    } catch (_) {
+        autoSaved = new Set();
+    }
+    return autoSaved;
+}
+function markAutoSaved(id) {
+    const set = loadAutoSaved() || new Set();
+    autoSaved = set;
+    set.add(id);
+    try {
+        localStorage.setItem(AUTO_KEY, JSON.stringify([...set].slice(-400)));
+    } catch (_) { /* depolama kapalı */ }
+}
+/** İlk kez: sunucuda zaten bitmiş kayıtlar alınmış sayılır. */
+function seedAutoSaved(items) {
+    if (loadAutoSaved()) return;
+    autoSaved = new Set();
+    for (const it of items) if (it.state === 'done') autoSaved.add(it.id);
+    try {
+        localStorage.setItem(AUTO_KEY, JSON.stringify([...autoSaved]));
+    } catch (_) { /* depolama kapalı */ }
+}
+
+async function transferToDevice(job, kind, state) {
+    job.transferring = true;
+    job.bytes = 0;
+    job.samples = [];
+    job.setDetail('Sunucudan telefona alınıyor');
+    const mode = effectiveSaveMode(getPrefs().save);
+    let sink = null;
+    try {
+        const res = await fetch(fileUrl(kind, state.id), { signal: job.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // Konum seçme ekranı kullanıcı dokunuşu ister; kendiliğinden alınırken İndirilenler'e kaydedilir.
+        sink = await createSink(state.fileName || job.name, { mode: mode === 'disk' ? 'downloads' : mode, mime: res.headers.get('content-type') || 'video/mp4' });
+        let last = 0;
+        const received = await pumpToSink(res, sink, (got, total) => {
+            job.addBytes(got - last);
+            last = got;
+            job.progress(got, total);
+        }, job.signal);
+        const blob = await sink.close();
+        if (blob) job.attachResult(blob);
+        job.saved = true;
+        markAutoSaved(state.id);
+        job.done(`${baseDetail(job, state) || formatSize(received)} · telefona kaydedildi`);
+    } catch (err) {
+        if (sink) await sink.abort().catch(() => {});
+        if (job.status !== 'active') return;
+        // Alınamadıysa "Kaydet" ile elle alınabilir; bir sonraki açılışta yeniden denenir.
+        job.done(`${baseDetail(job, state)} · sunucuda hazır (telefona alınamadı: ${err.message})`);
+    } finally {
+        job.transferring = false;
+    }
 }
 
 function fileUrl(kind, id) {
@@ -394,6 +468,12 @@ function apply(job, state) {
     }
     if (state.state === 'done') {
         job.rec.endedAt = state.endedAt || Date.now();
+        if (job.transferring) return;
+        const saved = loadAutoSaved();
+        if (saved && !saved.has(state.id) && job.status === 'active') {
+            transferToDevice(job, job.serverKind || 'record', state);
+            return;
+        }
         job.done(baseDetail(job, state) + ' · sunucuda hazır');
     } else if (state.state === 'error') {
         job.rec.endedAt = state.endedAt || Date.now();
