@@ -866,7 +866,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
      */
     function audioExtractSink(realSinkFor, finalName) {
         return async () => {
-            const mem = await createSink('gecici.mp4', { mode: 'gallery', mime: 'video/mp4' });
+            const mem = await createSink('gecici.mp4', { mode: 'memory', mime: 'video/mp4' });
             return {
                 ...mem,
                 mode: 'memory',
@@ -1272,7 +1272,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     /** Gömme: dosya bellekte biter, altyazı izleri eklenir, sonra kaydedilir. */
     function embedSink(plan, saveMode) {
         return async (name, type) => {
-            const inner = await createSink(name, { mode: 'gallery', mime: type });
+            const inner = await createSink(name, { mode: 'memory', mime: type });
             return {
                 ...inner,
                 mode: saveMode,
@@ -1294,7 +1294,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                         console.warn('Altyazı gömülemedi:', err);
                         toast(`Altyazı gömülemedi: ${err.message}`);
                     }
-                    if (saveMode !== 'gallery') saveBlob(out, name);
+                    saveBlob(out, name);
                     return out;
                 }
             };
