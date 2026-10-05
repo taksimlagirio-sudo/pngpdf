@@ -795,7 +795,8 @@ function renderNow() {
     // Video başladıysa (ya da iş bittiyse) dokunma penceresi kendiliğinden kapanır.
     if (sheet) {
         const job = jobs.get(sheet.jobId);
-        if (!job || !job.needsUser) sheet.view.close();
+        // Kayıt başlayınca ekran açık kalır (üstte kaydın durumu); iş bitince/silinince kapanır.
+        if (!job || !['active', 'queued'].includes(job.status)) sheet.view.close();
     }
 
     const state = snapshot();

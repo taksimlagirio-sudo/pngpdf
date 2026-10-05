@@ -3779,3 +3779,48 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
 .lv-row b { color: var(--act); font-size: 13.5px; }
 .lv-url { flex: 1; min-width: 0; font: 500 12.5px/1.3 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lv-note { margin: 6px 10px 2px; font-size: 12.5px; line-height: 1.45; color: var(--mt); }
+
+/* Kendim dokunayım: gizli (seçilen medyaya bakılırken), yakala düğmesi, medya listesi, kayıt şeridi */
+.remote-overlay.live.lv-hidden { display: none; }
+.remote-overlay.live.cap .lv-screen { object-fit: contain; }
+.lv-fab-wrap { position: absolute; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 24px); z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+.lv-fab-wrap > * { pointer-events: auto; }
+.lv-fab-note { padding: 7px 12px; border-radius: 12px; background: rgba(20, 19, 17, .85); color: #F2EFE9; font: 500 12.5px/1.35 Onest, system-ui, sans-serif; text-align: center; }
+.lv-fab { display: inline-flex; align-items: center; gap: 10px; height: 52px; padding: 0 20px 0 16px; border-radius: 26px; border: 0; background: #D4F04A; color: #15140F; font: 700 15px/1 Onest, system-ui, sans-serif; box-shadow: 0 10px 30px rgba(0, 0, 0, .35); cursor: pointer; }
+.lv-fab .ic { width: 20px; height: 20px; }
+.lv-items { display: flex; flex-direction: column; gap: 6px; }
+.lv-item { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 6px; border-radius: 14px; background: var(--sf2); }
+.lv-th { position: relative; width: 88px; height: 52px; border-radius: 10px; border: 0; background: #2A2925 center / cover no-repeat; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.lv-th .ic { width: 20px; height: 20px; filter: drop-shadow(0 1px 3px rgba(0,0,0,.6)); }
+.lv-th-tag { position: absolute; left: 4px; top: 4px; padding: 2px 5px; border-radius: 5px; background: rgba(0, 0, 0, .65); font: 600 9.5px/1.2 var(--mono); }
+.lv-meta { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.lv-meta b { font-size: 13.5px; font-weight: 600; display: flex; gap: 6px; align-items: center; min-width: 0; }
+.lv-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-badge { flex: none; padding: 2px 6px; border-radius: 6px; background: var(--ac); color: var(--onac); font: 700 10.5px/1.2 Onest, system-ui, sans-serif; font-style: normal; }
+.lv-sub { font: 500 11.5px/1.3 var(--mono); color: var(--mt); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-dl { height: 40px; padding: 0 14px; border-radius: 12px; border: 0; background: var(--ac); color: var(--onac); font: 700 13.5px/1 Onest, system-ui, sans-serif; cursor: pointer; }
+.lv-pv-box { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; }
+.lv-pv { width: 100%; max-height: 40vh; border-radius: 10px; background: #000; }
+.lv-pv-err { font-size: 12px; color: var(--mt); }
+.lv-wait { text-align: center; }
+.lv-capture { display: flex; gap: 12px; align-items: flex-start; margin-top: 6px; padding: 12px; border-radius: 14px; border: 0; background: var(--sf2); color: var(--tx); text-align: left; cursor: pointer; }
+.lv-capture > span:last-child { display: flex; flex-direction: column; gap: 4px; }
+.lv-capture b { font-size: 14px; }
+.lv-capture small { font-size: 12.5px; color: var(--mt); line-height: 1.45; }
+.lv-cap-ic { flex: none; width: 34px; height: 34px; border-radius: 10px; background: var(--ers); color: var(--er); display: flex; align-items: center; justify-content: center; }
+.lv-cap-ic .ic { width: 18px; height: 18px; }
+.lv-back-btn { height: 48px; margin-top: 6px; border-radius: 14px; border: 1px solid var(--ln); background: none; color: var(--tx); font: 600 15px/1 Onest, system-ui, sans-serif; cursor: pointer; }
+.lv-cap { position: absolute; top: calc(env(safe-area-inset-top) + 8px); left: 8px; right: 8px; z-index: 2; display: flex; flex-direction: column; gap: 8px; padding: 6px 6px 6px 14px; border-radius: 20px; background: rgba(20, 19, 17, .88); color: #F2EFE9; }
+.lv-cap.rec { padding: 10px 12px 12px 14px; }
+.lv-cap-row { display: flex; align-items: center; gap: 8px; }
+.lv-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #E5B04B; }
+.lv-cap.rec .lv-dot { background: #D93B3B; animation: rec-blink 1.2s infinite; }
+.lv-cap-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.lv-cap-t b { font-size: 13.5px; }
+.lv-cap-t small { font: 500 11.5px/1.3 Onest, system-ui, sans-serif; color: #A29D93; }
+.lv-cap.rec .lv-cap-t small { font-family: var(--mono); }
+.lv-cap-prog { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, .15); }
+.lv-cap-prog i { display: block; height: 4px; width: 0; border-radius: 2px; background: #D4F04A; }
+.lv-cap-btns { display: flex; gap: 8px; }
+.lv-cap-bg { flex: 1; height: 40px; border-radius: 12px; border: 0; background: #D4F04A; color: #15140F; font: 700 13.5px/1 Onest, system-ui, sans-serif; cursor: pointer; }
+.lv-cap-stop { height: 40px; padding: 0 14px; border-radius: 12px; border: 1px solid #3A3833; background: none; color: #F2EFE9; font: 600 13.5px/1 Onest, system-ui, sans-serif; cursor: pointer; }

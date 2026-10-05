@@ -91,7 +91,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     if (photos) photos.subscribe((snap) => { photosSnap = snap; paintPhotos(); });
     let autoHops = 0;
     let entryUrl = '';    // algılamanın başladığı adres (sayfadan videoya geçilse de)     // sayfadan medyaya otomatik geçişte sonsuz döngüyü engeller
-    let remote = null;    // açık "kendim dokunayım" oturumu
+    let remote = null;    // açık "kendim dokunayım" oturumu (medya seçilince gizlenir, geri gelince açılır)
+    let fromRemote = false; // sonuç, kendim dokunayım listesinden seçilen medyanın
     let stickyAudio = false; // "Yalnızca ses" seçimi kalite değişince de korunur
     let bulkMode = false; // toplu eklemede: önizleme/konum sorusu/uyarılar yok
     let preview = null;   // açık önizleme oynatıcısı
@@ -310,7 +311,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (site && site.method === 'remote' && canRemote()) {
             entryUrl = url;
             if (remote) remote.close();
-            remote = openRemoteOverlay(url, { onPick: (u) => analyze(u), shortUrl, onClose: () => { remote = null; } });
+            remote = openRemote(url);
             return;
         }
         if (site && site.method === 'page') return analyze(url, { noExtract: true });
@@ -523,10 +524,13 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         photosPage = page || null;
         if (!page) entryUrl = url; // "Son algılananlar"a yazılacak, kullanıcının verdiği adres
         analyzeBtn.disabled = true;
-        if (remote) {
+        // Kendim dokunayım listesinden seçildiyse oturum açık kalır (geri gelince aynı sayfa ve liste).
+        if (remote && !keepRemote) {
             remote.close();
             remote = null;
         }
+        fromRemote = Boolean(remote && keepRemote);
+        keepRemote = false;
         closePreview();
         info = null;
         resultBox.innerHTML = '';
@@ -1581,6 +1585,27 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         else setRange(a, Math.max(v, a + 1));
     }
 
+    /** Kendim dokunayım: medya seçilince ekran gizlenir, seçilen algılanır; geri gelince ekran açılır. */
+    let keepRemote = false;
+    function openRemote(url) {
+        const r = openRemoteOverlay(url, {
+            onPick: (u) => {
+                keepRemote = true;
+                analyze(u);
+            },
+            onCapture: (pageUrl) => {
+                r.close();
+                startCapture(pageUrl);
+            },
+            shortUrl,
+            onClose: () => {
+                if (remote === r) remote = null;
+                fromRemote = false;
+            }
+        });
+        return r;
+    }
+
     function goIdle() {
         closePreview();
         info = null;
@@ -1590,7 +1615,14 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         paintSuggest();
     }
     resTop.addEventListener('click', (e) => {
-        if (e.target.closest('[data-act="back"]')) goIdle();
+        if (!e.target.closest('[data-act="back"]')) return;
+        // Kendim dokunayım listesinden gelindiyse: aynı sayfaya ve aynı listeye dön.
+        if (fromRemote && remote && remote.hidden) {
+            closePreview();
+            remote.show();
+            return;
+        }
+        goIdle();
     });
 
     resultBox.addEventListener('click', async (e) => {
@@ -1675,7 +1707,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (act === 'images') return openImages(info.url, info.details.images || [], info.details.title);
         if (act === 'remote') {
             if (remote) remote.close();
-            remote = openRemoteOverlay(info.url, { onPick: (url) => analyze(url), shortUrl, onClose: () => { remote = null; } });
+            remote = openRemote(info.url);
             return;
         }
         if (act === 'variant') return pickVariant(Number(btn.dataset.i));

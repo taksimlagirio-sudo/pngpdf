@@ -34,6 +34,7 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { classify, dedupKey, isSegment } from './media.mjs';
+import { startCast, stopCast, serveStream as serveLive, liveAction, liveFocus, playingVideos } from './live.mjs';
 import { createRecorder, parsePlaylist } from './recorder.mjs';
 import { createWatcher } from './watcher.mjs';
 import { createPush } from './push.mjs';
@@ -304,15 +305,40 @@ async function openRecordedPage(pageUrl, contextOptions, { interactive = false }
         }
     };
 
-    page.on('response', (response) => {
-        const headers = response.headers();
-        const request = response.request();
-        record(response.url(), headers['content-type'] || '', Number(headers['content-length']) || 0,
-            request.headers().referer, { response, failed: response.status() >= 400 });
-    });
-    page.on('requestfailed', (request) => {
-        record(request.url(), '', 0, request.headers().referer, { failed: true });
-    });
+    // Uzantısı/türü gizlenmiş yayın listesi: "düz metin" ya da "ikili veri" diye gelen küçük
+    // yanıtların başına bakılır (#EXTM3U → HLS, <MPD → DASH). Yalnızca kendim dokunayım ekranında
+    // (kullanıcı videoyu oynatırken) ve sınırlı sayıda.
+    const AMBIGUOUS = /^(text\/plain|application\/octet-stream|binary\/octet-stream|application\/x-mpegurl|text\/html|)$/i;
+    const peeked = new Set();
+    const peek = async (response, ct, size) => {
+        const url = response.url();
+        if (peeked.size > 400 || peeked.has(url) || size > 2 * 1024 * 1024 || response.status() !== 200) return;
+        if (!['xhr', 'fetch', 'other', 'media'].includes(response.request().resourceType())) return;
+        if (/\.(js|css|json|png|jpe?g|gif|webp|svg|woff2?|ico|html?)(\?|$)/i.test(url) && !/\.jpe?g\?.*m3u|\.png\?.*m3u/i.test(url)) return;
+        peeked.add(url);
+        const body = await response.body().catch(() => null);
+        if (!body || !body.length) return;
+        const head = body.subarray(0, 64).toString('utf8').replace(/^\uFEFF/, '').trimStart();
+        const kind = head.startsWith('#EXTM3U') ? 'application/vnd.apple.mpegurl' : /^<\?xml[^>]*>\s*<MPD|^<MPD/i.test(head) ? 'application/dash+xml' : '';
+        if (kind) record(url, kind, body.length, response.request().headers().referer, { response });
+    };
+    const watch = (pg) => {
+        pg.on('response', (response) => {
+            const headers = response.headers();
+            const request = response.request();
+            const ct = (headers['content-type'] || '').split(';')[0].trim();
+            const size = Number(headers['content-length']) || 0;
+            record(response.url(), headers['content-type'] || '', size, request.headers().referer, { response, failed: response.status() >= 400 });
+            if (interactive && AMBIGUOUS.test(ct) && !classify(response.url(), ct)) peek(response, ct, size).catch(() => {});
+        });
+        pg.on('requestfailed', (request) => {
+            record(request.url(), '', 0, request.headers().referer, { failed: true });
+        });
+    };
+    watch(page);
+    // Kendim dokunayım: video yeni açılan pencerede oynasa da bulunsun.
+    if (interactive) context.on('page', (pg) => { if (pg !== page) watch(pg); });
+    state.record = record;
     return { context, page, state };
 }
 
@@ -504,8 +530,7 @@ async function closeSession(id) {
     if (!session) return;
     sessions.delete(id);
     clearTimeout(session.saveTimer);
-    for (const send of session.viewers || []) send.end();
-    if (session.cast) session.cast.detach().catch(() => {});
+    stopCast(session);
     cookieJar.add(await session.context.cookies().catch(() => []));
     await logins.save(session.context);
     await session.context.close().catch(() => {});
@@ -576,76 +601,6 @@ function setActivePage(session, page) {
     startCast(session).catch(() => {});
 }
 
-/**
- * Canlı görüntü: tarayıcının ekran yayını (screencast). Sayfa değiştikçe kare gelir (değişmezse hiç
- * gelmez); kareler açık "/stream" bağlantılarına anında iletilir. Telefonu yormamak için saniyede
- * en fazla ~12 kare.
- */
-async function startCast(session, force = false) {
-    const page = session.page;
-    if ((session.castPage === page && !force) || page.isClosed()) return;
-    session.castPage = page;
-    if (session.cast) {
-        const old = session.cast;
-        session.cast = null;
-        old.send('Page.stopScreencast').catch(() => {});
-        old.detach().catch(() => {});
-    }
-    const cdp = await session.context.newCDPSession(page);
-    if (session.castPage !== page) return cdp.detach().catch(() => {});
-    session.cast = cdp;
-    session.cdp = cdp; // dokunmatik olaylar da bu bağlantıdan gönderilir
-    let lastAck = 0;
-    // Ekran yayını kareleri (hareket sırasında akıcı ama düşük çözünürlüklü) gelir; sayfa durunca
-    // ekranın gerçek yoğunluğunda net bir kare çekilip gönderilir (yazılar telefonda keskin görünsün).
-    let settle = 0;
-    let shooting = false;
-    let movedWhileShooting = false;
-    let quietUntil = 0;
-    const sharp = async () => {
-        if (shooting || session.castPage !== page || page.isClosed() || !session.viewers.size) return;
-        shooting = true;
-        movedWhileShooting = false;
-        const image = await page.screenshot({ type: 'jpeg', quality: 70, timeout: 5000 }).catch(() => null);
-        shooting = false;
-        quietUntil = Date.now() + 600; // çekimin tetiklediği kareler net kareyi ezmesin
-        // Çekim sırasında sayfa gerçekten hareket ettiyse eski kare gönderilmez (yeni kareler zaten akıyor).
-        if (!image || movedWhileShooting || session.castPage !== page) return;
-        session.frame = image;
-        for (const send of session.viewers) send(image);
-    };
-    // Görüntüyü yeni açan da (sayfa o an duruyorsa) net kareyi alsın.
-    session.sharpen = () => {
-        clearTimeout(settle);
-        if (session.viewport.dpr > 1) settle = setTimeout(sharp, 200);
-    };
-    let lastInput = 0;
-    session.noteInput = () => { lastInput = Date.now(); };
-    cdp.on('Page.screencastFrame', ({ data, sessionId }) => {
-        // Net kare çekilirken gelen kare çekimin kendisinden olabilir: dokunuş yoksa yok sayılır.
-        const fromShot = shooting || Date.now() < quietUntil;
-        if (fromShot && Date.now() - lastInput > 300) {
-            cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
-            return;
-        }
-        if (shooting) movedWhileShooting = true;
-        session.frame = Buffer.from(data, 'base64');
-        session.frameAt = Date.now();
-        for (const send of session.viewers) send(session.frame);
-        clearTimeout(settle);
-        if (session.viewport.dpr > 1) settle = setTimeout(sharp, 350);
-        const wait = Math.max(0, 80 - (Date.now() - lastAck));
-        setTimeout(() => {
-            lastAck = Date.now();
-            cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
-        }, wait);
-    });
-    await cdp.send('Page.startScreencast', {
-        format: 'jpeg', quality: 60, everyNthFrame: 1,
-        maxWidth: Math.round(session.viewport.width * session.viewport.dpr), maxHeight: Math.round(session.viewport.height * session.viewport.dpr)
-    });
-}
-
 /** Girişleri art arda dokunuşlarda bir kez sakla (her saklama tüm çerezleri okur). */
 function saveLoginsSoon(session) {
     clearTimeout(session.saveTimer);
@@ -665,114 +620,118 @@ async function sessionState(session) {
     };
 }
 
-const SESSION_KEYS = new Set(['Enter', 'Backspace', 'Escape', 'Tab', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
-
 async function sessionAction(session, action) {
     const page = activePage(session);
-    if (session.noteInput) session.noteInput(); // bu andan sonra gelen kareler gerçek değişikliktir
-    const { width, height } = session.viewport;
-    const fraction = (value) => Math.min(1, Math.max(0, Number(value) || 0));
-    switch (action.type) {
-        case 'touch': {
-            // Parmağın kendisi: dokunma, sürükleme, savurma, iki parmakla yakınlaştırma sayfaya gerçek
-            // dokunmatik olay olarak gider; kaydırmayı ve kaymayı tarayıcının kendisi yapar.
-            const types = { start: 'touchStart', move: 'touchMove', end: 'touchEnd', cancel: 'touchCancel' };
-            const type = types[action.phase];
-            if (!type) throw new Error('Bilinmeyen dokunuş');
-            const points = (Array.isArray(action.points) ? action.points : []).slice(0, 5)
-                .map((pt, i) => ({ x: fraction(pt.x) * width, y: fraction(pt.y) * height, id: Number.isInteger(pt.id) ? pt.id : i, radiusX: 8, radiusY: 8, force: 1 }));
-            if (!session.cdp || session.castPage !== page) await startCast(session, true);
-            await session.cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' || type === 'touchCancel' ? [] : points });
-            return;
-        }
-        case 'text':
-            // Telefon klavyesinden gelen yazı (kelime önerileri, Türkçe karakterler dahil) olduğu gibi.
-            await page.keyboard.insertText(String(action.text || '').slice(0, 2000));
-            return;
-        case 'viewport': {
-            // Telefon klavyesi açılıp kapanınca ekran boyu değişir; sayfa da aynısını görsün.
-            const next = sessionViewport({ ...action, dpr: session.viewport.dpr });
-            if (next.width === width && next.height === height) return;
-            session.viewport = next;
-            for (const pg of session.context.pages()) await pg.setViewportSize({ width: next.width, height: next.height }).catch(() => {});
-            await startCast(session, true);
-            return;
-        }
-        case 'tap':
-            await page.touchscreen.tap(fraction(action.x) * width, fraction(action.y) * height);
-            return; // sonuç canlı görüntüde görünür; beklemeye gerek yok
-        case 'wheel': {
-            // Parmakla kaydırma: parmağın altındaki öğe kaydırılır (iç listeler, kaydırmalı galeriler).
-            const dx = Math.max(-4000, Math.min(4000, Number(action.dx) || 0));
-            const dy = Math.max(-4000, Math.min(4000, Number(action.dy) || 0));
-            await page.mouse.move(fraction(action.x) * width, fraction(action.y) * height);
-            await page.mouse.wheel(dx, dy);
-            return;
-        }
-        case 'forward':
-            await page.goForward({ timeout: 10000 }).catch(() => {});
-            break;
-        case 'scroll': {
-            const dy = Math.max(-3, Math.min(3, Number(action.dy) || 0)) * height;
-            await page.mouse.move(width / 2, height / 2);
-            await page.mouse.wheel(0, dy);
-            break;
-        }
-        case 'type':
-            await page.keyboard.type(String(action.text || '').slice(0, 500), { delay: 20 });
-            break;
-        case 'key':
-            if (!SESSION_KEYS.has(action.key)) throw new Error('Desteklenmeyen tuş');
-            // Enter giriş penceresini kapatabilir (giriş bitti); kapanan sayfa hata sayılmaz.
-            await page.keyboard.press(action.key).catch((err) => { if (!page.isClosed()) throw err; });
-            break;
-        case 'back': {
-            const went = await page.goBack({ timeout: 10000 }).catch(() => null);
-            // Açılan pencerede geri gidilecek yer yoksa pencere kapanır, önceki sayfaya dönülür.
-            if (!went && page !== session.main) {
-                await page.close().catch(() => {});
-                return { went: true };
-            }
-            return { went: Boolean(went) };
-        }
-        case 'reload':
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-            break;
-        default:
-            throw new Error('Bilinmeyen işlem');
+    if (action.type === 'viewport') {
+        // Telefon klavyesi açılıp kapanınca ekran boyu değişir; sayfa da aynısını görsün.
+        const next = sessionViewport({ ...action, dpr: session.viewport.dpr });
+        if (next.width === session.viewport.width && next.height === session.viewport.height) return null;
+        session.viewport = next;
+        for (const pg of session.context.pages()) await pg.setViewportSize({ width: next.width, height: next.height }).catch(() => {});
+        await startCast(session, true);
+        return null;
     }
-    if (!page.isClosed()) await page.waitForTimeout(150).catch(() => {});
+    const result = await liveAction(session, action);
+    if (!result) throw new Error('Bilinmeyen işlem');
+    // Açılan pencerede geri gidilecek yer yoksa pencere kapanır, önceki sayfaya dönülür.
+    if (action.type === 'back' && !result.went && page !== session.main) {
+        await page.close().catch(() => {});
+        return { went: true };
+    }
+    if (!['touch', 'text', 'tap', 'wheel'].includes(action.type) && !page.isClosed()) await page.waitForTimeout(150).catch(() => {});
+    return result;
+}
+
+const sessionFocus = (session) => liveFocus(activePage(session));
+
+/**
+ * "Bu videoyu yakala": sayfada oynayan videolara bakılır (tüm pencere ve çerçeveler). Doğrudan dosya
+ * adresi olanlar listeye eklenir; parça parça yükleniyorsa (blob) oynatıcının yüklediği yayın listesi
+ * zaten listededir ya da "oynatıp kaydet" önerilir.
+ */
+async function catchPlaying(session) {
+    const videos = await playingVideos(session.context);
+    for (const v of videos) {
+        if (!/^https?:/i.test(v.src)) continue;
+        const ct = /\.m3u8(\?|$)/i.test(v.src) ? 'application/vnd.apple.mpegurl' : /\.mpd(\?|$)/i.test(v.src) ? 'application/dash+xml' : 'video/mp4';
+        session.state.record(v.src, ct, 0, v.frameUrl);
+        const kind = classify(v.src, ct);
+        const it = kind && session.state.found.get(dedupKey(v.src, kind));
+        if (it) {
+            it.manual = true; // oynayan video: listeden elenmesin
+            it.failed = false;
+        }
+    }
+    await Promise.all(session.state.pending.splice(0));
+    const playing = videos.filter((v) => v.time > 0 || !v.paused);
+    return {
+        items: foundItems(session.state),
+        playing: playing.slice(0, 5).map((v) => ({ src: /^blob:/i.test(v.src) ? 'blob' : v.src, time: v.time, duration: v.duration, live: v.live, w: v.w, h: v.h })),
+        blob: playing.some((v) => /^blob:/i.test(v.src)),
+        pageUrl: activePage(session).url()
+    };
 }
 
 /**
- * Odaktaki kutucuk: uygulama şifre kutusunda yazılanı gizler, e-postada uygun klavyeyi açar.
- * Önce ana sayfaya bakılır; odak bir çerçevedeyse (giriş formu iframe'de) yalnızca o çerçeveye.
- * Her bakış kısa süreyle sınırlı: meşgul bir reklam çerçevesi dokunuşları bekletmesin.
+ * Önizleme: medyanın bir karesi (küçük resim), süresi ve çözünürlüğü sunucudaki ffmpeg ile, sayfanın
+ * oturumuyla (çerez, Referer) alınır. ffmpeg yoksa yalnızca bilinenler döner.
  */
-async function sessionFocus(session) {
-    const probe = () => {
-        const el = document.activeElement;
-        if (!el || el === document.body) return null;
-        if (el.tagName === 'IFRAME') return { frame: el.src || el.name || true };
-        const editable = el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName);
-        if (!editable) return null;
-        return { type: (el.getAttribute('type') || el.tagName).toLowerCase(), label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || '' };
-    };
-    const quick = (frame) => Promise.race([frame.evaluate(probe).catch(() => null), new Promise((r) => setTimeout(() => r(null), 400))]);
-    const page = activePage(session);
-    const top = await quick(page.mainFrame());
-    if (!top || !top.frame) return top;
-    for (const frame of page.mainFrame().childFrames().slice(0, 6)) {
-        const focus = await quick(frame);
-        if (focus && !focus.frame) return focus;
-    }
-    return null;
+async function probeMedia(session, url) {
+    session.probes = session.probes || new Map();
+    if (session.probes.has(url)) return session.probes.get(url);
+    const job = (async () => {
+        let target;
+        try {
+            target = new URL(url);
+            if (!/^https?:$/.test(target.protocol)) throw new Error();
+            await assertPublicTarget(target); // yerel ağ adreslerine ffmpeg ile gidilmesin
+        } catch (_) {
+            return { error: 'Geçersiz adres' };
+        }
+        const tool = await findFfmpeg();
+        if (!tool) return { error: 'Sunucuda ffmpeg yok' };
+        const item = [...session.state.found.values()].find((i) => i.url === url) || {};
+        const cookies = await session.context.cookies(url).catch(() => []);
+        const headers = [`Referer: ${item.referer || session.main.url()}`, cookies.length ? `Cookie: ${cookies.map((c) => `${c.name}=${c.value}`).join('; ')}` : '']
+            .filter(Boolean).map((l) => l + '\r\n').join('');
+        // Uzantısı gizlenmiş yayın listesi (.txt, .jpg...) için ffmpeg'in uzantı denetimi gevşetilir.
+        // (extension_picky ffmpeg 7'de geldi; eskisinde bilinmeyen seçenek hata verir.)
+        const major = Number(String(tool.version || '').replace(/^n/, '').split('.')[0]) || 0;
+        const hls = item.kind === 'hls' ? ['-f', 'hls', '-allowed_extensions', 'ALL', ...(major >= 7 ? ['-extension_picky', '0'] : [])] : [];
+        const args = ['-hide_banner', '-nostdin', '-user_agent', MOBILE_UA, '-headers', headers, '-rw_timeout', '15000000',
+            ...hls, '-ss', '3', '-i', url, '-frames:v', '1', '-vf', 'scale=320:-2', '-f', 'image2', '-c:v', 'mjpeg', '-q:v', '6', 'pipe:1'];
+        return new Promise((resolve) => {
+            const child = spawn(tool.cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+            const out = [];
+            let err = '';
+            const timer = setTimeout(() => child.kill('SIGKILL'), 25000);
+            child.stdout.on('data', (d) => out.push(d));
+            child.stderr.on('data', (d) => { if (err.length < 20000) err += d; });
+            child.on('error', () => resolve({ error: 'ffmpeg çalışmadı' }));
+            child.on('close', () => {
+                clearTimeout(timer);
+                const dur = /Duration: (\d+):(\d+):([\d.]+)/.exec(err);
+                const res = /Video:.*?\s(\d{2,5})x(\d{2,5})[\s,]/.exec(err);
+                const jpeg = Buffer.concat(out);
+                resolve({
+                    thumb: jpeg.length ? `data:image/jpeg;base64,${jpeg.toString('base64')}` : '',
+                    duration: dur ? Number(dur[1]) * 3600 + Number(dur[2]) * 60 + Number(dur[3]) : 0,
+                    width: res ? Number(res[1]) : 0,
+                    height: res ? Number(res[2]) : 0,
+                    error: jpeg.length || dur ? '' : (err.trim().split('\n').pop() || 'açılamadı').slice(0, 160)
+                });
+            });
+        });
+    })();
+    session.probes.set(url, job);
+    return job;
 }
 
 // HLS playlist'iyle aynı klasördeki .mp4 adlı fMP4 parçaları ayrı video gibi listelenmesin.
 function dropHlsSiblings(items) {
     const dirs = new Set(items.filter((i) => i.kind === 'hls').map((i) => dirOf(i.url)));
-    return items.filter((i) => i.kind !== 'video' || !dirs.has(dirOf(i.url)));
+    // Elle yakalanan (oynayan) video hiç elenmez; diğerlerinden yalnızca parça gibi görünenler (.mp4/.m4v).
+    return items.filter((i) => i.kind !== 'video' || i.manual || !/\.(mp4|m4v)(\?|$)/i.test(i.url) || !dirs.has(dirOf(i.url)));
 }
 
 function dirOf(url) {
@@ -1763,7 +1722,7 @@ async function handleJobs(req, res, url) {
             return sendJson(res, 200, await manager.start({ ...(await readJson(req)), sameDevice }));
         }
     }
-    const match = url.pathname.match(/^\/(?:record|capture)\/([0-9a-f]{24})(\/stop|\/file|\/shot|\/action)?$/);
+    const match = url.pathname.match(/^\/(?:record|capture)\/([0-9a-f]{24})(\/stop|\/file|\/shot|\/action|\/stream)?$/);
     if (!match) return false;
     const [, id, sub = ''] = match;
     if (sub === '' && req.method === 'GET') {
@@ -1782,6 +1741,10 @@ async function handleJobs(req, res, url) {
         if (!image) return sendJson(res, 404, { error: 'Kayıt sayfası kapalı' });
         res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/jpeg', 'content-length': image.length, 'cache-control': 'no-store' });
         return res.end(image);
+    }
+    if (kind === 'capture' && sub === '/stream' && req.method === 'GET') {
+        if (!manager.stream(id, req, res, CORS_HEADERS)) return sendJson(res, 404, { error: 'Kayıt sayfası kapalı' });
+        return;
     }
     if (kind === 'capture' && sub === '/action' && req.method === 'POST') {
         return sendJson(res, 200, await manager.action(id, await readJson(req)));
@@ -2011,31 +1974,18 @@ const server = http.createServer(async (req, res) => {
             if (!session) return sendJson(res, 404, { error: 'Oturum kapanmış; sayfayı yeniden aç' });
             session.lastUsed = Date.now();
 
-            if (sub === '' && req.method === 'GET') return sendJson(res, 200, await sessionState(session));
+            if (sub === '' && req.method === 'GET') {
+                const state = await sessionState(session);
+                // ?videos=1: sayfada oynayan video var mı ("Bu videoyu yakala" düğmesi için).
+                if (url.searchParams.get('videos')) state.playing = (await playingVideos(session.context)).some((v) => v.time > 0 && !v.paused);
+                return sendJson(res, 200, state);
+            }
             if (sub === '' && req.method === 'DELETE') {
                 await closeSession(id);
                 return sendJson(res, 200, { ok: true });
             }
             if (sub === '/stream' && req.method === 'GET') {
-                // Canlı görüntü (MJPEG): <img src> ile gösterilir, her yeni kare hemen gider.
-                res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'multipart/x-mixed-replace; boundary=kare', 'cache-control': 'no-store', connection: 'keep-alive' });
-                const send = (buf) => {
-                    res.write(`--kare\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`);
-                    res.write(buf);
-                    res.write('\r\n');
-                };
-                send.end = () => res.end();
-                if (session.frame) send(session.frame);
-                session.viewers.add(send);
-                if (session.sharpen) session.sharpen();
-                const alive = setInterval(() => {
-                    session.lastUsed = Date.now(); // görüntü açık oldukça oturum kapanmasın
-                    if (session.frame) send(session.frame); // bazı tarayıcılar son kareyi bir sonraki gelince gösterir
-                }, 4000);
-                req.on('close', () => {
-                    clearInterval(alive);
-                    session.viewers.delete(send);
-                });
+                serveLive(session, req, res, CORS_HEADERS, () => { session.lastUsed = Date.now(); });
                 return;
             }
             if (sub === '/shot' && req.method === 'GET' && session.frame && session.castPage === session.page) {
@@ -2057,6 +2007,8 @@ const server = http.createServer(async (req, res) => {
             }
             if (sub === '/action' && req.method === 'POST') {
                 const action = await readJson(req);
+                if (action.type === 'catch') return sendJson(res, 200, await catchPlaying(session));
+                if (action.type === 'probe') return sendJson(res, 200, await probeMedia(session, String(action.url || '')));
                 const result = await sessionAction(session, action);
                 if (['touch', 'text', 'viewport'].includes(action.type)) {
                     // Parmak kalkınca odaktaki kutucuk sorulur: yazılacak bir yerse telefon klavyesi açılır.

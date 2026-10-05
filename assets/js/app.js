@@ -248,7 +248,8 @@ if (pairLink) {
 // sonra Algıla'ya dönülür. Algıla'da süren indirme varsa çıkmak için iki kez basmak gerekir.
 let exitArmed = 0;
 function handleBack() {
-    const layers = [...document.querySelectorAll('.remote-overlay, .sheet-backdrop, .ss-sheet')];
+    const layers = [...document.querySelectorAll('.remote-overlay:not(.lv-hidden), .sheet-backdrop, .ss-sheet')]
+        .filter((l) => !l.closest('.lv-hidden'));
     const top = layers[layers.length - 1];
     if (top) {
         if (top.matches('.remote-overlay')) {

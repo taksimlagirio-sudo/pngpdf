@@ -32,9 +32,9 @@ function pageLabel(url) {
  * katman açar. Kapatılınca katman kaldırılır.
  */
 export function openRemoteOverlay(pageUrl, options = {}) {
-    // Sayfayı kendin kullanmak: tam ekran, kendi ekranın gibi (remote-live.js). Kayıt bekleyen
-    // "dokunup başlat" ekranı (captureId) bu dosyadaki sade görünümü kullanır.
-    if (pageUrl && !options.captureId) return openLiveSession(pageUrl, options);
+    // Sayfayı kendin kullanmak ve kayıt bekleyen "kendin başlat" ekranı: tam ekran, kendi ekranın
+    // gibi (remote-live.js). Bu dosyadaki eski görünüm yalnızca yedek olarak duruyor.
+    return openLiveSession(pageUrl, options);
     const el = document.createElement('div');
     el.className = 'remote-overlay';
     document.body.appendChild(el);
