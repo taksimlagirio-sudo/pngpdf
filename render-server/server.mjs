@@ -518,22 +518,33 @@ setInterval(() => {
     }
 }, 15000).unref();
 
-async function openSession(pageUrl) {
+/** Uygulamanın gönderdiği ekran boyutu (telefonun kendi ekranı); yoksa varsayılan telefon boyu. */
+function sessionViewport(screen = {}) {
+    const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.max(lo, Math.min(hi, Math.round(Number(v)))) : d);
+    return {
+        width: clamp(screen.width, 240, 1600, SESSION_VIEWPORT.width),
+        height: clamp(screen.height, 320, 2400, SESSION_VIEWPORT.height),
+        dpr: Math.max(1, Math.min(3, Number(screen.dpr) || 1.5))
+    };
+}
+
+async function openSession(pageUrl, screen = {}) {
     // Sınır dolduysa en uzun süredir kullanılmayanı kapat (telefonda bellek kısıtlı).
     while (sessions.size >= MAX_SESSIONS) {
         const oldest = [...sessions.values()].sort((a, b) => a.lastUsed - b.lastUsed)[0];
         await closeSession(oldest.id);
     }
+    const vp = sessionViewport(screen);
     const { context, page, state } = await openRecordedPage(pageUrl, {
-        userAgent: MOBILE_UA, viewport: SESSION_VIEWPORT, deviceScaleFactor: 1.5, isMobile: true, hasTouch: true
+        userAgent: MOBILE_UA, viewport: { width: vp.width, height: vp.height }, deviceScaleFactor: vp.dpr, isMobile: true, hasTouch: true
     }, { interactive: true });
     // page: ekranda gösterilen sayfa; main: asıl sayfa. Sayfa yeni pencere açınca (giriş penceresi,
     // yeni sekme) ekran ona geçer; pencere kapanınca (ya da ondan Geri ile çıkılınca) önceki sayfaya dönülür.
     const session = { id: randomBytes(12).toString('hex'), context, page, main: page, state, created: Date.now(), lastUsed: Date.now(),
-        viewers: new Set(), frame: null };
+        viewers: new Set(), frame: null, viewport: vp };
     context.on('page', async (popup) => {
         if (popup === page) return;
-        await popup.setViewportSize(SESSION_VIEWPORT).catch(() => {});
+        await popup.setViewportSize({ width: session.viewport.width, height: session.viewport.height }).catch(() => {});
         const previous = session.page;
         setActivePage(session, popup);
         popup.on('close', () => {
@@ -570,9 +581,9 @@ function setActivePage(session, page) {
  * gelmez); kareler açık "/stream" bağlantılarına anında iletilir. Telefonu yormamak için saniyede
  * en fazla ~12 kare.
  */
-async function startCast(session) {
+async function startCast(session, force = false) {
     const page = session.page;
-    if (session.castPage === page || page.isClosed()) return;
+    if ((session.castPage === page && !force) || page.isClosed()) return;
     session.castPage = page;
     if (session.cast) {
         const old = session.cast;
@@ -583,10 +594,46 @@ async function startCast(session) {
     const cdp = await session.context.newCDPSession(page);
     if (session.castPage !== page) return cdp.detach().catch(() => {});
     session.cast = cdp;
+    session.cdp = cdp; // dokunmatik olaylar da bu bağlantıdan gönderilir
     let lastAck = 0;
+    // Ekran yayını kareleri (hareket sırasında akıcı ama düşük çözünürlüklü) gelir; sayfa durunca
+    // ekranın gerçek yoğunluğunda net bir kare çekilip gönderilir (yazılar telefonda keskin görünsün).
+    let settle = 0;
+    let shooting = false;
+    let movedWhileShooting = false;
+    let quietUntil = 0;
+    const sharp = async () => {
+        if (shooting || session.castPage !== page || page.isClosed() || !session.viewers.size) return;
+        shooting = true;
+        movedWhileShooting = false;
+        const image = await page.screenshot({ type: 'jpeg', quality: 70, timeout: 5000 }).catch(() => null);
+        shooting = false;
+        quietUntil = Date.now() + 600; // çekimin tetiklediği kareler net kareyi ezmesin
+        // Çekim sırasında sayfa gerçekten hareket ettiyse eski kare gönderilmez (yeni kareler zaten akıyor).
+        if (!image || movedWhileShooting || session.castPage !== page) return;
+        session.frame = image;
+        for (const send of session.viewers) send(image);
+    };
+    // Görüntüyü yeni açan da (sayfa o an duruyorsa) net kareyi alsın.
+    session.sharpen = () => {
+        clearTimeout(settle);
+        if (session.viewport.dpr > 1) settle = setTimeout(sharp, 200);
+    };
+    let lastInput = 0;
+    session.noteInput = () => { lastInput = Date.now(); };
     cdp.on('Page.screencastFrame', ({ data, sessionId }) => {
+        // Net kare çekilirken gelen kare çekimin kendisinden olabilir: dokunuş yoksa yok sayılır.
+        const fromShot = shooting || Date.now() < quietUntil;
+        if (fromShot && Date.now() - lastInput > 300) {
+            cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+            return;
+        }
+        if (shooting) movedWhileShooting = true;
         session.frame = Buffer.from(data, 'base64');
+        session.frameAt = Date.now();
         for (const send of session.viewers) send(session.frame);
+        clearTimeout(settle);
+        if (session.viewport.dpr > 1) settle = setTimeout(sharp, 350);
         const wait = Math.max(0, 80 - (Date.now() - lastAck));
         setTimeout(() => {
             lastAck = Date.now();
@@ -595,7 +642,7 @@ async function startCast(session) {
     });
     await cdp.send('Page.startScreencast', {
         format: 'jpeg', quality: 60, everyNthFrame: 1,
-        maxWidth: Math.round(SESSION_VIEWPORT.width * 1.5), maxHeight: Math.round(SESSION_VIEWPORT.height * 1.5)
+        maxWidth: Math.round(session.viewport.width * session.viewport.dpr), maxHeight: Math.round(session.viewport.height * session.viewport.dpr)
     });
 }
 
@@ -612,19 +659,45 @@ async function sessionState(session) {
         title: await session.page.title().catch(() => ''),
         url: session.page.url(),
         popup: session.page !== session.main, // giriş penceresi gösteriliyor
-        width: SESSION_VIEWPORT.width,
-        height: SESSION_VIEWPORT.height,
+        width: session.viewport.width,
+        height: session.viewport.height,
         items: foundItems(session.state)
     };
 }
 
-const SESSION_KEYS = new Set(['Enter', 'Backspace', 'Escape', 'Tab']);
+const SESSION_KEYS = new Set(['Enter', 'Backspace', 'Escape', 'Tab', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
 
 async function sessionAction(session, action) {
     const page = activePage(session);
-    const { width, height } = SESSION_VIEWPORT;
+    if (session.noteInput) session.noteInput(); // bu andan sonra gelen kareler gerçek değişikliktir
+    const { width, height } = session.viewport;
     const fraction = (value) => Math.min(1, Math.max(0, Number(value) || 0));
     switch (action.type) {
+        case 'touch': {
+            // Parmağın kendisi: dokunma, sürükleme, savurma, iki parmakla yakınlaştırma sayfaya gerçek
+            // dokunmatik olay olarak gider; kaydırmayı ve kaymayı tarayıcının kendisi yapar.
+            const types = { start: 'touchStart', move: 'touchMove', end: 'touchEnd', cancel: 'touchCancel' };
+            const type = types[action.phase];
+            if (!type) throw new Error('Bilinmeyen dokunuş');
+            const points = (Array.isArray(action.points) ? action.points : []).slice(0, 5)
+                .map((pt, i) => ({ x: fraction(pt.x) * width, y: fraction(pt.y) * height, id: Number.isInteger(pt.id) ? pt.id : i, radiusX: 8, radiusY: 8, force: 1 }));
+            if (!session.cdp || session.castPage !== page) await startCast(session, true);
+            await session.cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' || type === 'touchCancel' ? [] : points });
+            return;
+        }
+        case 'text':
+            // Telefon klavyesinden gelen yazı (kelime önerileri, Türkçe karakterler dahil) olduğu gibi.
+            await page.keyboard.insertText(String(action.text || '').slice(0, 2000));
+            return;
+        case 'viewport': {
+            // Telefon klavyesi açılıp kapanınca ekran boyu değişir; sayfa da aynısını görsün.
+            const next = sessionViewport({ ...action, dpr: session.viewport.dpr });
+            if (next.width === width && next.height === height) return;
+            session.viewport = next;
+            for (const pg of session.context.pages()) await pg.setViewportSize({ width: next.width, height: next.height }).catch(() => {});
+            await startCast(session, true);
+            return;
+        }
         case 'tap':
             await page.touchscreen.tap(fraction(action.x) * width, fraction(action.y) * height);
             return; // sonuç canlı görüntüde görünür; beklemeye gerek yok
@@ -656,8 +729,11 @@ async function sessionAction(session, action) {
         case 'back': {
             const went = await page.goBack({ timeout: 10000 }).catch(() => null);
             // Açılan pencerede geri gidilecek yer yoksa pencere kapanır, önceki sayfaya dönülür.
-            if (!went && page !== session.main) await page.close().catch(() => {});
-            break;
+            if (!went && page !== session.main) {
+                await page.close().catch(() => {});
+                return { went: true };
+            }
+            return { went: Boolean(went) };
         }
         case 'reload':
             await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
@@ -1920,7 +1996,7 @@ const server = http.createServer(async (req, res) => {
                 return sendJson(res, 400, { error: 'Geçerli bir url gönderin' });
             }
             await assertPublicTarget(target);
-            const session = await openSession(target.href);
+            const session = await openSession(target.href, body.screen || {});
             return sendJson(res, 200, await sessionState(session));
         }
 
@@ -1951,6 +2027,7 @@ const server = http.createServer(async (req, res) => {
                 send.end = () => res.end();
                 if (session.frame) send(session.frame);
                 session.viewers.add(send);
+                if (session.sharpen) session.sharpen();
                 const alive = setInterval(() => {
                     session.lastUsed = Date.now(); // görüntü açık oldukça oturum kapanmasın
                     if (session.frame) send(session.frame); // bazı tarayıcılar son kareyi bir sonraki gelince gösterir
@@ -1980,7 +2057,19 @@ const server = http.createServer(async (req, res) => {
             }
             if (sub === '/action' && req.method === 'POST') {
                 const action = await readJson(req);
-                await sessionAction(session, action);
+                const result = await sessionAction(session, action);
+                if (['touch', 'text', 'viewport'].includes(action.type)) {
+                    // Parmak kalkınca odaktaki kutucuk sorulur: yazılacak bir yerse telefon klavyesi açılır.
+                    if (action.type === 'touch' && action.phase === 'end') {
+                        await new Promise((r) => setTimeout(r, 120));
+                        return sendJson(res, 200, { ok: true, popup: session.page !== session.main, focus: await sessionFocus(session) });
+                    }
+                    return sendJson(res, 200, { ok: true });
+                }
+                if (action.type === 'back') {
+                    saveLoginsSoon(session);
+                    return sendJson(res, 200, { ...await sessionState(session), ...(result || {}) });
+                }
                 saveLoginsSoon(session); // giriş yapıldıysa saklansın (her dokunuşta değil, kısa aralıkla)
                 // Dokunuş ve kaydırma hızlı yanıtlanır (sonuç canlı görüntüde); diğerleri sayfa durumunu da döner.
                 if (action.type === 'wheel') return sendJson(res, 200, { ok: true, popup: session.page !== session.main });

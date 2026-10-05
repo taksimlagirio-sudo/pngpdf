@@ -5,6 +5,7 @@
 import { escapeHtml, renderApi, renderBlob, getRenderServer } from './util.js';
 import { rememberManifests } from './detect.js';
 import { icon } from './icons.js';
+import { openLiveSession } from './remote-live.js';
 
 const FRAME_DELAY_MS = 500;
 
@@ -31,6 +32,9 @@ function pageLabel(url) {
  * katman açar. Kapatılınca katman kaldırılır.
  */
 export function openRemoteOverlay(pageUrl, options = {}) {
+    // Sayfayı kendin kullanmak: tam ekran, kendi ekranın gibi (remote-live.js). Kayıt bekleyen
+    // "dokunup başlat" ekranı (captureId) bu dosyadaki sade görünümü kullanır.
+    if (pageUrl && !options.captureId) return openLiveSession(pageUrl, options);
     const el = document.createElement('div');
     el.className = 'remote-overlay';
     document.body.appendChild(el);

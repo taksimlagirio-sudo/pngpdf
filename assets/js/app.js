@@ -252,6 +252,8 @@ function handleBack() {
     const top = layers[layers.length - 1];
     if (top) {
         if (top.matches('.remote-overlay')) {
+            // Kendi geri davranışı olan ekran (Kendim dokunayım: sayfada geri gider).
+            if (typeof top.__onBack === 'function' && top.__onBack()) return true;
             // Tam ekrandaki oynatıcı önce tam ekrandan çıkar.
             const fs = top.classList.contains('fs') && top.querySelector('[data-v="fs"]');
             if (fs) {
