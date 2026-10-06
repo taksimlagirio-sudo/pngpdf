@@ -39,7 +39,7 @@ import { createRecorder, parsePlaylist } from './recorder.mjs';
 import { createWatcher } from './watcher.mjs';
 import { createPush } from './push.mjs';
 import { createCapturer } from './capture.mjs';
-import { createLoginStore } from './logins.mjs';
+import { createLoginStore, KNOWN_SITES, knownSite, sameSite, authLike } from './logins.mjs';
 import { findYtdlp, extractInfo, normalizeInfo, listEntries } from './ytdlp.mjs';
 import { findGalleryDl, extractImages } from './gallerydl.mjs';
 import { createCookieJar } from './cookiejar.mjs';
@@ -58,6 +58,32 @@ const PORT = Number(process.env.PORT) || 8787;
 // Sunucu tarayıcısında yapılan girişler saklanır (SAVE_LOGINS=0 ile kapatılır).
 const logins = createLoginStore(process.env.LOGIN_FILE || path.join(HERE, '.logins.json'),
     { enabled: process.env.SAVE_LOGINS !== '0' });
+/** Adresin hesap alan adı: www/m. atılır, bilinen sitenin takma adı (twitter.com → x.com) birleştirilir. */
+function accountDomain(input) {
+    let host = String(input || '').trim().toLowerCase();
+    try {
+        host = new URL(/^https?:\/\//.test(host) ? host : `https://${host}`).hostname;
+    } catch (_) {
+        return '';
+    }
+    if (/^[\d.]+$|^\[|^localhost$/.test(host)) return host;
+    host = host.replace(/^(www|m|mobile|web)\./, '');
+    const known = knownSite(host) || KNOWN_SITES.find((k) => [k.domain, ...(k.alias || [])].some((d) => host.endsWith('.' + d)));
+    if (known) return known.domain;
+    const parts = host.split('.');
+    const n = parts.length > 2 && parts[parts.length - 1].length === 2 && /^(com|net|org|gov|edu|co|gen|web|bel|av|k12|tv)$/.test(parts[parts.length - 2]) ? 3 : 2;
+    return parts.slice(-n).join('.');
+}
+
+/** Sonuç ekranı için: bu sayfanın sitesinin hesabı (yoksa eklenebilecek hâli). */
+function accountInfo(pageUrl) {
+    const domain = accountDomain(pageUrl);
+    if (!domain || !logins.enabled) return null;
+    const a = logins.accounts().find((x) => x.domain === domain);
+    const known = knownSite(domain);
+    return { domain, name: a ? a.name : known ? known.name : domain, status: a ? a.status : 'none' };
+}
+
 // İndirme isteklerinin çerezleri: sayfayı açan tarayıcının ve yt-dlp'nin çerezleri + kayıtlı girişler.
 const cookieJar = createCookieJar({ extra: () => logins.storageState()?.cookies || [] });
 // Varsayılan yalnızca bu cihazdan erişim; Tailscale/tünel localhost'a yönlendirir.
@@ -499,7 +525,7 @@ function traceLog(t, entry) {
 
 function publicTrace(t) {
     return { id: t.id, url: t.url, phase: t.phase, done: t.done, elapsed: (t.endedAt || Date.now()) - t.startedAt,
-        counts: t.counts, tap: t.tap, attempts: t.attempts, verdict: t.verdict, title: t.title, live: Boolean(t.page), shot: Boolean(t.lastShot || t.frame) };
+        counts: t.counts, tap: t.tap, attempts: t.attempts, verdict: t.verdict, account: t.account || null, title: t.title, live: Boolean(t.page), shot: Boolean(t.lastShot || t.frame) };
 }
 
 /** Sayfa neden video vermedi? Sayfanın son hâline ve isteklerine bakılır. */
@@ -547,6 +573,13 @@ function verdictOf(t, main, items, d) {
     return { code: 'noplayer', title: 'Sayfada oynatıcı görünmüyor', text: 'Sayfada video ya da oynatıcı çerçevesi yok. Liste veya ana sayfa olabilir; videonun kendi sayfasını dene.', action: 'page' };
 }
 
+/** Sayfa giriş istediyse o sitenin kayıtlı girişi düşmüş sayılır; sonuç ekranı hesabı önerir. */
+function noteAccount(t, pageUrl) {
+    if (!t.verdict) return;
+    if (['login', 'denied'].includes(t.verdict.code)) logins.markLost(accountDomain(pageUrl));
+    if (['login', 'denied', 'media-denied', 'nostart'].includes(t.verdict.code)) t.account = accountInfo(pageUrl);
+}
+
 async function sniff(pageUrl, waitMs, traceId = '') {
     const t = newTrace(traceId, pageUrl);
     const { context, page, state } = await openRecordedPage(pageUrl,
@@ -584,6 +617,7 @@ async function sniff(pageUrl, waitMs, traceId = '') {
             if (t) {
                 t.lastShot = await page.screenshot({ type: 'jpeg', quality: 55, timeout: 5000 }).catch(() => null);
                 t.verdict = main.status >= 400 ? verdictOf(t, main, [], null) : null;
+                noteAccount(t, pageUrl);
                 Object.assign(t, { done: true, endedAt: Date.now(), phase: main.status >= 400 ? t.verdict.title : 'Adres doğrudan medya' });
             }
             return { title: '', finalUrl, items: [], main, elapsedMs: Date.now() - started };
@@ -633,6 +667,7 @@ async function sniff(pageUrl, waitMs, traceId = '') {
     }
     if (t) {
         t.verdict = verdictOf(t, main, items, t.diag);
+        noteAccount(t, pageUrl);
         t.done = true;
         t.endedAt = Date.now();
         t.phase = !t.verdict && items.length ? `${items.length} medya bulundu` : t.verdict ? t.verdict.title : 'Bitti';
@@ -679,7 +714,7 @@ function sessionViewport(screen = {}) {
     };
 }
 
-async function openSession(pageUrl, screen = {}) {
+async function openSession(pageUrl, screen = {}, account = '') {
     // Sınır dolduysa en uzun süredir kullanılmayanı kapat (telefonda bellek kısıtlı).
     while (sessions.size >= MAX_SESSIONS) {
         const oldest = [...sessions.values()].sort((a, b) => a.lastUsed - b.lastUsed)[0];
@@ -712,8 +747,70 @@ async function openSession(pageUrl, screen = {}) {
             throw new Error(`Sayfa açılamadı: ${err.message.split('\n')[0]}`);
         }
     }
+    // "Kendim dokunayım" ile yapılan girişler de algılanır ve Hesaplar'a eklenir.
+    const auto = !account;
+    if (auto) account = accountDomain(pageUrl);
+    if (account) {
+        session.autoAccount = auto;
+        // Hesaba giriş: sayfa yüklendikten sonraki çerezler başlangıç sayılır; giriş, bir şifre kutusu
+        // görülüp kaybolunca ve sitenin çerezleri değişince algılanır.
+        session.account = account;
+        session.loginBase = new Map((await context.cookies().catch(() => [])).filter((c) => sameSite(c.domain, account)).map((c) => [c.name, c.value]));
+    }
     startCast(session).catch(() => {});
     return session;
+}
+
+/** Açık sayfalardan birinde (çerçeveler dahil) görünür bir şifre kutusu var mı? */
+async function hasPasswordField(context) {
+    for (const pg of context.pages()) {
+        for (const frame of pg.frames()) {
+            const found = await Promise.race([frame.evaluate(() => [...document.querySelectorAll('input[type="password"]')]
+                .some((i) => i.offsetWidth > 0 && i.offsetHeight > 0)).catch(() => false), new Promise((r) => setTimeout(() => r(false), 800))]);
+            if (found) return true;
+        }
+    }
+    return false;
+}
+
+/** Hesaba giriş oturumu: giriş yapıldı mı? Yapıldıysa giriş saklanır, hesap "girili" olur. */
+async function checkLogin(session) {
+    if (!session.account || session.loginDone || session.loginChecking) return;
+    session.loginChecking = true;
+    try {
+        const domain = session.account;
+        const now = Date.now();
+        const cookies = (await session.context.cookies().catch(() => []))
+            .filter((c) => sameSite(c.domain, domain) && !(c.expires > 0 && c.expires * 1000 < now));
+        const known = knownSite(domain);
+        const names = known && known.auth.length ? known.auth : null;
+        const password = await hasPasswordField(session.context);
+        if (password) {
+            session.sawPassword = true;
+            return;
+        }
+        const changed = cookies.filter((c) => session.loginBase.get(c.name) !== c.value);
+        let auth = [];
+        if (names) {
+            const present = cookies.filter((c) => names.includes(c.name));
+            if (!present.length) return;
+            const url = activePage(session).url();
+            const onLoginPage = /login|log_in|signin|sign_in|accounts\.google|\/i\/flow/i.test(url);
+            // Çerez yeni geldiyse giriş yapıldı; zaten girili açıldıysa (giriş sayfası değil) de öyle.
+            const fresh = present.some((c) => changed.includes(c));
+            if (!fresh && (session.autoAccount || onLoginPage || now - session.created < 5000)) return;
+            auth = present.map((c) => c.name);
+        } else {
+            if (!session.sawPassword || !changed.length) return;
+            auth = changed.filter((c) => authLike(c.name)).map((c) => c.name);
+            if (!auth.length) auth = changed.map((c) => c.name);
+        }
+        await logins.save(session.context);
+        logins.markLoggedIn(domain, auth, (known || {}).name);
+        session.loginDone = true;
+    } finally {
+        session.loginChecking = false;
+    }
 }
 
 /** Gösterilen sayfa kapandıysa (giriş penceresi işini bitirdi) asıl sayfaya dönülür. */
@@ -735,6 +832,7 @@ function saveLoginsSoon(session) {
 
 async function sessionState(session) {
     activePage(session);
+    await checkLogin(session).catch(() => {});
     return {
         id: session.id,
         title: await session.page.title().catch(() => ''),
@@ -742,7 +840,8 @@ async function sessionState(session) {
         popup: session.page !== session.main, // giriş penceresi gösteriliyor
         width: session.viewport.width,
         height: session.viewport.height,
-        items: foundItems(session.state)
+        items: foundItems(session.state),
+        login: session.account ? { domain: session.account, done: Boolean(session.loginDone), auto: Boolean(session.autoAccount) } : undefined
     };
 }
 
@@ -2049,6 +2148,34 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { enabled: logins.enabled, sites: logins.sites() });
         }
 
+        if (url.pathname === '/accounts' && req.method === 'GET') {
+            const accounts = logins.accounts().map(({ auth, ...a }) => a);
+            return sendJson(res, 200, {
+                enabled: logins.enabled,
+                accounts,
+                others: logins.sites().filter((s) => !accounts.some((a) => sameSite(s.domain, a.domain))),
+                known: KNOWN_SITES.map((k) => ({ domain: k.domain, name: k.name }))
+            });
+        }
+        if (url.pathname === '/accounts' && req.method === 'POST') {
+            // Hesap ekle: giriş sayfası döner; uygulama onu "Kendim dokunayım" ile açar.
+            const body = await readJson(req);
+            const domain = accountDomain(body.url || body.domain);
+            if (!domain || !domain.includes('.')) return sendJson(res, 400, { error: 'Geçerli bir site adresi yaz' });
+            const known = knownSite(domain);
+            let login = known ? known.login : `https://${domain}/`;
+            if (!known && /^https?:\/\//i.test(String(body.url || ''))) login = String(body.url);
+            await assertPublicTarget(new URL(login));
+            const a = logins.addAccount(domain, known ? known.name : domain);
+            return sendJson(res, 200, { domain, name: a.name, login });
+        }
+        if (url.pathname === '/accounts' && req.method === 'DELETE') {
+            const domain = accountDomain(url.searchParams.get('domain'));
+            if (!domain) return sendJson(res, 400, { error: 'domain gerekli' });
+            logins.clear(domain);
+            return sendJson(res, 200, { ok: true });
+        }
+
         if (url.pathname === '/sniff' && req.method === 'POST') {
             const body = await readJson(req);
             let target;
@@ -2103,7 +2230,9 @@ const server = http.createServer(async (req, res) => {
                 return sendJson(res, 400, { error: 'Geçerli bir url gönderin' });
             }
             await assertPublicTarget(target);
-            const session = await openSession(target.href, body.screen || {});
+            const account = body.account ? accountDomain(body.account) : '';
+            if (account) logins.addAccount(account, (knownSite(account) || {}).name);
+            const session = await openSession(target.href, body.screen || {}, account);
             return sendJson(res, 200, await sessionState(session));
         }
 

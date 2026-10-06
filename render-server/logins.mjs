@@ -4,12 +4,51 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** Çerezin alan adı bu siteye (ya da alt alan adına) mı ait? */
+export function sameSite(cookieDomain, domain) {
+    const h = String(cookieDomain || '').replace(/^\./, '');
+    return h === domain || h.endsWith('.' + domain) || domain.endsWith('.' + h);
+}
+
+/** Bilinen siteler: giriş sayfası ve girişi taşıyan çerezler. */
+export const KNOWN_SITES = [
+    { domain: 'instagram.com', name: 'Instagram', login: 'https://www.instagram.com/accounts/login/', auth: ['sessionid'] },
+    { domain: 'x.com', name: 'X (Twitter)', login: 'https://x.com/i/flow/login', auth: ['auth_token'], alias: ['twitter.com'] },
+    { domain: 'tiktok.com', name: 'TikTok', login: 'https://www.tiktok.com/login', auth: ['sessionid', 'sessionid_ss'] },
+    { domain: 'youtube.com', name: 'YouTube', login: 'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F', auth: ['LOGIN_INFO', 'SAPISID', '__Secure-3PSID'] },
+    { domain: 'facebook.com', name: 'Facebook', login: 'https://m.facebook.com/login/', auth: ['c_user'] },
+    { domain: 'twitch.tv', name: 'Twitch', login: 'https://www.twitch.tv/login', auth: ['auth-token'] },
+    { domain: 'reddit.com', name: 'Reddit', login: 'https://www.reddit.com/login/', auth: ['reddit_session'] },
+    { domain: 'kick.com', name: 'Kick', login: 'https://kick.com/', auth: [] },
+    { domain: 'vimeo.com', name: 'Vimeo', login: 'https://vimeo.com/log_in', auth: [] }
+];
+
+export function knownSite(domain) {
+    return KNOWN_SITES.find((k) => k.domain === domain || (k.alias || []).includes(domain)) || null;
+}
+
+/** Girişe benzeyen çerez adı (oturum, kimlik, anahtar); izleme çerezleri sayılmaz. */
+export function authLike(name) {
+    if (/^(_ga|_gid|_gat|_fbp|_fbc|__utm|_hj|_cl|_uet|_pin|_tt_|ttwid|__cf|cf_|_dd_s|AMP_|OptanonConsent|euconsent|consent)/i.test(name)) return false;
+    return /(sess|session|sid$|^sid|auth|token|login|logged|remember|jwt|user_?id|^uid|^c_user)/i.test(name);
+}
+
+function accountStatus(a, cookies) {
+    if (!a.loginAt) return 'never';
+    if (a.lostAt > a.loginAt) return 'lost';
+    const known = knownSite(a.domain);
+    const names = known && known.auth.length ? known.auth : a.auth || [];
+    if (!names.length) return cookies.length ? 'on' : 'lost';
+    return cookies.some((c) => names.includes(c.name)) ? 'on' : 'lost';
+}
+
 export function createLoginStore(file, { enabled = true } = {}) {
-    let state = { cookies: [], origins: [] };
+    let state = { cookies: [], origins: [], accounts: [] };
     try {
         const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
         if (Array.isArray(raw.cookies)) state.cookies = raw.cookies;
         if (Array.isArray(raw.origins)) state.origins = raw.origins;
+        if (Array.isArray(raw.accounts)) state.accounts = raw.accounts;
     } catch (_) { /* henüz yok ya da bozuk */ }
 
     const cookieKey = (c) => `${c.name}|${c.domain}|${c.path}`;
@@ -69,9 +108,51 @@ export function createLoginStore(file, { enabled = true } = {}) {
             for (const o of snap.origins || []) {
                 if (o.localStorage?.length) origins.set(o.origin, o);
             }
-            const next = { cookies: [...cookies.values()], origins: [...origins.values()] };
+            const next = { cookies: [...cookies.values()], origins: [...origins.values()], accounts: state.accounts };
             if (JSON.stringify(next) === JSON.stringify(state)) return;
             state = next;
+            write();
+        },
+
+        /** Bir sitenin şu an kayıtlı (süresi dolmamış) çerezleri. */
+        cookiesFor(domain) {
+            return state.cookies.filter(live).filter((c) => sameSite(c.domain, domain));
+        },
+
+        /** Hesaplar: kullanıcının giriş yaptığı (ya da girmek için eklediği) siteler, durumlarıyla. */
+        accounts() {
+            return state.accounts.map((a) => ({ ...a, status: accountStatus(a, this.cookiesFor(a.domain)) }));
+        },
+
+        account(domain) {
+            return state.accounts.find((a) => a.domain === domain) || null;
+        },
+
+        /** Hesap ekler (girişi beklenir); varsa olduğu gibi döner. */
+        addAccount(domain, name) {
+            let a = this.account(domain);
+            if (!a) {
+                a = { domain, name: name || domain, addedAt: Date.now(), loginAt: 0, lostAt: 0, auth: [] };
+                state.accounts.push(a);
+                write();
+            }
+            return a;
+        },
+
+        /** Giriş algılandı: girişi taşıyan çerezlerin adları saklanır (durum bunlarla anlaşılır). */
+        markLoggedIn(domain, authNames = [], name = '') {
+            const a = this.addAccount(domain, name);
+            a.loginAt = Date.now();
+            a.lostAt = 0;
+            if (authNames.length) a.auth = [...new Set(authNames)].slice(0, 12);
+            write();
+        },
+
+        /** Site giriş sayfası gösterdi: kayıtlı giriş artık geçmiyor. */
+        markLost(domain) {
+            const a = this.account(domain);
+            if (!a || !a.loginAt || a.lostAt > a.loginAt) return;
+            a.lostAt = Date.now();
             write();
         },
 
@@ -96,13 +177,14 @@ export function createLoginStore(file, { enabled = true } = {}) {
         clear(domain = '') {
             generation++;
             if (!domain) {
-                state = { cookies: [], origins: [] };
+                state = { cookies: [], origins: [], accounts: [] };
             } else {
                 const match = (host) => {
                     const h = host.replace(/^\./, '');
                     return h === domain || h.endsWith('.' + domain);
                 };
                 state = {
+                    accounts: state.accounts.filter((a) => a.domain !== domain),
                     cookies: state.cookies.filter((c) => !match(c.domain)),
                     origins: state.origins.filter((o) => {
                         try { return !match(new URL(o.origin).hostname); } catch (_) { return false; }

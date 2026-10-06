@@ -3891,3 +3891,62 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
 .net-tag.err { background: var(--ers); color: var(--er); }
 .net-tag.med { background: var(--acs); color: var(--act); }
 .net-u { flex: 1; min-width: 0; font: 500 11.5px/1.35 var(--mono); word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* Hesaba giriş ekranı (Kendim dokunayım, hesap modu) */
+.remote-overlay.live.acc .lv-screen { top: calc(env(safe-area-inset-top) + 60px); height: calc(100% - env(safe-area-inset-top) - 60px); }
+.lv-acc { position: absolute; left: 0; right: 0; top: 0; height: calc(env(safe-area-inset-top) + 60px); box-sizing: border-box; padding: env(safe-area-inset-top) 12px 0; z-index: 2; display: flex; align-items: center; gap: 10px; background: #121110; color: #F2EFE9; }
+.lv-acc .lv-btn { flex: none; }
+.lv-acc-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.lv-acc-t b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-acc-u { font: 500 11.5px/1 var(--mono); color: #A29D93; }
+.lv-acc-lock { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: #A29D93; }
+.lv-acc-lock .ic { width: 14px; height: 14px; }
+.lv-acc-done { position: absolute; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 16px); z-index: 3; display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 20px; background: #121110; color: #F2EFE9; box-shadow: 0 12px 40px rgba(0, 0, 0, .45); }
+.lv-acc-row { display: flex; gap: 12px; align-items: center; }
+.lv-acc-row > span:last-child { display: flex; flex-direction: column; gap: 4px; }
+.lv-acc-row b { font-size: 15.5px; }
+.lv-acc-row small { font-size: 12.5px; color: #A29D93; line-height: 1.4; }
+.lv-acc-ok { flex: none; width: 40px; height: 40px; border-radius: 50%; background: rgba(212, 240, 74, .14); color: #D4F04A; display: flex; align-items: center; justify-content: center; }
+.lv-acc-btn { height: 50px; border-radius: 14px; border: 0; background: #D4F04A; color: #15140F; font: 700 15px/1 Onest, system-ui, sans-serif; cursor: pointer; }
+
+/* Hesaplar */
+.acc-box { display: flex; flex-direction: column; gap: 14px; }
+.acc-intro { margin: 0 4px; }
+.acc-list { display: flex; flex-direction: column; border-radius: 16px; background: var(--sf); border: 1px solid var(--ln); overflow: hidden; }
+.acc-row { display: flex; gap: 12px; align-items: center; min-height: 68px; padding: 0 14px; border: 0; border-top: 1px solid var(--ln); background: none; color: var(--tx); text-align: left; font: inherit; cursor: pointer; }
+.acc-row:first-child { border-top: 0; }
+.acc-ic { flex: none; width: 40px; height: 40px; border-radius: 12px; background: var(--sf2); display: flex; align-items: center; justify-content: center; font: 700 16px/1 Onest, system-ui, sans-serif; color: var(--tx); }
+.acc-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.acc-t b { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acc-t small { font-size: 12.5px; color: var(--mt); }
+.acc-chip { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; font: 600 12px/1 Onest, system-ui, sans-serif; background: var(--sf2); color: var(--mt); }
+.acc-chip i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.acc-chip.on { background: rgba(212, 240, 74, .14); color: var(--ac); }
+.acc-chip.lost { background: rgba(229, 176, 75, .16); color: #E5B04B; }
+:root[data-theme="light"] .acc-chip.on { color: #4A5A00; background: rgba(120, 150, 0, .14); }
+:root[data-theme="light"] .acc-chip.lost { color: #8A5A00; }
+.acc-warn { display: flex; gap: 10px; align-items: center; padding: 12px 14px; border-radius: 14px; background: rgba(229, 176, 75, .10); border: 1px solid rgba(229, 176, 75, .3); font-size: 13px; line-height: 1.45; }
+.acc-warn > span:nth-child(2) { flex: 1; }
+.acc-warn-ic { flex: none; color: #E5B04B; display: flex; }
+.acc-warn button { flex: none; height: 36px; padding: 0 12px; border-radius: 10px; border: 0; background: #E5B04B; color: #15140F; font: 700 13px/1 Onest, system-ui, sans-serif; cursor: pointer; }
+.acc-add { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.acc-others { height: 44px; }
+.acc-others-list .row { gap: 8px; }
+.acc-others-list .row-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.acc-sheet-box { width: 100%; max-width: 720px; max-height: 85dvh; overflow: auto; box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; padding: 10px 16px calc(env(safe-area-inset-bottom) + 16px); border-radius: 22px 22px 0 0; background: var(--sf); }
+.acc-sheet-title { font-size: 18px; }
+.acc-known { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.acc-known button { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 6px 10px; border-radius: 14px; border: 1px solid var(--ln); background: var(--bg); color: var(--tx); font: 600 14px/1.2 Onest, system-ui, sans-serif; text-align: left; cursor: pointer; }
+.acc-known .acc-ic { width: 34px; height: 34px; border-radius: 10px; font-size: 14px; }
+.acc-form { display: flex; flex-direction: column; gap: 6px; }
+.acc-form-row { display: flex; gap: 8px; }
+.acc-form-row input { flex: 1; min-width: 0; height: 48px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--ln); background: var(--bg); color: var(--tx); font: 15px Onest, system-ui, sans-serif; }
+.acc-form-row .btn-big { flex: none; width: auto; height: 48px; padding: 0 18px; }
+.acc-out { color: var(--er); }
+.sv-acc { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 14px; border-radius: 18px; border: 1px solid var(--ln); background: var(--sf); margin-bottom: 12px; }
+.sv-acc > span:not(.acc-ic) { flex: 1 1 200px; display: flex; flex-direction: column; gap: 4px; }
+.sv-acc b { font-size: 15px; }
+.sv-acc small { font-size: 13px; color: var(--mt); line-height: 1.45; }
+.sv-acc .btn-big, .sv-acc .btn-ghost { flex: 1 1 100%; height: 48px; }
+.sv-acc.lost { border-color: rgba(229, 176, 75, .35); background: rgba(229, 176, 75, .08); }
+.sv-acc.lost .btn-big { background: #E5B04B; color: #15140F; }

@@ -52,13 +52,19 @@ function hostPath(url) {
  * @param {string} [o.captureId]                             kayıt bekleyen sayfa (kendin başlat)
  * @returns {{ close: () => void, hide: () => void, show: () => void, readonly hidden: boolean }}
  */
-export function openLiveSession(pageUrl, { onPick = () => {}, onCapture = null, onClose = () => {}, captureId = null } = {}) {
+export function openLiveSession(pageUrl, { onPick = () => {}, onCapture = null, onClose = () => {}, captureId = null, account = null, onLogin = () => {} } = {}) {
     const el = document.createElement('div');
-    el.className = `remote-overlay live${captureId ? ' cap' : ''}`;
+    // account: { domain, name } — hesaba giriş ekranı: üstte site adı, giriş algılanınca onay kartı.
+    el.className = `remote-overlay live${captureId ? ' cap' : ''}${account ? ' acc' : ''}`;
     el.innerHTML = `
         <img class="lv-screen" alt="Sunucuda açılan sayfa" draggable="false">
         <div class="lv-msg">${captureId ? 'Kayıt sayfası açılıyor…' : 'Sayfa sunucunda açılıyor…'}</div>
-        ${captureId ? `<div class="lv-cap">
+        ${account ? `<div class="lv-acc"><button class="lv-btn" data-l="close" aria-label="Kapat">${icon('close')}</button>
+            <span class="lv-acc-t"><b>${escapeHtml(account.name)} hesabına giriş</b><small class="lv-acc-u">${escapeHtml(account.domain)}</small></span>
+            <span class="lv-acc-lock">${icon('lock')}sunucunda</span></div>
+        <div class="lv-acc-done hidden"><div class="lv-acc-row"><span class="lv-acc-ok">${icon('check')}</span>
+            <span><b>Giriş algılandı</b><small>${escapeHtml(account.name)} girişin sunucunda saklandı; bu sitenin videoları artık girişli açılır.</small></span></div>
+            <button class="lv-acc-btn" data-l="close">Tamam</button></div>` : captureId ? `<div class="lv-cap">
             <div class="lv-cap-row"><i class="lv-dot"></i><span class="lv-cap-t"><b>Videoyu başlat</b><small>Başladığı an kayıt kendiliğinden başlar</small></span>
                 <button class="lv-btn" data-l="close" aria-label="Kapat">${icon('close')}</button></div>
             <div class="lv-cap-prog hidden"><i></i></div>
@@ -99,7 +105,7 @@ export function openLiveSession(pageUrl, { onPick = () => {}, onCapture = null, 
     }, timeout);
 
     // Ekran boyu: telefonun kendi ekranı. Görüntü bant genişliği için en fazla 2x yoğunluk.
-    const screen = () => ({ width: Math.round(el.clientWidth), height: Math.round(el.clientHeight), dpr: Math.min(2, window.devicePixelRatio || 1) });
+    const screen = () => ({ width: Math.round(img.clientWidth || el.clientWidth), height: Math.round(img.clientHeight || el.clientHeight), dpr: Math.min(2, window.devicePixelRatio || 1) });
 
     /* ---- Dokunmatik ---- */
     const pointers = new Map();
@@ -506,7 +512,7 @@ export function openLiveSession(pageUrl, { onPick = () => {}, onCapture = null, 
                 const state = await renderApi('/session', {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ url: pageUrl, screen: screen() })
+                    body: JSON.stringify({ url: pageUrl, screen: screen(), account: account ? account.domain : undefined })
                 }, 40000);
                 if (!alive) {
                     renderApi(`/session/${state.id}`, { method: 'DELETE' }).catch(() => {});
@@ -521,6 +527,7 @@ export function openLiveSession(pageUrl, { onPick = () => {}, onCapture = null, 
             // Bulunan medya, oynayan video ve açılan pencereler ara ara sorulur (gizliyken de: oturum açık kalsın).
             let popup = false;
             let tick = 0;
+            let loggedIn = false;
             while (alive) {
                 await new Promise((r) => setTimeout(r, 1500));
                 if (!alive) break;
@@ -534,6 +541,16 @@ export function openLiveSession(pageUrl, { onPick = () => {}, onCapture = null, 
                     const withVideos = !hidden && tick++ % 2 === 0;
                     const st = await renderApi(`${base()}${withVideos ? '?videos=1' : ''}`, {}, 10000);
                     showItems(st.items || []);
+                    if (st.login && st.login.done && !loggedIn) {
+                        loggedIn = true;
+                        if (account) {
+                            el.querySelector('.lv-acc-done').classList.remove('hidden');
+                            if (document.activeElement === kbd) kbd.blur();
+                        } else {
+                            say('Giriş kaydedildi · Ayarlar › Hesaplar', 4000);
+                        }
+                        onLogin(st.login);
+                    }
                     if (withVideos && 'playing' in st && st.playing !== playing) {
                         playing = st.playing;
                         paintFab();

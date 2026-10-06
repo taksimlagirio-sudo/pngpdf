@@ -13,6 +13,7 @@ import {
 } from './downloads.js';
 import { getPrefs, setPref, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { canRemote, openRemoteOverlay } from './remote.js';
+import { openAccountLogin } from './accounts.js';
 import { canServerRecord, startServerRecording, captureIntoJob, serverDownloadIntoJob } from './serverrec.js';
 import { attachPreview, grabFrame, probePreview } from './preview.js';
 import { subLabel, subCode, loadCues, toSrt, toVtt, shiftCues } from './subs.js';
@@ -515,11 +516,21 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         const action = v.action === 'capture' && canServerRecord() ? ['capture', 'Oynatıp kaydet']
             : v.action === 'page' ? ['focus-url', 'Videonun kendi sayfasını dene']
                 : canRemote() ? ['remote', v.code === 'login' ? 'Kendim dokunayım · giriş yap' : 'Kendim dokunayım · kendin geç'] : null;
-        slot.innerHTML = `<div class="sv-why"><span class="sv-why-ic">${icon('alert')}</span><span><b>${escapeHtml(v.title)}</b><small>${escapeHtml(v.text)}</small></span></div>
+        // Site giriş istiyorsa: kayıtlı hesabı düşmüşse yeniden giriş, hiç yoksa hesap ekleme önerilir.
+        const acc = st.account;
+        const needsLogin = ['login', 'denied'].includes(v.code);
+        const accHtml = !acc || acc.status === 'on' ? ''
+            : acc.status === 'lost' ? `<div class="sv-acc lost"><span class="acc-ic">${escapeHtml(acc.name[0].toUpperCase())}</span>
+                <span><b>${escapeHtml(acc.name)} girişin düşmüş</b><small>Bu video girişli açılıyor olabilir. Bir kez yeniden girince video kendiliğinden yeniden aranır.</small></span>
+                <button class="btn-big" data-act="acc-login" data-domain="${escapeHtml(acc.domain)}">${escapeHtml(acc.name)} hesabına yeniden gir</button></div>`
+                : `<div class="sv-acc"><span><b>${needsLogin ? 'Sayfa giriş istiyor' : 'Video üyelere açık olabilir'}</b>
+                    <small>${escapeHtml(acc.name)} hesabını ekle, bir kez gir; sonra hep girili kalır ve video yeniden aranır.</small></span>
+                <button class="btn-ghost" data-act="acc-login" data-domain="${escapeHtml(acc.domain)}">Hesap ekle</button></div>`;
+        slot.innerHTML = `${accHtml}<div class="sv-why"><span class="sv-why-ic">${icon('alert')}</span><span><b>${escapeHtml(v.title)}</b><small>${escapeHtml(v.text)}</small></span></div>
             ${st.shot ? `<div class="sv-last"><span class="sv-last-img"><img alt="Sunucudaki son görüntü" src="${escapeHtml(`${server.url}/sniff/${id}/shot?token=${encodeURIComponent(server.token || '')}`)}">
                 ${st.tap && st.tap.at ? `<i class="sv-tap" style="left:${st.tap.at.x * 100}%;top:${st.tap.at.y * 100}%"></i>` : ''}</span>
                 <span><b>Sunucudaki son görüntü</b><small>${st.tap ? `Sarı halka son basılan yer (${escapeHtml(st.tap.what || '')}). ` : ''}${st.counts.requests} istek · ${st.counts.blocked} reklam engellendi · ${st.counts.media} video</small></span></div>` : ''}
-            <div class="sv-acts">${action ? `<button class="btn-big" data-act="${action[0]}">${action[1]}</button>` : ''}
+            <div class="sv-acts">${action && !(accHtml && (needsLogin || acc.status === 'lost')) ? `<button class="btn-big" data-act="${action[0]}">${action[1]}</button>` : ''}
                 <button class="btn-ghost" data-act="net-log" data-trace="${id}">İstekleri gör</button></div>`;
     }
 
@@ -1819,6 +1830,11 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         }
         if (act === 'capture') return startCapture(btn.dataset.url || info.url);
         if (act === 'net-log') return openNetLog(btn.dataset.trace);
+        if (act === 'acc-login') {
+            const again = info && info.url;
+            // Bilinen sitede kendi giriş sayfası, diğerlerinde videonun sayfası (giriş orada istenir) açılır.
+            return openAccountLogin(again || btn.dataset.domain, { toast, onDone: () => { if (again) analyze(again); } });
+        }
         if (act === 'recent') {
             urlInput.value = btn.dataset.url;
             return start(btn.dataset.url);

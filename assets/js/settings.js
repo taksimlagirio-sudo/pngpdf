@@ -7,6 +7,7 @@ import { openBookmarklet, openServerStatus } from './servertools.js';
 import { icon } from './icons.js';
 import { libUsage } from './library.js';
 import { formatSize } from './util.js';
+import { mountAccounts } from './accounts.js';
 
 const BIG_LABELS = { ask: 'Sor', ytdlp: 'Açık', ours: 'Kapalı' };
 
@@ -65,16 +66,8 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
         </div>
 
         <div class="st-sub" data-sub="logins">
-            <div class="wz-top"><button class="back-btn" data-set="sub-back" aria-label="Geri">${icon('back')}</button><span>Sitelere girişler</span></div>
-            <div class="settings-sec-head"><span class="sec-label">Kayıtlı girişler</span>
-                <span class="status-chip" id="loginsChip">Sunucu yok</span></div>
-            <div class="server-panel">
-                <span class="hint" id="loginsText">Bir siteye "Kendim dokunayım" ekranında bir kez giriş yaparsan giriş
-                    kendi sunucunda saklanır; o sitenin videoları sonra girişli açılır ve kaydedilir.</span>
-                <div class="rows filled hidden" id="loginsList"></div>
-                <span class="hint">Yalnızca kendi sunucunda saklanır (<code>.logins.json</code>), başka yere gönderilmez.
-                    Saklamayı kapatmak için sunucuyu <code>SAVE_LOGINS=0</code> ile başlat.</span>
-            </div>
+            <div class="wz-top"><button class="back-btn" data-set="sub-back" aria-label="Geri">${icon('back')}</button><span>Hesaplar</span></div>
+            <div class="acc-box" id="accountsBox"></div>
         </div>
 
         <button class="rows filled hidden" id="installRow" style="width:100%">
@@ -146,7 +139,7 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             server ? group('Sunucu', [
                 row('bookmark', 'laptop', 'Bilgisayardan gönder', { sub: 'Tarayıcıdaki sayfayı tek tıkla yolla' }),
                 row('sub-adblock', 'alert', 'Reklam engelleme', { value: srv.blocked === null ? '' : srv.adOn ? `${srv.blocked.toLocaleString('tr-TR')} engellendi` : 'Kapalı' }),
-                row('sub-logins', 'touch', 'Sitelere girişler', { value: srv.logins === null ? '' : srv.logins ? `${srv.logins} site` : 'Yok' }),
+                row('sub-logins', 'user', 'Hesaplar', { value: !srv.logins ? '' : srv.logins.lost ? `${srv.logins.lost} giriş düştü` : srv.logins.total ? `${srv.logins.total} hesap` : 'Yok' }),
                 row('libSync', 'sync', 'Cihazlar arası eşitleme', { sub: 'Kitaplık sunucun üzerinden', toggle: Boolean(prefs.libSync) })
             ]) : '',
             group('Kitaplık', [row('storage', 'folder', 'Kitaplık ve depolama', { value: srv.usage ? formatSize(srv.usage) : '' })])
@@ -165,7 +158,10 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
         if (key === 'sub') return openSub(btn.dataset.v);
         if (key === 'sub-back') return openSub(null);
         if (key === 'sub-adblock') return openSub('adblock');
-        if (key === 'sub-logins') return openSub('logins');
+        if (key === 'sub-logins') {
+            accounts.reload();
+            return openSub('logins');
+        }
         if (key === 'setup') return openSetup(1);
         if (key === 'libSync') setPref('libSync', !prefs.libSync);
         if (key === 'storage') return openStorage();
@@ -234,38 +230,15 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             : 'Sunucu ADBLOCK=0 ile başlatılmış; reklam engelleme kapalı (açılır pencereler yine kapatılır).';
     };
 
-    /* ---- Sitelere girişler ---- */
-    const loginsChip = $('loginsChip');
-    const loginsText = $('loginsText');
-    const loginsList = $('loginsList');
-    const showLogins = (data) => {
-        const sites = (data && data.sites) || [];
-        srv.logins = data && data.enabled ? sites.length : null;
-        renderPrefs();
-        loginsChip.classList.toggle('on', Boolean(data && data.enabled));
-        loginsChip.textContent = !data ? 'Sunucu yok' : !data.enabled ? 'Kapalı' : sites.length ? `${sites.length} site` : 'Açık';
-        loginsList.classList.toggle('hidden', !sites.length);
-        loginsList.innerHTML = sites.map((site) => `
-            <div class="row"><span class="row-value" style="font-weight:400">${escapeHtml(site.domain)}</span>
-                <button class="link-btn" data-logout="${escapeHtml(site.domain)}">Çıkış yap</button></div>`).join('') +
-            (sites.length > 1 ? `<div class="row"><span></span><button class="link-btn" data-logout="">Hepsinden çıkış yap</button></div>` : '');
-    };
-    const loadLogins = (health) => {
-        if (!health) return showLogins(null);
-        if (!health.logins) {
-            loginsChip.textContent = 'Sunucu eski';
-            loginsChip.classList.remove('on');
-            loginsText.textContent = 'Sunucun girişleri saklamayan eski bir sürüm; güncelleyip (git pull) yeniden başlat.';
-            return;
+    /* ---- Hesaplar ---- */
+    const accounts = mountAccounts($('accountsBox'), {
+        toast,
+        onCount: (c) => {
+            srv.logins = c;
+            renderPrefs();
         }
-        renderApi('/logins').then(showLogins).catch(() => showLogins(null));
-    };
-    loginsList.addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-logout]');
-        if (!btn) return;
-        const domain = btn.dataset.logout;
-        renderApi(`/logins?domain=${encodeURIComponent(domain)}`, { method: 'DELETE' }).then(showLogins).catch(() => {});
     });
+    const loadLogins = () => accounts.reload();
 
     const showState = (on, text, version) => {
         srv.on = on;
