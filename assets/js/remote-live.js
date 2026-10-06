@@ -61,7 +61,8 @@ export function openLiveSession(pageUrl, { onPick = () => {}, onCapture = null, 
         <div class="lv-msg">${captureId ? 'Kayıt sayfası açılıyor…' : 'Sayfa sunucunda açılıyor…'}</div>
         ${account ? `<div class="lv-acc"><button class="lv-btn" data-l="close" aria-label="Kapat">${icon('close')}</button>
             <span class="lv-acc-t"><b>${escapeHtml(account.name)} hesabına giriş</b><small class="lv-acc-u">${escapeHtml(account.domain)}</small></span>
-            <span class="lv-acc-lock">${icon('lock')}sunucunda</span></div>
+            <span class="lv-acc-lock">${icon('lock')}sunucunda</span>
+            <button class="lv-btn" data-l="more" aria-label="Diğer">${icon('more')}</button></div>
         <div class="lv-acc-done hidden"><div class="lv-acc-row"><span class="lv-acc-ok">${icon('check')}</span>
             <span><b>Giriş algılandı</b><small>${escapeHtml(account.name)} girişin sunucunda saklandı; bu sitenin videoları artık girişli açılır.</small></span></div>
             <button class="lv-acc-btn" data-l="close">Tamam</button></div>` : captureId ? `<div class="lv-cap">
