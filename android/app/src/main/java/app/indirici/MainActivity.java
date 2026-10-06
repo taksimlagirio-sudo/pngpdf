@@ -61,6 +61,7 @@ public class MainActivity extends Activity {
     private static final String PREFS = "indirici";
     private static final String DEFAULT_SERVER = "http://127.0.0.1:8787/";
     private static final int FILE_REQUEST = 1;
+    private static final int LOGIN_REQUEST = 4;
     private static final Pattern LINK = Pattern.compile("https?://\\S+");
 
     private WebView web;
@@ -304,6 +305,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == LOGIN_REQUEST) {
+            // Telefonda yapılan girişin çerezleri uygulamaya verilir; uygulama sunucuya aktarır.
+            String cookies = resultCode == RESULT_OK && data != null ? data.getStringExtra(LoginActivity.RESULT_COOKIES) : null;
+            web.evaluateJavascript("window.__indiriciPhoneLogin&&window.__indiriciPhoneLogin("
+                    + JSONObject.quote(cookies == null ? "" : cookies) + ")", null);
+            return;
+        }
         if (requestCode == FILE_REQUEST && fileCallback != null) {
             fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
             fileCallback = null;
@@ -538,6 +546,16 @@ public class MainActivity extends Activity {
                 android.view.inputmethod.InputMethodManager imm = getSystemService(android.view.inputmethod.InputMethodManager.class);
                 if (imm != null) imm.showSoftInput(web, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
             });
+        }
+
+        /** Telefonumda gir: giriş sayfası telefonun kendi tarayıcı motorunda açılır. */
+        @JavascriptInterface
+        public void loginOnPhone(String url, String domain, String name, String authJson) {
+            ui.post(() -> startActivityForResult(new Intent(MainActivity.this, LoginActivity.class)
+                    .putExtra(LoginActivity.EXTRA_URL, url)
+                    .putExtra(LoginActivity.EXTRA_DOMAIN, domain)
+                    .putExtra(LoginActivity.EXTRA_NAME, name)
+                    .putExtra(LoginActivity.EXTRA_AUTH, authJson), LOGIN_REQUEST));
         }
 
         /** Takip bildirimlerini aç/kapat (sunucu adresi ve anahtarı uygulamadan gelir). */

@@ -37,6 +37,13 @@
             </intent-filter>
         </activity>
 
+        <!-- Telefonumda gir: sitenin giriş sayfası telefonun kendi tarayıcı motorunda. -->
+        <activity
+            android:name=".LoginActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density"
+            android:windowSoftInputMode="adjustResize" />
+
         <service
             android:name=".NotifyService"
             android:exported="false"

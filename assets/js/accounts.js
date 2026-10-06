@@ -28,6 +28,12 @@ function ago(ms) {
  * @param {string} site  site adresi ya da alan adı (instagram.com, https://site.com/login)
  */
 export async function openAccountLogin(site, { onDone = () => {}, onClose = () => {}, toast = () => {} } = {}) {
+    // APK: giriş telefonun kendi tarayıcısında da yapılabilir (robot sayılmaz); önce sorulur.
+    if (window.IndiriciAndroid && window.IndiriciAndroid.loginOnPhone) {
+        const where = await askWhere();
+        if (!where) return null;
+        if (where === 'phone') return loginOnPhone(site, { onDone, onClose, toast });
+    }
     let acc;
     try {
         acc = await renderApi('/accounts', {
@@ -46,6 +52,70 @@ export async function openAccountLogin(site, { onDone = () => {}, onClose = () =
             if (done) onDone(acc);
         }
     });
+}
+
+/** APK: girişin nerede yapılacağı (telefonda / sunucuda). */
+function askWhere() {
+    return new Promise((resolve) => {
+        const el = document.createElement('div');
+        el.className = 'sheet-backdrop acc-sheet';
+        el.innerHTML = `<div class="acc-sheet-box" role="dialog" aria-label="Nerede giriş yapılsın"><span class="cf-grip"></span>
+            <b class="acc-sheet-title">Nerede giriş yapılsın?</b>
+            <button class="acc-where" data-w="phone"><b>Telefonumda gir <i>önerilen</i></b>
+                <small>Sayfa bu telefonda açılır; "Google ile giriş" dahil normal çalışır. Bitince giriş sunucuna aktarılır.</small></button>
+            <button class="acc-where" data-w="server"><b>Sunucuda gir</b>
+                <small>Sayfa sunucudaki tarayıcıda açılır (Kendim dokunayım). Bazı siteler bunu robot sayabilir.</small></button></div>`;
+        document.body.appendChild(el);
+        requestAnimationFrame(() => el.classList.add('in'));
+        el.addEventListener('click', (e) => {
+            const b = e.target.closest('[data-w]');
+            if (e.target !== el && !b) return;
+            el.remove();
+            resolve(b ? b.dataset.w : null);
+        });
+    });
+}
+
+/** Telefonumda gir: APK giriş sayfasını açar, giriş bitince sitenin çerezlerini verir; sunucuya aktarılır. */
+async function loginOnPhone(site, { onDone, onClose, toast }) {
+    let acc;
+    try {
+        acc = await renderApi('/accounts', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: site })
+        }, 10000);
+    } catch (err) {
+        toast(err.status === 404 ? 'Sunucun eski; güncelleyip (git pull) yeniden başlat' : err.message);
+        return null;
+    }
+    window.__indiriciPhoneLogin = async (json) => {
+        window.__indiriciPhoneLogin = null;
+        let cookies = [];
+        try {
+            cookies = JSON.parse(json || '[]');
+        } catch (_) { /* boş */ }
+        if (!cookies.length) {
+            onClose();
+            return toast('Giriş tamamlanmadı');
+        }
+        try {
+            const r = await renderApi('/accounts/import', {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ text: JSON.stringify(cookies), domain: acc.domain })
+            }, 20000);
+            onClose();
+            if (r.accounts.length) {
+                toast(`${acc.name} girişi sunucuna aktarıldı`);
+                onDone(acc);
+            } else {
+                toast('Giriş algılanmadı; sayfada girişi bitirip "Bitti"ye bas');
+            }
+        } catch (err) {
+            onClose();
+            toast(err.message);
+        }
+    };
+    window.IndiriciAndroid.loginOnPhone(acc.login, acc.domain, acc.name, JSON.stringify(acc.auth || []));
+    return { close() {} };
 }
 
 /** Ayarlar › Hesaplar: liste, düşen giriş uyarısı, hesap ekle, diğer çerezler. */
@@ -115,7 +185,7 @@ export function mountAccounts(box, { toast = () => {}, onCount = () => {} } = {}
         el.innerHTML = `<div class="acc-sheet-box" role="dialog" aria-label="Hesap ekle"><span class="cf-grip"></span>
             <b class="acc-sheet-title">Hesap ekle</b>
             <div class="acc-known">${known.map((k) => `<button data-acc-site="${escapeHtml(k.domain)}"><span class="acc-ic">${escapeHtml(k.name[0])}</span>${escapeHtml(k.name)}</button>`).join('')}</div>
-            <form class="acc-form"><label class="hint" for="accUrl">Başka bir site</label>
+            <form class="acc-form" novalidate><label class="hint" for="accUrl">Başka bir site</label>
                 <div class="acc-form-row"><input id="accUrl" type="url" inputmode="url" placeholder="site.com ya da giriş sayfasının adresi" autocomplete="off">
                 <button class="btn-big" type="submit">Aç</button></div></form>
             <p class="hint">Sitenin giriş sayfası sunucunda açılır; sen girersin, sunucu girişi algılayıp saklar.</p></div>`;
