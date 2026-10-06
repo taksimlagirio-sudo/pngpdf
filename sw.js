@@ -1,5 +1,5 @@
 // Service worker: çevrimdışı kabuk + arka plan indirmeleri (Background Fetch)
-const VERSION = 'v76';
+const VERSION = 'v77';
 const SHELL_CACHE = `shell-${VERSION}`;
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -77,6 +77,28 @@ self.addEventListener('message', (event) => {
     if (event.data === 'SKIP_WAITING') self.skipWaiting();
 });
 
+/* ---- Paylaşım gelen kutusu ----
+ * Uygulama açıkken paylaşılınca Android bazen sayfayı paylaşım bilgisi olmadan yeniden açıyor. Paylaşım
+ * adresi bir kez bile istenirse bağlantı burada saklanır; sayfa hangi adresle açılırsa açılsın buradan
+ * alır. Açılış istekleri de (paylaşım kaydı için) kısa bir listede tutulur. */
+const INBOX = 'indirici-inbox';
+async function noteNavigation(url) {
+    try {
+        const cache = await caches.open(INBOX);
+        const read = async (key, fallback) => {
+            const r = await cache.match(key);
+            return r ? r.json() : fallback;
+        };
+        const log = await read('/__navlog', []);
+        log.push({ at: Date.now(), q: url.search.slice(0, 120) });
+        await cache.put('/__navlog', new Response(JSON.stringify(log.slice(-20))));
+        const p = url.searchParams;
+        const link = [p.get('url'), p.get('text'), p.get('title')].filter(Boolean)
+            .map((v) => (v.match(/https?:\/\/\S+/) || [])[0]).find(Boolean);
+        if (link) await cache.put('/__share', new Response(JSON.stringify({ url: link, at: Date.now() })));
+    } catch (_) { /* önbellek kapalı */ }
+}
+
 self.addEventListener('fetch', (event) => {
     const { request } = event;
     if (request.method !== 'GET') return;
@@ -91,6 +113,7 @@ self.addEventListener('fetch', (event) => {
     if (!isAppFile) return;
 
     if (request.mode === 'navigate') {
+        event.waitUntil(noteNavigation(url));
         event.respondWith((async () => {
             try {
                 return await fetch(request, { cache: 'no-cache' });

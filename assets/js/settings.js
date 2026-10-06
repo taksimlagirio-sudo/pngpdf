@@ -244,10 +244,15 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
     const loadLogins = () => accounts.reload();
 
     /** Paylaşım kaydı: telefonun paylaşımda ne yaptığı (sorun bildirmek için kopyalanır). */
-    function openShareLog() {
+    async function openShareLog() {
         let list = [];
         try {
             list = JSON.parse(localStorage.getItem('indirici.shareLog') || '[]');
+        } catch (_) { /* yok */ }
+        // Service worker'ın gördüğü açılış istekleri (paylaşım adresi istendi mi?).
+        try {
+            const r = await (await caches.open('indirici-inbox')).match('/__navlog');
+            if (r) list = list.concat((await r.json()).map((e) => ({ at: e.at, ev: 'sw istek', q: e.q }))).sort((a, b) => a.at - b.at);
         } catch (_) { /* yok */ }
         const time = (ms) => new Date(ms).toLocaleTimeString('tr-TR');
         const lines = list.map((e) => [time(e.at), e.ev, e.nav ? `(${e.nav})` : '', e.q || '', e.link ? '· bağlantı var' : ''].filter(Boolean).join(' '));
@@ -266,6 +271,7 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             if (!b) return;
             if (b.dataset.sl === 'clear') {
                 try { localStorage.removeItem('indirici.shareLog'); } catch (_) { /* yok */ }
+                if ('caches' in window) caches.open('indirici-inbox').then((c) => c.delete('/__navlog')).catch(() => {});
                 el.remove();
                 return;
             }
