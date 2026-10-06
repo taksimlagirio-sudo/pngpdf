@@ -95,6 +95,7 @@ export function mountAccounts(box, { toast = () => {}, onCount = () => {} } = {}
                 <span>${escapeHtml(lost[0].name)} girişi düşmüş.${lost.length > 1 ? ` (+${lost.length - 1} hesap)` : ''} Yeniden girince o sitenin videoları yine açılır.</span>
                 <button data-acc-login="${escapeHtml(lost[0].domain)}">Yeniden gir</button></div>` : ''}
             <button class="btn-big acc-add" data-acc-add>${icon('plus')}Hesap ekle</button>
+            <button class="btn-ghost acc-others" data-acc-import>Çerezleri içe aktar</button>
             ${data.others.length ? `<button class="btn-ghost acc-others" data-acc-others>${showOthers ? 'Diğer çerezleri gizle' : `Diğer çerezleri gör · ${data.others.length} site`}</button>` : ''}
             ${showOthers ? `<div class="rows filled acc-others-list">${data.others.map((s) => `<div class="row"><span class="row-label">${escapeHtml(s.domain)}</span>
                 <span class="row-value muted">${s.cookies} çerez</span><button class="link-btn" data-acc-clear="${escapeHtml(s.domain)}">Sil</button></div>`).join('')}</div>
@@ -138,6 +139,44 @@ export function mountAccounts(box, { toast = () => {}, onCount = () => {} } = {}
         });
     }
 
+    /** Giriş sunucuda reddedilirse (ör. Google): başka tarayıcıdaki girişin çerezleri buraya yapıştırılır. */
+    function openImport() {
+        const el = document.createElement('div');
+        el.className = 'sheet-backdrop acc-sheet';
+        el.innerHTML = `<div class="acc-sheet-box" role="dialog" aria-label="Çerezleri içe aktar"><span class="cf-grip"></span>
+            <b class="acc-sheet-title">Çerezleri içe aktar</b>
+            <p class="hint">Bir site (ör. Google) sunucudaki tarayıcıda girişe izin vermezse: siteye kendi tarayıcında gir,
+                çerezleri dışa aktar ve buraya ver. Telefonda Firefox + <b>Cookie-Editor</b> eklentisi (Dışa aktar › JSON ya da
+                Netscape), bilgisayarda <b>Get cookies.txt LOCALLY</b> eklentisi olur.</p>
+            <textarea class="acc-import-text" rows="6" placeholder="cookies.txt ya da JSON içeriğini yapıştır" spellcheck="false"></textarea>
+            <div class="acc-form-row"><label class="btn-ghost acc-file">Dosya seç<input type="file" accept=".txt,.json,text/plain,application/json" hidden></label>
+                <button class="btn-big" data-imp="go">İçe aktar</button></div>
+            <p class="hint">Çerezler yalnızca kendi sunucunda saklanır. Çerez, o hesaba giriş anahtarıdır: kimseyle paylaşma.</p></div>`;
+        document.body.appendChild(el);
+        requestAnimationFrame(() => el.classList.add('in'));
+        const ta = el.querySelector('textarea');
+        el.querySelector('input[type=file]').addEventListener('change', async (e) => {
+            const f = e.target.files && e.target.files[0];
+            if (f) ta.value = await f.text();
+        });
+        el.addEventListener('click', async (e) => {
+            if (e.target === el) return el.remove();
+            if (!e.target.closest('[data-imp="go"]')) return;
+            const text = ta.value.trim();
+            if (!text) return toast('Önce çerezleri yapıştır ya da dosya seç');
+            try {
+                const r = await renderApi('/accounts/import', {
+                    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text })
+                }, 20000);
+                el.remove();
+                toast(r.accounts.length ? `${r.accounts.join(', ')} girişi eklendi` : `${r.added} çerez eklendi`);
+                load();
+            } catch (err) {
+                toast(err.status === 404 ? 'Sunucun eski; güncelleyip (git pull) yeniden başlat' : err.message);
+            }
+        });
+    }
+
     function openAccount(a) {
         const el = document.createElement('div');
         el.className = 'sheet-backdrop acc-sheet';
@@ -165,10 +204,11 @@ export function mountAccounts(box, { toast = () => {}, onCount = () => {} } = {}
 
     box.addEventListener('click', async (e) => {
         if (!data || data.error) return;
-        const t = e.target.closest('[data-acc], [data-acc-login], [data-acc-add], [data-acc-others], [data-acc-clear]');
+        const t = e.target.closest('[data-acc], [data-acc-login], [data-acc-add], [data-acc-others], [data-acc-clear], [data-acc-import]');
         if (!t) return;
         if (t.dataset.accLogin) return login(t.dataset.accLogin);
         if ('accAdd' in t.dataset) return openAdd();
+        if ('accImport' in t.dataset) return openImport();
         if ('accOthers' in t.dataset) {
             showOthers = !showOthers;
             return paint();

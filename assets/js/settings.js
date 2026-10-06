@@ -70,6 +70,8 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             <div class="acc-box" id="accountsBox"></div>
         </div>
 
+        <button class="link-btn st-sharelog" data-set="sharelog">Paylaşım kaydı</button>
+
         <button class="rows filled hidden" id="installRow" style="width:100%">
             <span class="row"><span class="row-value" style="font-weight:400">Ana ekrana ekle</span><span class="row-chev">›</span></span>
         </button>
@@ -163,6 +165,7 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             return openSub('logins');
         }
         if (key === 'setup') return openSetup(1);
+        if (key === 'sharelog') return openShareLog();
         if (key === 'libSync') setPref('libSync', !prefs.libSync);
         if (key === 'storage') return openStorage();
         if (key === 'save') {
@@ -239,6 +242,36 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
         }
     });
     const loadLogins = () => accounts.reload();
+
+    /** Paylaşım kaydı: telefonun paylaşımda ne yaptığı (sorun bildirmek için kopyalanır). */
+    function openShareLog() {
+        let list = [];
+        try {
+            list = JSON.parse(localStorage.getItem('indirici.shareLog') || '[]');
+        } catch (_) { /* yok */ }
+        const time = (ms) => new Date(ms).toLocaleTimeString('tr-TR');
+        const lines = list.map((e) => [time(e.at), e.ev, e.nav ? `(${e.nav})` : '', e.q || '', e.link ? '· bağlantı var' : ''].filter(Boolean).join(' '));
+        const el = document.createElement('div');
+        el.className = 'sheet-backdrop acc-sheet';
+        el.innerHTML = `<div class="acc-sheet-box" role="dialog" aria-label="Paylaşım kaydı"><span class="cf-grip"></span>
+            <b class="acc-sheet-title">Paylaşım kaydı</b>
+            <p class="hint">Uygulama açıkken bir bağlantıyı paylaş (ilk deneme gelmese de), sonra buraya dönüp kaydı kopyala ve gönder.</p>
+            <pre class="acc-import-text" style="white-space:pre-wrap;margin:0">${escapeHtml(lines.join('\n') || 'Kayıt yok')}</pre>
+            <div class="acc-form-row"><button class="btn-ghost" data-sl="clear" style="flex:1;height:48px">Temizle</button>
+                <button class="btn-big" data-sl="copy" style="flex:1">Kopyala</button></div></div>`;
+        document.body.appendChild(el);
+        el.addEventListener('click', (e) => {
+            if (e.target === el) return el.remove();
+            const b = e.target.closest('[data-sl]');
+            if (!b) return;
+            if (b.dataset.sl === 'clear') {
+                try { localStorage.removeItem('indirici.shareLog'); } catch (_) { /* yok */ }
+                el.remove();
+                return;
+            }
+            navigator.clipboard.writeText(lines.join('\n')).then(() => toast('Kayıt kopyalandı')).catch(() => toast('Kopyalanamadı'));
+        });
+    }
 
     const showState = (on, text, version) => {
         srv.on = on;

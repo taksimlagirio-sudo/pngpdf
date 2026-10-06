@@ -226,6 +226,20 @@ try {
     }
 } catch (_) { /* depolama kapalı */ }
 
+// Paylaşım kaydı: uygulama açıkken ilk paylaşımın neden gelmediğini görmek için telefonun ne yaptığı
+// (sayfa yüklendi mi, adreste bağlantı var mıydı, launchQueue geldi mi, öne/arkaya geçişler) saklanır.
+// Ayarlar › Paylaşım kaydı'nda görünür.
+function shareLog(entry) {
+    try {
+        const list = JSON.parse(localStorage.getItem('indirici.shareLog') || '[]');
+        list.push({ at: Date.now(), ...entry });
+        localStorage.setItem('indirici.shareLog', JSON.stringify(list.slice(-40)));
+    } catch (_) { /* depolama kapalı */ }
+}
+shareLog({ ev: 'açıldı', nav: (performance.getEntriesByType('navigation')[0] || {}).type || '', q: location.search.slice(0, 120), link: Boolean(shared) });
+document.addEventListener('visibilitychange', () => shareLog({ ev: document.visibilityState === 'visible' ? 'öne geldi' : 'arkaya gitti' }));
+window.addEventListener('pageshow', (e) => { if (e.persisted) shareLog({ ev: 'önbellekten döndü' }); });
+
 // QR ile bağlanma: sunucunun "/baglan" QR'ı telefon kamerasıyla okutulunca …/?pair=KOD açılır.
 const pairLink = params.get('pair') ? parsePairLink(location.href) : null;
 if (pairLink) {
@@ -309,6 +323,7 @@ window.addEventListener('popstate', (e) => {
 if ('launchQueue' in window) {
     let lastShared = shared || '';
     window.launchQueue.setConsumer((launch) => {
+        shareLog({ ev: 'launchQueue', q: launch && launch.targetURL ? new URL(launch.targetURL).search.slice(0, 120) : '(boş)' });
         if (!launch || !launch.targetURL) return;
         const p = new URL(launch.targetURL).searchParams;
         const link = [p.get('url'), p.get('text'), p.get('title')].filter(Boolean)

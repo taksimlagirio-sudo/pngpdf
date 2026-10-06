@@ -455,9 +455,14 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         const img = box.querySelector('img');
         // Akış, sunucu sayfayı açınca bağlanır (önce açılırsa arama kaydı henüz yoktur).
         img.addEventListener('load', () => img.classList.remove('sv-wait'));
+        let running = true;
         img.addEventListener('error', () => {
-            // Arama bitti (canlı akış kapandı): son görüntü gösterilir.
-            if (!img.dataset.shot) {
+            // Akış kesildi: arama sürüyorsa ara ara görüntü çekilir; bittiyse son görüntü gösterilir.
+            if (running) {
+                img.dataset.poll = '1';
+                return;
+            }
+            if (!img.dataset.shot && !img.dataset.poll) {
                 img.dataset.shot = '1';
                 img.src = `${server.url}/sniff/${sniff}/shot${q}&t=${Date.now()}`;
             }
@@ -469,7 +474,24 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             const sec = Math.floor((Date.now() - started) / 1000);
             box.querySelector('.sv-time').textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
             if (!st) return;
-            if (st.live && !img.getAttribute('src')) img.src = `${server.url}/sniff/${sniff}/stream${q}`;
+            if (st.live && !img.getAttribute('src')) {
+                img.src = `${server.url}/sniff/${sniff}/stream${q}`;
+                // Canlı yayın birkaç saniyede kare vermezse (bazı telefonlarda) ara ara görüntü çekilir.
+                setTimeout(() => {
+                    if (!img.naturalWidth && !img.dataset.shot) img.dataset.poll = '1';
+                }, 3000);
+            }
+            if (img.dataset.poll && !img.dataset.busy && (st.live || !img.dataset.last)) {
+                img.dataset.busy = '1';
+                img.dataset.last = st.live ? '' : '1';
+                const next = new Image();
+                next.onload = () => {
+                    img.src = next.src;
+                    delete img.dataset.busy;
+                };
+                next.onerror = () => { delete img.dataset.busy; };
+                next.src = `${server.url}/sniff/${sniff}/shot${q}&t=${Date.now()}`;
+            }
             for (const k of ['requests', 'blocked', 'media']) box.querySelector(`[data-c="${k}"]`).textContent = st.counts[k];
             const tap = box.querySelector('.sv-tap');
             if (st.tap && st.tap.at) {
@@ -492,7 +514,10 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                     last = await renderApi(`/sniff/${sniff}`, {}, 8000);
                 } catch (_) { /* henüz başlamadı */ }
                 paint(last);
-                if (last && last.done) break;
+                if (last && last.done) {
+                    running = false;
+                    break;
+                }
                 await new Promise((r) => setTimeout(r, 700));
             }
         })();

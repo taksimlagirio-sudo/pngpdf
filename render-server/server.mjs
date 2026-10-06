@@ -39,7 +39,7 @@ import { createRecorder, parsePlaylist } from './recorder.mjs';
 import { createWatcher } from './watcher.mjs';
 import { createPush } from './push.mjs';
 import { createCapturer } from './capture.mjs';
-import { createLoginStore, KNOWN_SITES, knownSite, sameSite, authLike } from './logins.mjs';
+import { createLoginStore, KNOWN_SITES, knownSite, sameSite, authLike, parseCookies } from './logins.mjs';
 import { findYtdlp, extractInfo, normalizeInfo, listEntries } from './ytdlp.mjs';
 import { findGalleryDl, extractImages } from './gallerydl.mjs';
 import { createCookieJar } from './cookiejar.mjs';
@@ -207,19 +207,23 @@ async function getBrowser() {
     if (!browserPromise) {
         browserPromise = (async () => {
             const { chromium } = await loadPlaywright();
-            const args = ['--autoplay-policy=no-user-gesture-required', '--mute-audio'];
+            // AutomationControlled kapalı: navigator.webdriver ve "otomasyonla kontrol ediliyor" izi olmasın
+            // (Google girişi bu izleri görünce "tarayıcı güvenli olmayabilir" deyip reddediyor).
+            const args = ['--autoplay-policy=no-user-gesture-required', '--mute-audio', '--disable-blink-features=AutomationControlled'];
+            const ignoreDefaultArgs = ['--enable-automation'];
             // Termux'ta (Android) Chromium'un kum havuzu çalışmıyor; orada sandbox'sız başlat.
             if (process.platform === 'android' || process.env.NO_SANDBOX === '1') args.push('--no-sandbox');
             // Google Chrome kuruluysa onu kullan: Playwright'ın Chromium'unda H.264/AAC yok, bu yüzden
             // "sunucuda oynatıp kaydet" sitelerin çoğunda ancak gerçek Chrome ile çalışır.
             let browser = null;
             if (!process.env.CHROME_PATH && process.platform !== 'android' && process.env.USE_CHROME !== '0') {
-                browser = await chromium.launch({ headless: true, channel: 'chrome', args }).catch(() => null);
+                browser = await chromium.launch({ headless: true, channel: 'chrome', args, ignoreDefaultArgs }).catch(() => null);
             }
             browser = browser || await chromium.launch({
                 headless: true,
                 executablePath: process.env.CHROME_PATH || undefined,
-                args
+                args,
+                ignoreDefaultArgs
             });
             browser.on('disconnected', () => { browserPromise = null; });
             return browser;
@@ -277,9 +281,48 @@ const PLAY_SELECTORS = [
  * Kayıt tutan bir sayfa açar: sayfanın (ve çerçevelerinin) yaptığı medya istekleri `state.found`a
  * toplanır. Hem otomatik koklama hem de kullanıcının dokunduğu etkileşimli oturum bunu kullanır.
  */
+/**
+ * Tarayıcının kimliği tutarlı olsun: kullanıcı ajanındaki Chrome sürümü gerçek sürüm, istemci ipuçları
+ * (sec-ch-ua, navigator.userAgentData, platform) da kullanıcı ajanıyla aynı cihazı söylesin. Google gibi
+ * siteler "Android telefon" diyen ama "Linux masaüstü" ipucu veren tarayıcıyı otomasyon sayıp girişi reddediyor.
+ */
+function browserIdentity(browser, userAgent) {
+    const major = (String(browser.version()).match(/\d+/) || ['130'])[0];
+    const ua = String(userAgent || DESKTOP_UA).replace(/Chrome\/[\d.]+/, `Chrome/${major}.0.0.0`);
+    const mobile = /Android/.test(ua);
+    const brands = [{ brand: 'Chromium', version: major }, { brand: 'Google Chrome', version: major }, { brand: 'Not?A_Brand', version: '99' }];
+    return {
+        userAgent: ua,
+        platform: mobile ? 'Linux armv8l' : 'Win32',
+        userAgentMetadata: {
+            brands,
+            fullVersionList: brands.map((b) => ({ brand: b.brand, version: b.brand === 'Not?A_Brand' ? '99.0.0.0' : `${major}.0.0.0` })),
+            fullVersion: `${major}.0.0.0`,
+            platform: mobile ? 'Android' : 'Windows',
+            platformVersion: mobile ? '14.0.0' : '15.0.0',
+            architecture: mobile ? '' : 'x86',
+            model: mobile ? 'Pixel 8' : '',
+            mobile,
+            bitness: '64',
+            wow64: false
+        }
+    };
+}
+
+/** Kimliği sayfaya uygular (CDP oturumu açık kalmalı; kapanınca ayar geri döner). */
+async function applyIdentity(context, page, identity) {
+    try {
+        const cdp = await context.newCDPSession(page);
+        await cdp.send('Emulation.setUserAgentOverride', identity);
+    } catch (_) { /* sayfa kapanmış */ }
+}
+
 async function openRecordedPage(pageUrl, contextOptions, { interactive = false, log = null } = {}) {
     const browser = await getBrowser();
-    const context = logins.attach(await browser.newContext({ storageState: logins.storageState(), bypassCSP: true, ...contextOptions }));
+    const identity = browserIdentity(browser, contextOptions.userAgent);
+    const context = logins.attach(await browser.newContext({ storageState: logins.storageState(), bypassCSP: true, ...contextOptions, userAgent: identity.userAgent }));
+    // Açılan pencereler (ör. "Google ile giriş yap") de aynı kimliği taşısın.
+    context.on('page', (pg) => { applyIdentity(context, pg, identity); });
     await context.addInitScript(CODEC_SPOOF);
     // Otomatik taramada reklamlar engellenir: reklam videoları listeye düşmesin, oynatıcı reklamla
     // oyalanmasın. "Kendim dokunayım" ekranında (interactive) hiçbir şey engellenmez ve sayfaya
@@ -291,6 +334,7 @@ async function openRecordedPage(pageUrl, contextOptions, { interactive = false, 
         await installPageGuards(context);
     }
     const page = await context.newPage();
+    await applyIdentity(context, page, identity);
     // Tıklamanın açtığı reklam pencereleri hemen kapatılsın (etkileşimli oturum kendisi karar verir).
     if (!interactive) context.on('page', (popup) => { if (popup !== page) popup.close().catch(() => {}); });
     const state = Object.assign(state0, { found: new Map(), firstMediaAt: 0, pending: [] });
@@ -2169,6 +2213,18 @@ const server = http.createServer(async (req, res) => {
             const a = logins.addAccount(domain, known ? known.name : domain);
             return sendJson(res, 200, { domain, name: a.name, login });
         }
+        if (url.pathname === '/accounts/import' && req.method === 'POST') {
+            // Başka bir tarayıcıdan dışa aktarılan çerezler (cookies.txt ya da JSON).
+            const body = await readJson(req, 4 * 1024 * 1024);
+            let list;
+            try {
+                list = parseCookies(body.text);
+            } catch (_) {
+                return sendJson(res, 400, { error: 'Çerez metni okunamadı (cookies.txt ya da JSON olmalı)' });
+            }
+            if (!list.length) return sendJson(res, 400, { error: 'Metinde çerez bulunamadı' });
+            return sendJson(res, 200, logins.importCookies(list));
+        }
         if (url.pathname === '/accounts' && req.method === 'DELETE') {
             const domain = accountDomain(url.searchParams.get('domain'));
             if (!domain) return sendJson(res, 400, { error: 'domain gerekli' });
@@ -2209,7 +2265,13 @@ const server = http.createServer(async (req, res) => {
                 serveLive(t, req, res, CORS_HEADERS);
                 return;
             }
-            const image = t.lastShot || t.frame;
+            // Arama sürerken: anlık görüntü (canlı yayın kare vermiyorsa uygulama bunu sık sık ister).
+            if (t.page && !t.page.isClosed() && !(t.liveShotAt > Date.now() - 700)) {
+                t.liveShotAt = Date.now();
+                const shot = await t.page.screenshot({ type: 'jpeg', quality: 50, timeout: 4000 }).catch(() => null);
+                if (shot) t.liveShot = shot;
+            }
+            const image = (t.page && t.liveShot) || t.lastShot || t.liveShot || t.frame;
             if (!image) return sendJson(res, 404, { error: 'Görüntü yok' });
             res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/jpeg', 'content-length': image.length, 'cache-control': 'no-store' });
             return res.end(image);
