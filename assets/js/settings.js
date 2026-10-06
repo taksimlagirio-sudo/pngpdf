@@ -255,7 +255,14 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             if (r) list = list.concat((await r.json()).map((e) => ({ at: e.at, ev: 'sw istek', q: e.q }))).sort((a, b) => a.at - b.at);
         } catch (_) { /* yok */ }
         const time = (ms) => new Date(ms).toLocaleTimeString('tr-TR');
-        const lines = list.map((e) => [time(e.at), e.ev, e.nav ? `(${e.nav})` : '', e.q || '', e.link ? '· bağlantı var' : ''].filter(Boolean).join(' '));
+        // Hangi sürüm çalışıyor: sayfanın adresi ve etkin service worker'ın önbellek sürümü.
+        let sw = 'yok';
+        try {
+            const shells = (await caches.keys()).filter((n) => n.startsWith('shell-'));
+            sw = `${navigator.serviceWorker && navigator.serviceWorker.controller ? 'etkin' : 'denetlemiyor'} · ${shells.join(',') || 'önbellek yok'}`;
+        } catch (_) { /* yok */ }
+        const head = [`Adres: ${location.origin}`, `Service worker: ${sw}`, `Ekran: ${matchMedia('(display-mode: standalone)').matches ? 'uygulama' : 'tarayıcı sekmesi'}`];
+        const lines = head.concat(list.map((e) => [time(e.at), e.ev, e.nav ? `(${e.nav})` : '', e.q || '', e.link ? '· bağlantı var' : ''].filter(Boolean).join(' ')));
         const el = document.createElement('div');
         el.className = 'sheet-backdrop acc-sheet';
         el.innerHTML = `<div class="acc-sheet-box" role="dialog" aria-label="Paylaşım kaydı"><span class="cf-grip"></span>
