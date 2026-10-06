@@ -344,6 +344,9 @@ window.addEventListener('popstate', (e) => {
  * Sayfanın belleğindeki dosya (blob:) indirilmek istenirse kabuk onu buradan ister. */
 if (window.IndiriciAndroid) {
     document.documentElement.classList.add('in-apk');
+    // Telefonun geri tuşu (kabuk sorar): açık ekran/pencere kapanır, Kendim dokunayım'da sayfa geri gider.
+    // false: uygulama arka plana alınır.
+    window.__indiriciBack = () => handleBack();
     window.__indiriciShare = (link) => {
         if (!/^https?:\/\//.test(String(link || ''))) return false;
         shareLog({ ev: 'APK paylaşımı', link: true });
