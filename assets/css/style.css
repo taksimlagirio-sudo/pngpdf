@@ -3953,3 +3953,6 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
 .acc-import-text { width: 100%; box-sizing: border-box; min-height: 120px; padding: 12px; border-radius: 14px; border: 1px solid var(--ln); background: var(--bg); color: var(--tx); font: 12.5px/1.4 var(--mono); resize: vertical; }
 .acc-file { flex: 1; height: 48px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .st-sharelog { align-self: center; margin: 4px auto; display: block; color: var(--mt); }
+.lv-goto { display: flex; gap: 8px; }
+.lv-goto input { flex: 1; min-width: 0; height: 48px; padding: 0 14px; border-radius: 14px; border: 1px solid #2E2C28; background: #121110; color: #F2EFE9; font: 15px Onest, system-ui, sans-serif; }
+.lv-goto-btn { flex: none; height: 48px; padding: 0 18px; border-radius: 14px; border: 0; background: #D4F04A; color: #15140F; font: 700 15px Onest, system-ui, sans-serif; }

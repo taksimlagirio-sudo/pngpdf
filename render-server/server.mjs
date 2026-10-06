@@ -922,6 +922,20 @@ async function sessionAction(session, action) {
         await startCast(session, true);
         return null;
     }
+    if (action.type === 'goto') {
+        // "Adrese git": e-postadaki giriş bağlantısı gibi bir adres sunucudaki sayfada açılır.
+        let target;
+        try {
+            target = new URL(String(action.url || '').trim());
+        } catch (_) {
+            throw new Error('Geçerli bir adres yapıştır');
+        }
+        if (!/^https?:$/.test(target.protocol)) throw new Error('Adres http:// ya da https:// ile başlamalı');
+        await assertPublicTarget(target);
+        await page.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+        saveLoginsSoon(session);
+        return { done: true };
+    }
     const result = await liveAction(session, action);
     if (!result) throw new Error('Bilinmeyen işlem');
     // Açılan pencerede geri gidilecek yer yoksa pencere kapanır, önceki sayfaya dönülür.

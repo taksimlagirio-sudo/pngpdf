@@ -198,6 +198,8 @@ export function openLiveSession(pageUrl, { onPick = () => {}, onCapture = null, 
             kbd.value = '';
             typed = '';
             if (document.activeElement !== kbd) kbd.focus({ preventScroll: true });
+            // APK: uygulama içindeki tarayıcı klavyeyi yalnızca doğrudan dokunuşla açar; Android'e açtırılır.
+            if (window.IndiriciAndroid && window.IndiriciAndroid.showKeyboard) window.IndiriciAndroid.showKeyboard();
         } else if (document.activeElement === kbd) {
             kbd.blur();
         }
@@ -274,6 +276,7 @@ export function openLiveSession(pageUrl, { onPick = () => {}, onCapture = null, 
         const sh = sheet(`<button class="lv-row" data-s="back">${icon('back')}<span>Geri</span></button>
             <button class="lv-row" data-s="forward">${icon('chevronRight')}<span>İleri</span></button>
             <button class="lv-row" data-s="reload">${icon('refresh')}<span>Yenile</span></button>
+            <button class="lv-row" data-s="goto">${icon('link')}<span>Adrese git</span></button>
             <button class="lv-row" data-s="close">${icon('close')}<span>Kapat</span></button>
             <p class="lv-note">Giriş yaparsan sunucunda saklanır; o sitenin videoları sonra girişli açılır.</p>`);
         sh.addEventListener('click', (e) => {
@@ -281,7 +284,29 @@ export function openLiveSession(pageUrl, { onPick = () => {}, onCapture = null, 
             if (!b) return;
             closeSheet(sh);
             if (b.dataset.s === 'close') return end();
+            if (b.dataset.s === 'goto') return openGoto();
             post({ type: b.dataset.s }, 20000).catch((err) => say(err.message));
+        });
+    }
+
+    /** Adrese git: e-postadaki tek kullanımlık giriş bağlantısı gibi bir adres sunucudaki sayfada açılır. */
+    function openGoto() {
+        const sh = sheet(`<div class="lv-sheet-title">Adrese git</div>
+            <p class="lv-note">Örneğin e-postana gelen "tek kullanımlık giriş" bağlantısını kopyalayıp buraya yapıştır; giriş sunucudaki sayfada tamamlanır.</p>
+            <form class="lv-goto"><input type="url" inputmode="url" placeholder="https://…" autocomplete="off" spellcheck="false">
+                <button class="lv-goto-btn" type="submit">Git</button></form>
+            <button class="lv-back-btn" data-s="close-sheet">Vazgeç</button>`);
+        const input = sh.querySelector('input');
+        navigator.clipboard?.readText?.().then((t) => { if (/^https?:\/\//.test(t.trim()) && !input.value) input.value = t.trim(); }).catch(() => {});
+        setTimeout(() => input.focus(), 150);
+        sh.addEventListener('click', (e) => { if (e.target.closest('[data-s="close-sheet"]')) closeSheet(sh); });
+        sh.querySelector('form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const url = input.value.trim();
+            if (!url) return;
+            closeSheet(sh);
+            say('Açılıyor…', 0);
+            post({ type: 'goto', url }, 40000).then(() => say('Açıldı', 1500)).catch((err) => say(err.message));
         });
     }
 

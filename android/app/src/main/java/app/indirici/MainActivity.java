@@ -530,6 +530,16 @@ public class MainActivity extends Activity {
             return MainActivity.this.server();
         }
 
+        /** Klavyeyi aç: sayfa bir kutucuğa odaklandıktan sonra (dokunuştan ayrı) çağrılır. */
+        @JavascriptInterface
+        public void showKeyboard() {
+            ui.post(() -> {
+                web.requestFocus();
+                android.view.inputmethod.InputMethodManager imm = getSystemService(android.view.inputmethod.InputMethodManager.class);
+                if (imm != null) imm.showSoftInput(web, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+            });
+        }
+
         /** Takip bildirimlerini aç/kapat (sunucu adresi ve anahtarı uygulamadan gelir). */
         @JavascriptInterface
         public boolean notifications(boolean on, String serverUrl, String token) {
