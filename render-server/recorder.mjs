@@ -92,8 +92,9 @@ export function parsePlaylist(text, baseUrl) {
     }
     // Videoya gömülü reklam parçaları çıkarılır (uygulamadaki hls.js ile aynı kural).
     const isLive = !lines.includes('#EXT-X-ENDLIST');
-    const clean = dropAds(segments, { live: isLive, base: baseUrl });
-    return { type: 'media', segments: clean.segments, map, targetDuration, isLive, adCount: clean.adCount, adSeconds: clean.adSeconds };
+    const clean = dropAds(segments, { live: isLive, base: baseUrl, ranges: ads.ranges });
+    // allSegments: ayıklanmamış hâli (ses ayrı listeden geliyorsa ikisi senkron kalsın diye bu kullanılır).
+    return { type: 'media', segments: clean.segments, allSegments: segments, map, targetDuration, isLive, adCount: clean.adCount, adSeconds: clean.adSeconds };
 }
 
 /* ---------------- TS → MP4 (mux.js) ---------------- */
@@ -329,7 +330,8 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
 
                 let ended = false;
                 for (const s of streams) {
-                    const all = s.playlist.segments;
+                    // Ses ayrı listedeyse reklam ayıklanmaz: yalnızca görüntüden atılırsa ses ve görüntü kayar.
+                    const all = streams.length > 1 ? s.playlist.allSegments || s.playlist.segments : s.playlist.segments;
                     let fresh;
                     if (s.lastSeq === null) {
                         // Canlıda en yeni parçadan başlanır; bitmiş (VOD) yayın baştan sona alınır.

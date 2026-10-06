@@ -655,6 +655,8 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
         if (playlist.type !== 'media' || playlist.isLive) return false;
         const streams = [{ id: 'v', playlist }];
         if (audioUrl) streams.push({ id: 'a', playlist: parsePlaylist((await get(audioUrl)).toString('utf8'), audioUrl) });
+        // Ses ayrı listedeyse reklam ayıklanmaz (ses ve görüntü kaymasın).
+        if (streams.length > 1) for (const st of streams) st.playlist.segments = st.playlist.allSegments || st.playlist.segments;
         for (const st of streams) {
             const drm = st.playlist.segments.find((x) => x.key && x.key.method !== 'AES-128');
             if (drm) throw new Error(`Video DRM ile korunuyor (${drm.key.method}); kaydedilemez`);

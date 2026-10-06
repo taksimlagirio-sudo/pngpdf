@@ -132,13 +132,15 @@ export function parsePlaylist(text, baseUrl) {
     }
 
     // Videoya gömülü reklam parçaları çıkarılır; zaman çizelgesi reklamsız haliyle yeniden kurulur.
-    const clean = dropAds(segments, { live: isLive, base: baseUrl });
+    const clean = dropAds(segments, { live: isLive, base: baseUrl, ranges: ads.ranges });
+    const allDuration = totalDuration;
     totalDuration = 0;
     for (const s of clean.segments) {
         s.start = totalDuration;
         totalDuration += s.duration;
     }
-    return { type: 'media', segments: clean.segments, map, totalDuration, isLive, targetDuration, adCount: clean.adCount, adSeconds: clean.adSeconds };
+    // allSegments: ayıklanmamış hâli (ses ayrı listeden geliyorsa ikisi senkron kalsın diye bu kullanılır).
+    return { type: 'media', segments: clean.segments, allSegments: segments, allDuration, map, totalDuration, isLive, targetDuration, adCount: clean.adCount, adSeconds: clean.adSeconds };
 }
 
 function parseAttributes(input) {
@@ -173,6 +175,14 @@ function ivFromSequence(seq) {
     const iv = new Uint8Array(16);
     new DataView(iv.buffer).setUint32(12, seq >>> 0);
     return iv;
+}
+
+/**
+ * Parçalar: reklamlar ayıklanmış hâli; ses ayrı bir listeden geliyorsa ayıklanmamış hâli (ses listesinde
+ * reklam işareti olmayabilir; yalnızca görüntüden reklam atılırsa ses ve görüntü kayar).
+ */
+export function segmentsOf(playlist, separateAudio) {
+    return separateAudio && playlist.allSegments ? playlist.allSegments : playlist.segments;
 }
 
 export function findDrm(segments) {
@@ -386,7 +396,8 @@ export async function downloadHlsVod({
 
     // Tüm parçalar zamana göre tek sırada: indirme paralel, dosyaya yazma bu sırayla.
     const items = streams
-        .flatMap((s) => sliceRange(s.playlist.segments, range, s.playlist.totalDuration).map((seg) => ({ stream: s.id, seg })))
+        .flatMap((s) => sliceRange(segmentsOf(s.playlist, streams.length > 1), range, streams.length > 1 ? s.playlist.allDuration || s.playlist.totalDuration : s.playlist.totalDuration)
+            .map((seg) => ({ stream: s.id, seg })))
         .sort((a, b) => (a.seg.start - b.seg.start) || (a.stream === 'v' ? -1 : 1));
     if (!items.length) throw new Error(range ? 'Seçilen aralıkta parça yok' : 'Playlist içinde parça bulunamadı');
 
@@ -525,7 +536,7 @@ export async function recordHlsLive({
 
             let ended = false;
             for (const s of streams) {
-                const all = s.playlist.segments;
+                const all = segmentsOf(s.playlist, streams.length > 1);
                 let fresh;
                 if (s.lastSeq === null) {
                     fresh = all.slice(-1); // şu andan itibaren: en yeni parçadan başla
