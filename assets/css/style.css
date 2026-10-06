@@ -3824,3 +3824,6 @@ button.sv-row { cursor: pointer; border-top: 1px solid var(--ln); flex-wrap: now
 .lv-cap-btns { display: flex; gap: 8px; }
 .lv-cap-bg { flex: 1; height: 40px; border-radius: 12px; border: 0; background: #D4F04A; color: #15140F; font: 700 13.5px/1 Onest, system-ui, sans-serif; cursor: pointer; }
 .lv-cap-stop { height: 40px; padding: 0 14px; border-radius: 12px; border: 1px solid #3A3833; background: none; color: #F2EFE9; font: 600 13.5px/1 Onest, system-ui, sans-serif; cursor: pointer; }
+/* Kutu boşken ana düğme "Yapıştır ve algıla"; ayrı yapıştır simgesi gereksiz. */
+.urlbar.empty .url-paste { display: none; }
+#view-detect .urlbar.empty .btn-ac { padding: 0 14px; font-size: 14px; }

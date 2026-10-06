@@ -100,6 +100,16 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     const thumbs = new Map(); // sayfa listesi: adres → {ok, thumb, duration, height}
 
     analyzeBtn.addEventListener('click', () => onAnalyzeClick());
+    // Kutu boşken ana düğme "Yapıştır ve algıla", bir şey yazılınca "Algıla".
+    const urlbar = urlInput.closest('.urlbar');
+    function syncAnalyzeBtn() {
+        const empty = !urlInput.value.trim();
+        analyzeBtn.textContent = empty ? 'Yapıştır ve algıla' : 'Algıla';
+        if (urlbar) urlbar.classList.toggle('empty', empty);
+    }
+    urlInput.addEventListener('input', syncAnalyzeBtn);
+    urlInput.addEventListener('change', syncAnalyzeBtn);
+    syncAnalyzeBtn();
     urlInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') onAnalyzeClick();
     });
@@ -212,12 +222,9 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     async function onAnalyzeClick() {
         showShared('');
-        let url = firstUrl(urlInput.value);
-        if (!url) {
-            try {
-                url = firstUrl(await readClipboard());
-            } catch (_) { /* pano izni yok */ }
-        }
+        const url = firstUrl(urlInput.value);
+        // Kutu boşken düğme "Yapıştır ve algıla"dır: panodaki bağlantı alınır (izin yoksa yapıştırma kutusu).
+        if (!url) return pasteAndAnalyze();
         urlInput.value = url;
         urlInput.blur(); // telefonda klavye kapansın, sonuç görünsün
         start(url);
@@ -305,6 +312,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
      * bakalım?" diye sorar ya da hatırlanan/ayardaki yöntemi kullanır.
      */
     async function start(url) {
+        syncAnalyzeBtn();
         const big = isHttpUrl(url) ? bigSiteOf(url) : null;
         // Site başına ayar varsa hep onunla açılır.
         const site = isHttpUrl(url) ? siteSettingFor(url) : null;
@@ -1611,6 +1619,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         showShared('');
         renderIdle();
         paintSuggest();
+        syncAnalyzeBtn();
     }
     resTop.addEventListener('click', (e) => {
         if (!e.target.closest('[data-act="back"]')) return;
@@ -1631,6 +1640,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (act === 'new-link') {
             goIdle();
             urlInput.value = '';
+            syncAnalyzeBtn();
             urlInput.focus();
             return;
         }
