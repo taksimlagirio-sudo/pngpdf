@@ -7,6 +7,8 @@ export const ICONS = {
     plus: { d: 'M12 5v14M5 12h14' },
     minus: { d: 'M5 12h14' },
     check: { d: 'M5 12.5l4.5 4.5L19 7.5' },
+    lock: { d: 'M6 11V8a6 6 0 0 1 12 0v3M5 11h14v10H5z' },
+    user: { d: 'M12 12a4 4 0 1 0 0-8a4 4 0 1 0 0 8M4 21a8 8 0 0 1 16 0' },
     chevronRight: { d: 'M9 6l6 6-6 6' },
     chevronUp: { d: 'M6 15l6-6 6 6' },
     chevronDown: { d: 'M6 9l6 6 6-6' },

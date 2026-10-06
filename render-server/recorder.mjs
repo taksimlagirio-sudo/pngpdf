@@ -9,7 +9,6 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { randomBytes, createDecipheriv } from 'node:crypto';
 import { Mp4Builder } from '../assets/js/mp4mux.mjs';
-import { createAdTracker, dropAds } from '../assets/js/hlsads.mjs';
 
 const MAX_ACTIVE = Number(process.env.MAX_RECORDINGS) || 8;
 const SEGMENT_RETRY = 3;
@@ -69,9 +68,7 @@ export function parsePlaylist(text, baseUrl) {
     let seq = 0;
     let lastByteEnd = 0;
     let targetDuration = 0;
-    const ads = createAdTracker();
     for (const line of lines) {
-        ads.line(line);
         if (line.startsWith('#EXT-X-MEDIA-SEQUENCE')) seq = parseInt(line.split(':')[1], 10) || 0;
         else if (line.startsWith('#EXT-X-TARGETDURATION')) targetDuration = parseFloat(line.split(':')[1]) || 0;
         else if (line.startsWith('#EXTINF')) duration = parseFloat(line.split(':')[1]) || 0;
@@ -84,16 +81,13 @@ export function parsePlaylist(text, baseUrl) {
             const attrs = parseAttributes(line.slice(line.indexOf(':') + 1));
             map = { url: resolve(attrs.URI), range: attrs.BYTERANGE ? parseByteRange(attrs.BYTERANGE, 0) : null };
         } else if (!line.startsWith('#')) {
-            segments.push({ url: resolve(line), duration, range, key, map, seq: seq + segments.length, ad: ads.tag() });
+            segments.push({ url: resolve(line), duration, range, key, map, seq: seq + segments.length });
             if (range) lastByteEnd = range.offset + range.length;
             range = null;
             duration = 0;
         }
     }
-    // Videoya gömülü reklam parçaları çıkarılır (uygulamadaki hls.js ile aynı kural).
-    const isLive = !lines.includes('#EXT-X-ENDLIST');
-    const clean = dropAds(segments, { live: isLive, base: baseUrl });
-    return { type: 'media', segments: clean.segments, map, targetDuration, isLive, adCount: clean.adCount, adSeconds: clean.adSeconds };
+    return { type: 'media', segments, map, targetDuration, isLive: !lines.includes('#EXT-X-ENDLIST') };
 }
 
 /* ---------------- TS → MP4 (mux.js) ---------------- */
@@ -338,9 +332,7 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
                         fresh = all.filter((x) => x.seq > s.lastSeq);
                         const newest = all.length ? all[all.length - 1].seq : s.lastSeq;
                         if (!fresh.length && newest < s.lastSeq - 10) fresh = all.slice(-1);
-                        else if (fresh.length && fresh[0].seq - (fresh[0].adsBefore || 0) > s.lastSeq + 1 && s.id === 'v') {
-                            rec.missed += fresh[0].seq - (fresh[0].adsBefore || 0) - s.lastSeq - 1; // atlanan reklamlar sayılmaz
-                        }
+                        else if (fresh.length && fresh[0].seq > s.lastSeq + 1 && s.id === 'v') rec.missed += fresh[0].seq - s.lastSeq - 1;
                     }
                     for (const segment of fresh) {
                         if (rec.stopRequested || limitReached() || signal.aborted) break;

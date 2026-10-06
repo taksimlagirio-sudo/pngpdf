@@ -9,7 +9,6 @@
 // süre sınırı dolunca dosya kapanır.
 import { formatSize, smartFetch, fileNameFromUrl, hms, sleep, isNetworkError } from './util.js';
 import { Mp4Builder, initHasVideo, tsHasVideo } from './mp4mux.mjs';
-import { createAdTracker, dropAds } from './hlsads.mjs';
 
 const MAX_PARALLEL = 4;
 const SEGMENT_RETRY = 3;
@@ -86,10 +85,8 @@ export function parsePlaylist(text, baseUrl) {
     let lastByteEnd = 0;
     let targetDuration = 0;
     const isLive = !lines.includes('#EXT-X-ENDLIST');
-    const ads = createAdTracker();
 
     for (const line of lines) {
-        ads.line(line);
         if (line.startsWith('#EXT-X-MEDIA-SEQUENCE')) {
             seq = parseInt(line.split(':')[1], 10) || 0;
         } else if (line.startsWith('#EXT-X-TARGETDURATION')) {
@@ -121,8 +118,7 @@ export function parsePlaylist(text, baseUrl) {
                 range: pendingRange,
                 key,
                 map,
-                seq: seq + segments.length,
-                ad: ads.tag()
+                seq: seq + segments.length
             });
             totalDuration += duration;
             if (pendingRange) lastByteEnd = pendingRange.offset + pendingRange.length;
@@ -131,14 +127,7 @@ export function parsePlaylist(text, baseUrl) {
         }
     }
 
-    // Videoya gömülü reklam parçaları çıkarılır; zaman çizelgesi reklamsız haliyle yeniden kurulur.
-    const clean = dropAds(segments, { live: isLive, base: baseUrl });
-    totalDuration = 0;
-    for (const s of clean.segments) {
-        s.start = totalDuration;
-        totalDuration += s.duration;
-    }
-    return { type: 'media', segments: clean.segments, map, totalDuration, isLive, targetDuration, adCount: clean.adCount, adSeconds: clean.adSeconds };
+    return { type: 'media', segments, map, totalDuration, isLive, targetDuration };
 }
 
 function parseAttributes(input) {
@@ -534,9 +523,8 @@ export async function recordHlsLive({
                     const newest = all.length ? all[all.length - 1].seq : s.lastSeq;
                     if (!fresh.length && newest < s.lastSeq - 10) {
                         fresh = all.slice(-1); // yayın sıra numarasını sıfırladı
-                    } else if (fresh.length && fresh[0].seq - (fresh[0].adsBefore || 0) > s.lastSeq + 1 && s.id === 'v') {
-                        // sekme donduysa parçalar kaçtı (atlanan reklamlar sayılmaz)
-                        job.rec.missed += fresh[0].seq - (fresh[0].adsBefore || 0) - s.lastSeq - 1;
+                    } else if (fresh.length && fresh[0].seq > s.lastSeq + 1 && s.id === 'v') {
+                        job.rec.missed += fresh[0].seq - s.lastSeq - 1; // sekme donduysa parçalar kaçtı
                     }
                 }
                 for (const segment of fresh) {

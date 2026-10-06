@@ -34,11 +34,12 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { classify, dedupKey, isSegment } from './media.mjs';
+import { startCast, stopCast, serveStream as serveLive, liveAction, liveFocus, playingVideos } from './live.mjs';
 import { createRecorder, parsePlaylist } from './recorder.mjs';
 import { createWatcher } from './watcher.mjs';
 import { createPush } from './push.mjs';
 import { createCapturer } from './capture.mjs';
-import { createLoginStore } from './logins.mjs';
+import { createLoginStore, KNOWN_SITES, knownSite, sameSite, authLike } from './logins.mjs';
 import { findYtdlp, extractInfo, normalizeInfo, listEntries } from './ytdlp.mjs';
 import { findGalleryDl, extractImages } from './gallerydl.mjs';
 import { createCookieJar } from './cookiejar.mjs';
@@ -57,6 +58,32 @@ const PORT = Number(process.env.PORT) || 8787;
 // Sunucu tarayıcısında yapılan girişler saklanır (SAVE_LOGINS=0 ile kapatılır).
 const logins = createLoginStore(process.env.LOGIN_FILE || path.join(HERE, '.logins.json'),
     { enabled: process.env.SAVE_LOGINS !== '0' });
+/** Adresin hesap alan adı: www/m. atılır, bilinen sitenin takma adı (twitter.com → x.com) birleştirilir. */
+function accountDomain(input) {
+    let host = String(input || '').trim().toLowerCase();
+    try {
+        host = new URL(/^https?:\/\//.test(host) ? host : `https://${host}`).hostname;
+    } catch (_) {
+        return '';
+    }
+    if (/^[\d.]+$|^\[|^localhost$/.test(host)) return host;
+    host = host.replace(/^(www|m|mobile|web)\./, '');
+    const known = knownSite(host) || KNOWN_SITES.find((k) => [k.domain, ...(k.alias || [])].some((d) => host.endsWith('.' + d)));
+    if (known) return known.domain;
+    const parts = host.split('.');
+    const n = parts.length > 2 && parts[parts.length - 1].length === 2 && /^(com|net|org|gov|edu|co|gen|web|bel|av|k12|tv)$/.test(parts[parts.length - 2]) ? 3 : 2;
+    return parts.slice(-n).join('.');
+}
+
+/** Sonuç ekranı için: bu sayfanın sitesinin hesabı (yoksa eklenebilecek hâli). */
+function accountInfo(pageUrl) {
+    const domain = accountDomain(pageUrl);
+    if (!domain || !logins.enabled) return null;
+    const a = logins.accounts().find((x) => x.domain === domain);
+    const known = knownSite(domain);
+    return { domain, name: a ? a.name : known ? known.name : domain, status: a ? a.status : 'none' };
+}
+
 // İndirme isteklerinin çerezleri: sayfayı açan tarayıcının ve yt-dlp'nin çerezleri + kayıtlı girişler.
 const cookieJar = createCookieJar({ extra: () => logins.storageState()?.cookies || [] });
 // Varsayılan yalnızca bu cihazdan erişim; Tailscale/tünel localhost'a yönlendirir.
@@ -250,7 +277,7 @@ const PLAY_SELECTORS = [
  * Kayıt tutan bir sayfa açar: sayfanın (ve çerçevelerinin) yaptığı medya istekleri `state.found`a
  * toplanır. Hem otomatik koklama hem de kullanıcının dokunduğu etkileşimli oturum bunu kullanır.
  */
-async function openRecordedPage(pageUrl, contextOptions, { interactive = false } = {}) {
+async function openRecordedPage(pageUrl, contextOptions, { interactive = false, log = null } = {}) {
     const browser = await getBrowser();
     const context = logins.attach(await browser.newContext({ storageState: logins.storageState(), bypassCSP: true, ...contextOptions }));
     await context.addInitScript(CODEC_SPOOF);
@@ -260,7 +287,7 @@ async function openRecordedPage(pageUrl, contextOptions, { interactive = false }
     const state0 = { blockedAds: 0 };
     const blocked = new Set(); // engellenen reklam istekleri "başarısız istek" diye listeye girmesin
     if (!interactive) {
-        await installRouting(context, { onBlocked: (url) => { state0.blockedAds++; blocked.add(url); } });
+        await installRouting(context, { onBlocked: (url) => { state0.blockedAds++; blocked.add(url); if (log) log({ u: url, blocked: true }); } });
         await installPageGuards(context);
     }
     const page = await context.newPage();
@@ -286,7 +313,7 @@ async function openRecordedPage(pageUrl, contextOptions, { interactive = false }
             state.found.set(key, item);
         }
         rememberReferer(url, referer || pageUrl);
-        if (!state.firstMediaAt && (kind === 'hls' || kind === 'video' || kind === 'dash')) state.firstMediaAt = Date.now();
+        if (!failed && !state.firstMediaAt && (kind === 'hls' || kind === 'video' || kind === 'dash')) state.firstMediaAt = Date.now();
 
         // Liste içeriği tarayıcının aldığı anda saklanır: ana listenin adresi çoğu zaman tek kullanımlık
         // ya da kısa ömürlü bir anahtar taşır; uygulama yeniden isteyince 403 alır, kaliteler kaybolur.
@@ -304,15 +331,42 @@ async function openRecordedPage(pageUrl, contextOptions, { interactive = false }
         }
     };
 
-    page.on('response', (response) => {
-        const headers = response.headers();
-        const request = response.request();
-        record(response.url(), headers['content-type'] || '', Number(headers['content-length']) || 0,
-            request.headers().referer, { response, failed: response.status() >= 400 });
-    });
-    page.on('requestfailed', (request) => {
-        record(request.url(), '', 0, request.headers().referer, { failed: true });
-    });
+    // Uzantısı/türü gizlenmiş yayın listesi: "düz metin" ya da "ikili veri" diye gelen küçük
+    // yanıtların başına bakılır (#EXTM3U → HLS, <MPD → DASH). Yalnızca kendim dokunayım ekranında
+    // (kullanıcı videoyu oynatırken) ve sınırlı sayıda.
+    const AMBIGUOUS = /^(text\/plain|application\/octet-stream|binary\/octet-stream|application\/x-mpegurl|text\/html|)$/i;
+    const peeked = new Set();
+    const peek = async (response, ct, size) => {
+        const url = response.url();
+        if (peeked.size > 400 || peeked.has(url) || size > 2 * 1024 * 1024 || response.status() !== 200) return;
+        if (!['xhr', 'fetch', 'other', 'media'].includes(response.request().resourceType())) return;
+        if (/\.(js|css|json|png|jpe?g|gif|webp|svg|woff2?|ico|html?)(\?|$)/i.test(url) && !/\.jpe?g\?.*m3u|\.png\?.*m3u/i.test(url)) return;
+        peeked.add(url);
+        const body = await response.body().catch(() => null);
+        if (!body || !body.length) return;
+        const head = body.subarray(0, 64).toString('utf8').replace(/^\uFEFF/, '').trimStart();
+        const kind = head.startsWith('#EXTM3U') ? 'application/vnd.apple.mpegurl' : /^<\?xml[^>]*>\s*<MPD|^<MPD/i.test(head) ? 'application/dash+xml' : '';
+        if (kind) record(url, kind, body.length, response.request().headers().referer, { response });
+    };
+    const watch = (pg) => {
+        pg.on('response', (response) => {
+            const headers = response.headers();
+            const request = response.request();
+            const ct = (headers['content-type'] || '').split(';')[0].trim();
+            const size = Number(headers['content-length']) || 0;
+            record(response.url(), headers['content-type'] || '', size, request.headers().referer, { response, failed: response.status() >= 400 });
+            if (log) log({ u: response.url(), t: request.resourceType(), s: response.status(), ct, k: classify(response.url(), ct) || '' });
+            if (interactive && AMBIGUOUS.test(ct) && !classify(response.url(), ct)) peek(response, ct, size).catch(() => {});
+        });
+        pg.on('requestfailed', (request) => {
+            record(request.url(), '', 0, request.headers().referer, { failed: true });
+            if (log && !blocked.has(request.url())) log({ u: request.url(), t: request.resourceType(), s: 0, err: (request.failure() || {}).errorText || 'başarısız', k: classify(request.url(), '') || '' });
+        });
+    };
+    watch(page);
+    // Kendim dokunayım: video yeni açılan pencerede oynasa da bulunsun.
+    if (interactive) context.on('page', (pg) => { if (pg !== page) watch(pg); });
+    state.record = record;
     return { context, page, state };
 }
 
@@ -351,6 +405,12 @@ async function tryPlay(page) {
  * bir adım ilerler; `nudge` çağrılar arasında durumu tutar.
  */
 async function nudgePlayback(page, started, nudge) {
+    // Ne yapıldığı (arama ekranında canlı gösterilir): kaçıncı deneme, son dokunulan yer.
+    const note = (what, at = null) => {
+        nudge.attempts = (nudge.attempts || 0) + 1;
+        const size = page.viewportSize() || { width: 1280, height: 800 };
+        nudge.last = { what, at: at ? { x: at.x / size.width, y: at.y / size.height } : null, time: Date.now() };
+    };
     // Adımlar bitince birkaç tur daha denenir: ilk tıklama reklama yönlendirip geri dönüldüyse
     // oynat düğmesine yeniden basılması gerekir.
     if (nudge.steps && !nudge.steps.length) {
@@ -369,12 +429,18 @@ async function nudgePlayback(page, started, nudge) {
                 await disarmOverlays(page);
                 return false;
             },
-            () => clickConsent(page),
+            async () => {
+                const done = await clickConsent(page);
+                if (done) note('çerez/izin onayına');
+                return done;
+            },
             async () => {
                 for (const frame of page.frames()) {
                     const button = await frame.$(PLAY_SELECTORS).catch(() => null);
                     if (button && await button.isVisible().catch(() => false)) {
+                        const b = await button.boundingBox().catch(() => null);
                         await button.click({ timeout: 2000, force: true }).catch(() => {});
+                        note('oynat düğmesine', b && { x: b.x + b.width / 2, y: b.y + b.height / 2 });
                         return true;
                     }
                 }
@@ -392,11 +458,13 @@ async function nudgePlayback(page, started, nudge) {
                 }).catch(() => null);
                 if (!box) return false;
                 await page.mouse.click(box.x, box.y).catch(() => {});
+                note('oynatıcının ortasına', box);
                 return true;
             },
             async () => {
                 const size = page.viewportSize() || { width: 1280, height: 800 };
                 await page.mouse.click(size.width / 2, size.height / 2).catch(() => {});
+                note('sayfanın ortasına', { x: size.width / 2, y: size.height / 2 });
                 return true;
             }
         ];
@@ -430,9 +498,96 @@ function codecSupport() {
     return codecPromise;
 }
 
-async function sniff(pageUrl, waitMs) {
+/* ---- Aramayı izleme: sunucunun ne yaptığı uygulamada canlı ve sonradan görünür ----
+ * Her arama (uygulama bir izleme kimliği verdiyse) bir kayıt tutar: aşama, sayılar, son dokunulan yer,
+ * sayfanın istekleri; sayfa açıkken canlı görüntü, bitince son görüntü ve "neden bulunamadı" teşhisi.
+ * Kayıtlar 10 dakika saklanır. */
+const sniffTraces = new Map();
+const TRACE_KEEP_MS = 10 * 60 * 1000;
+
+function newTrace(id, url) {
+    if (!/^[0-9a-f]{16,32}$/.test(String(id || ''))) return null;
+    const t = { id, url, startedAt: Date.now(), endedAt: 0, phase: 'Sayfa açılıyor', done: false,
+        counts: { requests: 0, blocked: 0, media: 0, failed: 0 }, log: [], tap: null, attempts: 0, verdict: null,
+        lastShot: null, title: '', viewers: new Set(), frame: null, viewport: { dpr: 1 }, context: null, page: null };
+    sniffTraces.set(id, t);
+    setTimeout(() => sniffTraces.delete(id), TRACE_KEEP_MS + 60000).unref();
+    return t;
+}
+
+function traceLog(t, entry) {
+    t.counts.requests++;
+    if (entry.blocked) t.counts.blocked++;
+    else if (entry.s >= 400 || entry.err) t.counts.failed++;
+    if (['video', 'audio', 'hls', 'dash'].includes(entry.k) && !entry.blocked && !(entry.s >= 400 || entry.err)) t.counts.media++;
+    if (t.log.length < 600) t.log.push({ ...entry, at: Date.now() - t.startedAt });
+}
+
+function publicTrace(t) {
+    return { id: t.id, url: t.url, phase: t.phase, done: t.done, elapsed: (t.endedAt || Date.now()) - t.startedAt,
+        counts: t.counts, tap: t.tap, attempts: t.attempts, verdict: t.verdict, account: t.account || null, title: t.title, live: Boolean(t.page), shot: Boolean(t.lastShot || t.frame) };
+}
+
+/** Sayfa neden video vermedi? Sayfanın son hâline ve isteklerine bakılır. */
+async function diagnose(page) {
+    const out = { videos: 0, playing: 0, blob: 0, iframes: 0, password: false, robot: false };
+    for (const frame of page.frames()) {
+        const r = await Promise.race([frame.evaluate(() => {
+            const vids = [...document.querySelectorAll('video')];
+            const text = (document.title + ' ' + (document.body ? document.body.innerText.slice(0, 3000) : '')).toLowerCase();
+            return {
+                videos: vids.length,
+                playing: vids.filter((v) => v.currentTime > 0).length,
+                blob: vids.filter((v) => /^blob:/.test(v.currentSrc || v.src || '')).length,
+                iframes: document.querySelectorAll('iframe').length,
+                password: Boolean(document.querySelector('input[type="password"]')),
+                robot: /just a moment|attention required|checking your browser|verify you are human|robot değil|captcha/.test(text)
+                    || Boolean(document.querySelector('iframe[src*="captcha"], iframe[src*="challenges.cloudflare"]'))
+            };
+        }).catch(() => null), new Promise((res) => setTimeout(() => res(null), 1500))]);
+        if (!r) continue;
+        out.videos += r.videos; out.playing += r.playing; out.blob += r.blob; out.iframes += r.iframes;
+        out.password = out.password || r.password; out.robot = out.robot || r.robot;
+    }
+    return out;
+}
+
+function verdictOf(t, main, items, d) {
+    if (items.some((i) => !i.failed)) return null;
+    const failedMedia = t.log.filter((e) => ['video', 'audio', 'hls', 'dash'].includes(e.k) && (e.s >= 400 || e.err));
+    if (main && main.status >= 400) {
+        return main.status === 401 || main.status === 403
+            ? { code: 'denied', title: `Sayfa HTTP ${main.status} döndü`, text: 'Site bu sayfayı sunucuna açmadı: giriş, bölge izni ya da robot kontrolü istiyor olabilir.', action: 'remote' }
+            : { code: 'http', title: `Sayfa HTTP ${main.status} döndü`, text: main.status === 404 ? 'Sayfa bulunamadı; adres yanlış ya da video kaldırılmış.' : 'Site sayfayı vermedi.', action: 'page' };
+    }
+    if (d && d.robot) return { code: 'robot', title: 'Site robot kontrolü istiyor', text: 'Sayfa "insan mısın" doğrulaması gösteriyor. Kendim dokunayım ile bir kez geçince sonraki aramalar da geçer.', action: 'remote' };
+    if (d && d.password) return { code: 'login', title: 'Sayfa giriş istiyor', text: 'Sayfada giriş kutusu var. Kendim dokunayım ile bir kez giriş yaparsan sunucunda saklanır.', action: 'remote' };
+    if (failedMedia.length) {
+        const s = failedMedia[0].s;
+        return { code: 'media-denied', title: s ? `Video isteği reddedildi (HTTP ${s})` : 'Video isteği tamamlanamadı', text: `Oynatıcı ${failedMedia.length} video isteği yaptı ama site vermedi: oturum, bölge izni ya da süreli anahtar istiyor olabilir.`, action: 'remote' };
+    }
+    if (d && d.blob && d.playing) return { code: 'blob', title: 'Video oynadı ama bağlantısı görünmedi', text: 'Video parça parça, gizlenmiş isteklerle yükleniyor. Oynatıp kaydet bunu çoğu zaman aşar.', action: 'capture' };
+    if (d && (d.videos || d.iframes)) {
+        return { code: 'nostart', title: 'Video başlatılamadı', text: `Sayfa açıldı${d.videos ? ', oynatıcı bulundu' : ''}. ${t.attempts ? `Oynat'a ${t.attempts} kez basıldı ama` : 'Ama'} oynatıcı hiç video istemedi. Büyük ihtimalle önce bir onay, reklam ya da giriş bekliyor.`, action: 'remote' };
+    }
+    return { code: 'noplayer', title: 'Sayfada oynatıcı görünmüyor', text: 'Sayfada video ya da oynatıcı çerçevesi yok. Liste veya ana sayfa olabilir; videonun kendi sayfasını dene.', action: 'page' };
+}
+
+/** Sayfa giriş istediyse o sitenin kayıtlı girişi düşmüş sayılır; sonuç ekranı hesabı önerir. */
+function noteAccount(t, pageUrl) {
+    if (!t.verdict) return;
+    if (['login', 'denied'].includes(t.verdict.code)) logins.markLost(accountDomain(pageUrl));
+    if (['login', 'denied', 'media-denied', 'nostart'].includes(t.verdict.code)) t.account = accountInfo(pageUrl);
+}
+
+async function sniff(pageUrl, waitMs, traceId = '') {
+    const t = newTrace(traceId, pageUrl);
     const { context, page, state } = await openRecordedPage(pageUrl,
-        { userAgent: DESKTOP_UA, viewport: { width: 1280, height: 800 } });
+        { userAgent: DESKTOP_UA, viewport: { width: 1280, height: 800 } }, { log: t ? (e) => traceLog(t, e) : null });
+    if (t) {
+        t.context = context;
+        t.page = page;
+    }
 
     const started = Date.now();
     let title = '';
@@ -449,6 +604,7 @@ async function sniff(pageUrl, waitMs) {
         } catch (err) {
             if (/Download is starting|net::ERR_ABORTED/i.test(err.message)) {
                 main = { status: 200, contentType: '', download: true };
+                if (t) Object.assign(t, { done: true, endedAt: Date.now(), phase: 'Adres doğrudan dosya' });
                 return { title: '', finalUrl, items: [], main, elapsedMs: Date.now() - started };
             }
             throw err;
@@ -456,7 +612,14 @@ async function sniff(pageUrl, waitMs) {
         if (response) main = { status: response.status(), contentType: (response.headers()['content-type'] || '').toLowerCase() };
         finalUrl = page.url();
         guard.arm(finalUrl);
+        if (t) t.phase = 'Sayfa açıldı, oynatıcı aranıyor';
         if (main && (main.status >= 400 || /^(video|audio)\/|mpegurl|dash\+xml/.test(main.contentType))) {
+            if (t) {
+                t.lastShot = await page.screenshot({ type: 'jpeg', quality: 55, timeout: 5000 }).catch(() => null);
+                t.verdict = main.status >= 400 ? verdictOf(t, main, [], null) : null;
+                noteAccount(t, pageUrl);
+                Object.assign(t, { done: true, endedAt: Date.now(), phase: main.status >= 400 ? t.verdict.title : 'Adres doğrudan medya' });
+            }
             return { title: '', finalUrl, items: [], main, elapsedMs: Date.now() - started };
         }
 
@@ -469,13 +632,30 @@ async function sniff(pageUrl, waitMs) {
             if (state.firstMediaAt && Date.now() - state.firstMediaAt > 2000) break;
             await page.waitForTimeout(400);
             if (!state.firstMediaAt) await nudgePlayback(page, started, nudge);
+            if (t) {
+                t.attempts = nudge.attempts || 0;
+                if (nudge.last) t.tap = nudge.last;
+                t.phase = state.firstMediaAt ? 'Video bulundu, kaliteler bekleniyor'
+                    : nudge.last ? `${nudge.last.what[0].toUpperCase()}${nudge.last.what.slice(1)} basıldı · ${t.attempts}. deneme` : 'Oynatıcı bekleniyor';
+            }
         }
         title = await page.title().catch(() => '');
         // Saklanan liste içerikleri okunsun (sayfa kapanmadan).
         await Promise.race([Promise.allSettled(state.pending), new Promise((r) => setTimeout(r, 3000))]);
         // Sayfanın verdiği çerezler (ör. TikTok'un video için istediği) indirmede kullanılsın.
         cookieJar.add(await context.cookies().catch(() => []));
+        if (t) {
+            t.phase = 'Sonuç hazırlanıyor';
+            t.title = title;
+            t.lastShot = await page.screenshot({ type: 'jpeg', quality: 55, timeout: 5000 }).catch(() => null);
+            if (![...state.found.values()].some((i) => !i.failed)) t.diag = await diagnose(page);
+        }
     } finally {
+        if (t) {
+            stopCast(t);
+            t.page = null;
+            t.context = null;
+        }
         await context.close().catch(() => {});
     }
 
@@ -485,7 +665,14 @@ async function sniff(pageUrl, waitMs) {
         if (!(await isAdRequest(item.url, pageUrl, 'media'))) items.push(item);
         else countVideoAd();
     }
-    return { title, finalUrl, items, main, blockedAds: state.blockedAds, elapsedMs: Date.now() - started };
+    if (t) {
+        t.verdict = verdictOf(t, main, items, t.diag);
+        noteAccount(t, pageUrl);
+        t.done = true;
+        t.endedAt = Date.now();
+        t.phase = !t.verdict && items.length ? `${items.length} medya bulundu` : t.verdict ? t.verdict.title : 'Bitti';
+    }
+    return { title, finalUrl, items, main, blockedAds: state.blockedAds, elapsedMs: Date.now() - started, trace: t ? publicTrace(t) : null };
 }
 
 /* ---------------- Etkileşimli oturum: kullanıcı sayfaya kendisi dokunur ---------------- */
@@ -504,8 +691,7 @@ async function closeSession(id) {
     if (!session) return;
     sessions.delete(id);
     clearTimeout(session.saveTimer);
-    for (const send of session.viewers || []) send.end();
-    if (session.cast) session.cast.detach().catch(() => {});
+    stopCast(session);
     cookieJar.add(await session.context.cookies().catch(() => []));
     await logins.save(session.context);
     await session.context.close().catch(() => {});
@@ -518,22 +704,33 @@ setInterval(() => {
     }
 }, 15000).unref();
 
-async function openSession(pageUrl) {
+/** Uygulamanın gönderdiği ekran boyutu (telefonun kendi ekranı); yoksa varsayılan telefon boyu. */
+function sessionViewport(screen = {}) {
+    const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.max(lo, Math.min(hi, Math.round(Number(v)))) : d);
+    return {
+        width: clamp(screen.width, 240, 1600, SESSION_VIEWPORT.width),
+        height: clamp(screen.height, 320, 2400, SESSION_VIEWPORT.height),
+        dpr: Math.max(1, Math.min(3, Number(screen.dpr) || 1.5))
+    };
+}
+
+async function openSession(pageUrl, screen = {}, account = '') {
     // Sınır dolduysa en uzun süredir kullanılmayanı kapat (telefonda bellek kısıtlı).
     while (sessions.size >= MAX_SESSIONS) {
         const oldest = [...sessions.values()].sort((a, b) => a.lastUsed - b.lastUsed)[0];
         await closeSession(oldest.id);
     }
+    const vp = sessionViewport(screen);
     const { context, page, state } = await openRecordedPage(pageUrl, {
-        userAgent: MOBILE_UA, viewport: SESSION_VIEWPORT, deviceScaleFactor: 1.5, isMobile: true, hasTouch: true
+        userAgent: MOBILE_UA, viewport: { width: vp.width, height: vp.height }, deviceScaleFactor: vp.dpr, isMobile: true, hasTouch: true
     }, { interactive: true });
     // page: ekranda gösterilen sayfa; main: asıl sayfa. Sayfa yeni pencere açınca (giriş penceresi,
     // yeni sekme) ekran ona geçer; pencere kapanınca (ya da ondan Geri ile çıkılınca) önceki sayfaya dönülür.
     const session = { id: randomBytes(12).toString('hex'), context, page, main: page, state, created: Date.now(), lastUsed: Date.now(),
-        viewers: new Set(), frame: null };
+        viewers: new Set(), frame: null, viewport: vp };
     context.on('page', async (popup) => {
         if (popup === page) return;
-        await popup.setViewportSize(SESSION_VIEWPORT).catch(() => {});
+        await popup.setViewportSize({ width: session.viewport.width, height: session.viewport.height }).catch(() => {});
         const previous = session.page;
         setActivePage(session, popup);
         popup.on('close', () => {
@@ -550,8 +747,70 @@ async function openSession(pageUrl) {
             throw new Error(`Sayfa açılamadı: ${err.message.split('\n')[0]}`);
         }
     }
+    // "Kendim dokunayım" ile yapılan girişler de algılanır ve Hesaplar'a eklenir.
+    const auto = !account;
+    if (auto) account = accountDomain(pageUrl);
+    if (account) {
+        session.autoAccount = auto;
+        // Hesaba giriş: sayfa yüklendikten sonraki çerezler başlangıç sayılır; giriş, bir şifre kutusu
+        // görülüp kaybolunca ve sitenin çerezleri değişince algılanır.
+        session.account = account;
+        session.loginBase = new Map((await context.cookies().catch(() => [])).filter((c) => sameSite(c.domain, account)).map((c) => [c.name, c.value]));
+    }
     startCast(session).catch(() => {});
     return session;
+}
+
+/** Açık sayfalardan birinde (çerçeveler dahil) görünür bir şifre kutusu var mı? */
+async function hasPasswordField(context) {
+    for (const pg of context.pages()) {
+        for (const frame of pg.frames()) {
+            const found = await Promise.race([frame.evaluate(() => [...document.querySelectorAll('input[type="password"]')]
+                .some((i) => i.offsetWidth > 0 && i.offsetHeight > 0)).catch(() => false), new Promise((r) => setTimeout(() => r(false), 800))]);
+            if (found) return true;
+        }
+    }
+    return false;
+}
+
+/** Hesaba giriş oturumu: giriş yapıldı mı? Yapıldıysa giriş saklanır, hesap "girili" olur. */
+async function checkLogin(session) {
+    if (!session.account || session.loginDone || session.loginChecking) return;
+    session.loginChecking = true;
+    try {
+        const domain = session.account;
+        const now = Date.now();
+        const cookies = (await session.context.cookies().catch(() => []))
+            .filter((c) => sameSite(c.domain, domain) && !(c.expires > 0 && c.expires * 1000 < now));
+        const known = knownSite(domain);
+        const names = known && known.auth.length ? known.auth : null;
+        const password = await hasPasswordField(session.context);
+        if (password) {
+            session.sawPassword = true;
+            return;
+        }
+        const changed = cookies.filter((c) => session.loginBase.get(c.name) !== c.value);
+        let auth = [];
+        if (names) {
+            const present = cookies.filter((c) => names.includes(c.name));
+            if (!present.length) return;
+            const url = activePage(session).url();
+            const onLoginPage = /login|log_in|signin|sign_in|accounts\.google|\/i\/flow/i.test(url);
+            // Çerez yeni geldiyse giriş yapıldı; zaten girili açıldıysa (giriş sayfası değil) de öyle.
+            const fresh = present.some((c) => changed.includes(c));
+            if (!fresh && (session.autoAccount || onLoginPage || now - session.created < 5000)) return;
+            auth = present.map((c) => c.name);
+        } else {
+            if (!session.sawPassword || !changed.length) return;
+            auth = changed.filter((c) => authLike(c.name)).map((c) => c.name);
+            if (!auth.length) auth = changed.map((c) => c.name);
+        }
+        await logins.save(session.context);
+        logins.markLoggedIn(domain, auth, (known || {}).name);
+        session.loginDone = true;
+    } finally {
+        session.loginChecking = false;
+    }
 }
 
 /** Gösterilen sayfa kapandıysa (giriş penceresi işini bitirdi) asıl sayfaya dönülür. */
@@ -565,40 +824,6 @@ function setActivePage(session, page) {
     startCast(session).catch(() => {});
 }
 
-/**
- * Canlı görüntü: tarayıcının ekran yayını (screencast). Sayfa değiştikçe kare gelir (değişmezse hiç
- * gelmez); kareler açık "/stream" bağlantılarına anında iletilir. Telefonu yormamak için saniyede
- * en fazla ~12 kare.
- */
-async function startCast(session) {
-    const page = session.page;
-    if (session.castPage === page || page.isClosed()) return;
-    session.castPage = page;
-    if (session.cast) {
-        const old = session.cast;
-        session.cast = null;
-        old.send('Page.stopScreencast').catch(() => {});
-        old.detach().catch(() => {});
-    }
-    const cdp = await session.context.newCDPSession(page);
-    if (session.castPage !== page) return cdp.detach().catch(() => {});
-    session.cast = cdp;
-    let lastAck = 0;
-    cdp.on('Page.screencastFrame', ({ data, sessionId }) => {
-        session.frame = Buffer.from(data, 'base64');
-        for (const send of session.viewers) send(session.frame);
-        const wait = Math.max(0, 80 - (Date.now() - lastAck));
-        setTimeout(() => {
-            lastAck = Date.now();
-            cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
-        }, wait);
-    });
-    await cdp.send('Page.startScreencast', {
-        format: 'jpeg', quality: 60, everyNthFrame: 1,
-        maxWidth: Math.round(SESSION_VIEWPORT.width * 1.5), maxHeight: Math.round(SESSION_VIEWPORT.height * 1.5)
-    });
-}
-
 /** Girişleri art arda dokunuşlarda bir kez sakla (her saklama tüm çerezleri okur). */
 function saveLoginsSoon(session) {
     clearTimeout(session.saveTimer);
@@ -607,96 +832,131 @@ function saveLoginsSoon(session) {
 
 async function sessionState(session) {
     activePage(session);
+    await checkLogin(session).catch(() => {});
     return {
         id: session.id,
         title: await session.page.title().catch(() => ''),
         url: session.page.url(),
         popup: session.page !== session.main, // giriş penceresi gösteriliyor
-        width: SESSION_VIEWPORT.width,
-        height: SESSION_VIEWPORT.height,
-        items: foundItems(session.state)
+        width: session.viewport.width,
+        height: session.viewport.height,
+        items: foundItems(session.state),
+        login: session.account ? { domain: session.account, done: Boolean(session.loginDone), auto: Boolean(session.autoAccount) } : undefined
     };
 }
-
-const SESSION_KEYS = new Set(['Enter', 'Backspace', 'Escape', 'Tab']);
 
 async function sessionAction(session, action) {
     const page = activePage(session);
-    const { width, height } = SESSION_VIEWPORT;
-    const fraction = (value) => Math.min(1, Math.max(0, Number(value) || 0));
-    switch (action.type) {
-        case 'tap':
-            await page.touchscreen.tap(fraction(action.x) * width, fraction(action.y) * height);
-            return; // sonuç canlı görüntüde görünür; beklemeye gerek yok
-        case 'wheel': {
-            // Parmakla kaydırma: parmağın altındaki öğe kaydırılır (iç listeler, kaydırmalı galeriler).
-            const dx = Math.max(-4000, Math.min(4000, Number(action.dx) || 0));
-            const dy = Math.max(-4000, Math.min(4000, Number(action.dy) || 0));
-            await page.mouse.move(fraction(action.x) * width, fraction(action.y) * height);
-            await page.mouse.wheel(dx, dy);
-            return;
-        }
-        case 'forward':
-            await page.goForward({ timeout: 10000 }).catch(() => {});
-            break;
-        case 'scroll': {
-            const dy = Math.max(-3, Math.min(3, Number(action.dy) || 0)) * height;
-            await page.mouse.move(width / 2, height / 2);
-            await page.mouse.wheel(0, dy);
-            break;
-        }
-        case 'type':
-            await page.keyboard.type(String(action.text || '').slice(0, 500), { delay: 20 });
-            break;
-        case 'key':
-            if (!SESSION_KEYS.has(action.key)) throw new Error('Desteklenmeyen tuş');
-            // Enter giriş penceresini kapatabilir (giriş bitti); kapanan sayfa hata sayılmaz.
-            await page.keyboard.press(action.key).catch((err) => { if (!page.isClosed()) throw err; });
-            break;
-        case 'back': {
-            const went = await page.goBack({ timeout: 10000 }).catch(() => null);
-            // Açılan pencerede geri gidilecek yer yoksa pencere kapanır, önceki sayfaya dönülür.
-            if (!went && page !== session.main) await page.close().catch(() => {});
-            break;
-        }
-        case 'reload':
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-            break;
-        default:
-            throw new Error('Bilinmeyen işlem');
+    if (action.type === 'viewport') {
+        // Telefon klavyesi açılıp kapanınca ekran boyu değişir; sayfa da aynısını görsün.
+        const next = sessionViewport({ ...action, dpr: session.viewport.dpr });
+        if (next.width === session.viewport.width && next.height === session.viewport.height) return null;
+        session.viewport = next;
+        for (const pg of session.context.pages()) await pg.setViewportSize({ width: next.width, height: next.height }).catch(() => {});
+        await startCast(session, true);
+        return null;
     }
-    if (!page.isClosed()) await page.waitForTimeout(150).catch(() => {});
+    const result = await liveAction(session, action);
+    if (!result) throw new Error('Bilinmeyen işlem');
+    // Açılan pencerede geri gidilecek yer yoksa pencere kapanır, önceki sayfaya dönülür.
+    if (action.type === 'back' && !result.went && page !== session.main) {
+        await page.close().catch(() => {});
+        return { went: true };
+    }
+    if (!['touch', 'text', 'tap', 'wheel'].includes(action.type) && !page.isClosed()) await page.waitForTimeout(150).catch(() => {});
+    return result;
+}
+
+const sessionFocus = (session) => liveFocus(activePage(session));
+
+/**
+ * "Bu videoyu yakala": sayfada oynayan videolara bakılır (tüm pencere ve çerçeveler). Doğrudan dosya
+ * adresi olanlar listeye eklenir; parça parça yükleniyorsa (blob) oynatıcının yüklediği yayın listesi
+ * zaten listededir ya da "oynatıp kaydet" önerilir.
+ */
+async function catchPlaying(session) {
+    const videos = await playingVideos(session.context);
+    for (const v of videos) {
+        if (!/^https?:/i.test(v.src)) continue;
+        const ct = /\.m3u8(\?|$)/i.test(v.src) ? 'application/vnd.apple.mpegurl' : /\.mpd(\?|$)/i.test(v.src) ? 'application/dash+xml' : 'video/mp4';
+        session.state.record(v.src, ct, 0, v.frameUrl);
+        const kind = classify(v.src, ct);
+        const it = kind && session.state.found.get(dedupKey(v.src, kind));
+        if (it) {
+            it.manual = true; // oynayan video: listeden elenmesin
+            it.failed = false;
+        }
+    }
+    await Promise.all(session.state.pending.splice(0));
+    const playing = videos.filter((v) => v.time > 0 || !v.paused);
+    return {
+        items: foundItems(session.state),
+        playing: playing.slice(0, 5).map((v) => ({ src: /^blob:/i.test(v.src) ? 'blob' : v.src, time: v.time, duration: v.duration, live: v.live, w: v.w, h: v.h })),
+        blob: playing.some((v) => /^blob:/i.test(v.src)),
+        pageUrl: activePage(session).url()
+    };
 }
 
 /**
- * Odaktaki kutucuk: uygulama şifre kutusunda yazılanı gizler, e-postada uygun klavyeyi açar.
- * Önce ana sayfaya bakılır; odak bir çerçevedeyse (giriş formu iframe'de) yalnızca o çerçeveye.
- * Her bakış kısa süreyle sınırlı: meşgul bir reklam çerçevesi dokunuşları bekletmesin.
+ * Önizleme: medyanın bir karesi (küçük resim), süresi ve çözünürlüğü sunucudaki ffmpeg ile, sayfanın
+ * oturumuyla (çerez, Referer) alınır. ffmpeg yoksa yalnızca bilinenler döner.
  */
-async function sessionFocus(session) {
-    const probe = () => {
-        const el = document.activeElement;
-        if (!el || el === document.body) return null;
-        if (el.tagName === 'IFRAME') return { frame: el.src || el.name || true };
-        const editable = el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName);
-        if (!editable) return null;
-        return { type: (el.getAttribute('type') || el.tagName).toLowerCase(), label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || '' };
-    };
-    const quick = (frame) => Promise.race([frame.evaluate(probe).catch(() => null), new Promise((r) => setTimeout(() => r(null), 400))]);
-    const page = activePage(session);
-    const top = await quick(page.mainFrame());
-    if (!top || !top.frame) return top;
-    for (const frame of page.mainFrame().childFrames().slice(0, 6)) {
-        const focus = await quick(frame);
-        if (focus && !focus.frame) return focus;
-    }
-    return null;
+async function probeMedia(session, url) {
+    session.probes = session.probes || new Map();
+    if (session.probes.has(url)) return session.probes.get(url);
+    const job = (async () => {
+        let target;
+        try {
+            target = new URL(url);
+            if (!/^https?:$/.test(target.protocol)) throw new Error();
+            await assertPublicTarget(target); // yerel ağ adreslerine ffmpeg ile gidilmesin
+        } catch (_) {
+            return { error: 'Geçersiz adres' };
+        }
+        const tool = await findFfmpeg();
+        if (!tool) return { error: 'Sunucuda ffmpeg yok' };
+        const item = [...session.state.found.values()].find((i) => i.url === url) || {};
+        const cookies = await session.context.cookies(url).catch(() => []);
+        const headers = [`Referer: ${item.referer || session.main.url()}`, cookies.length ? `Cookie: ${cookies.map((c) => `${c.name}=${c.value}`).join('; ')}` : '']
+            .filter(Boolean).map((l) => l + '\r\n').join('');
+        // Uzantısı gizlenmiş yayın listesi (.txt, .jpg...) için ffmpeg'in uzantı denetimi gevşetilir.
+        // (extension_picky ffmpeg 7'de geldi; eskisinde bilinmeyen seçenek hata verir.)
+        const major = Number(String(tool.version || '').replace(/^n/, '').split('.')[0]) || 0;
+        const hls = item.kind === 'hls' ? ['-f', 'hls', '-allowed_extensions', 'ALL', ...(major >= 7 ? ['-extension_picky', '0'] : [])] : [];
+        const args = ['-hide_banner', '-nostdin', '-user_agent', MOBILE_UA, '-headers', headers, '-rw_timeout', '15000000',
+            ...hls, '-ss', '3', '-i', url, '-frames:v', '1', '-vf', 'scale=320:-2', '-f', 'image2', '-c:v', 'mjpeg', '-q:v', '6', 'pipe:1'];
+        return new Promise((resolve) => {
+            const child = spawn(tool.cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+            const out = [];
+            let err = '';
+            const timer = setTimeout(() => child.kill('SIGKILL'), 25000);
+            child.stdout.on('data', (d) => out.push(d));
+            child.stderr.on('data', (d) => { if (err.length < 20000) err += d; });
+            child.on('error', () => resolve({ error: 'ffmpeg çalışmadı' }));
+            child.on('close', () => {
+                clearTimeout(timer);
+                const dur = /Duration: (\d+):(\d+):([\d.]+)/.exec(err);
+                const res = /Video:.*?\s(\d{2,5})x(\d{2,5})[\s,]/.exec(err);
+                const jpeg = Buffer.concat(out);
+                resolve({
+                    thumb: jpeg.length ? `data:image/jpeg;base64,${jpeg.toString('base64')}` : '',
+                    duration: dur ? Number(dur[1]) * 3600 + Number(dur[2]) * 60 + Number(dur[3]) : 0,
+                    width: res ? Number(res[1]) : 0,
+                    height: res ? Number(res[2]) : 0,
+                    error: jpeg.length || dur ? '' : (err.trim().split('\n').pop() || 'açılamadı').slice(0, 160)
+                });
+            });
+        });
+    })();
+    session.probes.set(url, job);
+    return job;
 }
 
 // HLS playlist'iyle aynı klasördeki .mp4 adlı fMP4 parçaları ayrı video gibi listelenmesin.
 function dropHlsSiblings(items) {
     const dirs = new Set(items.filter((i) => i.kind === 'hls').map((i) => dirOf(i.url)));
-    return items.filter((i) => i.kind !== 'video' || !dirs.has(dirOf(i.url)));
+    // Elle yakalanan (oynayan) video hiç elenmez; diğerlerinden yalnızca parça gibi görünenler (.mp4/.m4v).
+    return items.filter((i) => i.kind !== 'video' || i.manual || !/\.(mp4|m4v)(\?|$)/i.test(i.url) || !dirs.has(dirOf(i.url)));
 }
 
 function dirOf(url) {
@@ -1687,7 +1947,7 @@ async function handleJobs(req, res, url) {
             return sendJson(res, 200, await manager.start({ ...(await readJson(req)), sameDevice }));
         }
     }
-    const match = url.pathname.match(/^\/(?:record|capture)\/([0-9a-f]{24})(\/stop|\/file|\/shot|\/action)?$/);
+    const match = url.pathname.match(/^\/(?:record|capture)\/([0-9a-f]{24})(\/stop|\/file|\/shot|\/action|\/stream)?$/);
     if (!match) return false;
     const [, id, sub = ''] = match;
     if (sub === '' && req.method === 'GET') {
@@ -1706,6 +1966,10 @@ async function handleJobs(req, res, url) {
         if (!image) return sendJson(res, 404, { error: 'Kayıt sayfası kapalı' });
         res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/jpeg', 'content-length': image.length, 'cache-control': 'no-store' });
         return res.end(image);
+    }
+    if (kind === 'capture' && sub === '/stream' && req.method === 'GET') {
+        if (!manager.stream(id, req, res, CORS_HEADERS)) return sendJson(res, 404, { error: 'Kayıt sayfası kapalı' });
+        return;
     }
     if (kind === 'capture' && sub === '/action' && req.method === 'POST') {
         return sendJson(res, 200, await manager.action(id, await readJson(req)));
@@ -1884,6 +2148,34 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { enabled: logins.enabled, sites: logins.sites() });
         }
 
+        if (url.pathname === '/accounts' && req.method === 'GET') {
+            const accounts = logins.accounts().map(({ auth, ...a }) => a);
+            return sendJson(res, 200, {
+                enabled: logins.enabled,
+                accounts,
+                others: logins.sites().filter((s) => !accounts.some((a) => sameSite(s.domain, a.domain))),
+                known: KNOWN_SITES.map((k) => ({ domain: k.domain, name: k.name }))
+            });
+        }
+        if (url.pathname === '/accounts' && req.method === 'POST') {
+            // Hesap ekle: giriş sayfası döner; uygulama onu "Kendim dokunayım" ile açar.
+            const body = await readJson(req);
+            const domain = accountDomain(body.url || body.domain);
+            if (!domain || !domain.includes('.')) return sendJson(res, 400, { error: 'Geçerli bir site adresi yaz' });
+            const known = knownSite(domain);
+            let login = known ? known.login : `https://${domain}/`;
+            if (!known && /^https?:\/\//i.test(String(body.url || ''))) login = String(body.url);
+            await assertPublicTarget(new URL(login));
+            const a = logins.addAccount(domain, known ? known.name : domain);
+            return sendJson(res, 200, { domain, name: a.name, login });
+        }
+        if (url.pathname === '/accounts' && req.method === 'DELETE') {
+            const domain = accountDomain(url.searchParams.get('domain'));
+            if (!domain) return sendJson(res, 400, { error: 'domain gerekli' });
+            logins.clear(domain);
+            return sendJson(res, 200, { ok: true });
+        }
+
         if (url.pathname === '/sniff' && req.method === 'POST') {
             const body = await readJson(req);
             let target;
@@ -1899,10 +2191,28 @@ const server = http.createServer(async (req, res) => {
             const waitMs = Math.min(MAX_WAIT_MS, Math.max(1000, Number(body.waitMs) || DEFAULT_WAIT_MS));
             activeSniffs++;
             try {
-                return sendJson(res, 200, await sniff(target.href, waitMs));
+                return sendJson(res, 200, await sniff(target.href, waitMs, body.traceId));
             } finally {
                 activeSniffs--;
             }
+        }
+
+        const traceMatch = url.pathname.match(/^\/sniff\/([0-9a-f]{16,32})(\/stream|\/shot|\/log)?$/);
+        if (traceMatch && req.method === 'GET') {
+            const t = sniffTraces.get(traceMatch[1]);
+            const sub = traceMatch[2] || '';
+            if (!t) return sendJson(res, 404, { error: 'Arama kaydı yok (10 dakikadan eski olabilir)' });
+            if (sub === '') return sendJson(res, 200, publicTrace(t));
+            if (sub === '/log') return sendJson(res, 200, { items: t.log, counts: t.counts });
+            if (sub === '/stream') {
+                if (!t.page) return sendJson(res, 404, { error: 'Arama bitti' });
+                serveLive(t, req, res, CORS_HEADERS);
+                return;
+            }
+            const image = t.lastShot || t.frame;
+            if (!image) return sendJson(res, 404, { error: 'Görüntü yok' });
+            res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/jpeg', 'content-length': image.length, 'cache-control': 'no-store' });
+            return res.end(image);
         }
 
         if (url.pathname === '/fetch' && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -1920,7 +2230,9 @@ const server = http.createServer(async (req, res) => {
                 return sendJson(res, 400, { error: 'Geçerli bir url gönderin' });
             }
             await assertPublicTarget(target);
-            const session = await openSession(target.href);
+            const account = body.account ? accountDomain(body.account) : '';
+            if (account) logins.addAccount(account, (knownSite(account) || {}).name);
+            const session = await openSession(target.href, body.screen || {}, account);
             return sendJson(res, 200, await sessionState(session));
         }
 
@@ -1935,30 +2247,18 @@ const server = http.createServer(async (req, res) => {
             if (!session) return sendJson(res, 404, { error: 'Oturum kapanmış; sayfayı yeniden aç' });
             session.lastUsed = Date.now();
 
-            if (sub === '' && req.method === 'GET') return sendJson(res, 200, await sessionState(session));
+            if (sub === '' && req.method === 'GET') {
+                const state = await sessionState(session);
+                // ?videos=1: sayfada oynayan video var mı ("Bu videoyu yakala" düğmesi için).
+                if (url.searchParams.get('videos')) state.playing = (await playingVideos(session.context)).some((v) => v.time > 0 && !v.paused);
+                return sendJson(res, 200, state);
+            }
             if (sub === '' && req.method === 'DELETE') {
                 await closeSession(id);
                 return sendJson(res, 200, { ok: true });
             }
             if (sub === '/stream' && req.method === 'GET') {
-                // Canlı görüntü (MJPEG): <img src> ile gösterilir, her yeni kare hemen gider.
-                res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'multipart/x-mixed-replace; boundary=kare', 'cache-control': 'no-store', connection: 'keep-alive' });
-                const send = (buf) => {
-                    res.write(`--kare\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`);
-                    res.write(buf);
-                    res.write('\r\n');
-                };
-                send.end = () => res.end();
-                if (session.frame) send(session.frame);
-                session.viewers.add(send);
-                const alive = setInterval(() => {
-                    session.lastUsed = Date.now(); // görüntü açık oldukça oturum kapanmasın
-                    if (session.frame) send(session.frame); // bazı tarayıcılar son kareyi bir sonraki gelince gösterir
-                }, 4000);
-                req.on('close', () => {
-                    clearInterval(alive);
-                    session.viewers.delete(send);
-                });
+                serveLive(session, req, res, CORS_HEADERS, () => { session.lastUsed = Date.now(); });
                 return;
             }
             if (sub === '/shot' && req.method === 'GET' && session.frame && session.castPage === session.page) {
@@ -1980,7 +2280,21 @@ const server = http.createServer(async (req, res) => {
             }
             if (sub === '/action' && req.method === 'POST') {
                 const action = await readJson(req);
-                await sessionAction(session, action);
+                if (action.type === 'catch') return sendJson(res, 200, await catchPlaying(session));
+                if (action.type === 'probe') return sendJson(res, 200, await probeMedia(session, String(action.url || '')));
+                const result = await sessionAction(session, action);
+                if (['touch', 'text', 'viewport'].includes(action.type)) {
+                    // Parmak kalkınca odaktaki kutucuk sorulur: yazılacak bir yerse telefon klavyesi açılır.
+                    if (action.type === 'touch' && action.phase === 'end') {
+                        await new Promise((r) => setTimeout(r, 120));
+                        return sendJson(res, 200, { ok: true, popup: session.page !== session.main, focus: await sessionFocus(session) });
+                    }
+                    return sendJson(res, 200, { ok: true });
+                }
+                if (action.type === 'back') {
+                    saveLoginsSoon(session);
+                    return sendJson(res, 200, { ...await sessionState(session), ...(result || {}) });
+                }
                 saveLoginsSoon(session); // giriş yapıldıysa saklansın (her dokunuşta değil, kısa aralıkla)
                 // Dokunuş ve kaydırma hızlı yanıtlanır (sonuç canlı görüntüde); diğerleri sayfa durumunu da döner.
                 if (action.type === 'wheel') return sendJson(res, 200, { ok: true, popup: session.page !== session.main });

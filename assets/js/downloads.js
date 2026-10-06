@@ -719,12 +719,9 @@ export function initDownloads({ onNavigate, onDetect, onResume } = {}) {
     window.addEventListener('offline', render);
 
     // Süren kayıt/indirme varken sayfa yanlışlıkla kapatılmasın.
-    window.addEventListener('beforeunload', (e) => {
-        if ([...jobs.values()].some((j) => j.status === 'active' && !j.bgId && !j.serverRec && !j.serverDl)) {
-            e.preventDefault();
-            e.returnValue = '';
-        }
-    });
+    // Sayfadan çıkarken "emin misin" sorulmaz: paylaşımla gelen bağlantı açık uygulamayı yeniden
+    // yüklerken bu soru gezinmeyi durdurup uygulamanın hiç açılmamasına yol açabiliyordu. Yarıda kalan
+    // indirmeler zaten saklanıyor ve açılışta "Yeniden başlat" ile sürdürülebiliyor.
 
     onPrefs((_, key) => {
         if (key === 'concurrency') pump();
@@ -795,7 +792,8 @@ function renderNow() {
     // Video başladıysa (ya da iş bittiyse) dokunma penceresi kendiliğinden kapanır.
     if (sheet) {
         const job = jobs.get(sheet.jobId);
-        if (!job || !job.needsUser) sheet.view.close();
+        // Kayıt başlayınca ekran açık kalır (üstte kaydın durumu); iş bitince/silinince kapanır.
+        if (!job || !['active', 'queued'].includes(job.status)) sheet.view.close();
     }
 
     const state = snapshot();

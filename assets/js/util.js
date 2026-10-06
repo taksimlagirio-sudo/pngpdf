@@ -156,13 +156,13 @@ export function checkRenderServer(config) {
 }
 
 /** Sayfayı kendi sunucunda gerçek tarayıcıyla çalıştırıp attığı medya isteklerini döner. */
-export function renderSniff(url, { signal, waitMs } = {}) {
+export function renderSniff(url, { signal, waitMs, traceId } = {}) {
     const config = getRenderServer();
     if (!config) return Promise.resolve(null);
     return renderRequest(config, '/sniff', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ url, waitMs }),
+        body: JSON.stringify({ url, waitMs, traceId }),
         signal
     });
 }

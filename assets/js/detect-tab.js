@@ -1,6 +1,6 @@
 // "Algıla" ekranı: adresteki içeriği tanır, önizlemesini oynatır, seçenekleri gösterir ve
 // indirmeyi/kaydı başlatır.
-import { $, escapeHtml, isHttpUrl, formatSize, hms, getRenderServer, isServerStream, checkRenderServer, saveBlob } from './util.js';
+import { $, escapeHtml, isHttpUrl, formatSize, hms, getRenderServer, isServerStream, checkRenderServer, saveBlob, renderApi } from './util.js';
 import { analyzeUrl, formatDuration, describeMediaPlaylist, cachedManifest } from './detect.js';
 import { downloadFile } from './video.js';
 import { downloadMerged } from './merge.js';
@@ -13,6 +13,7 @@ import {
 } from './downloads.js';
 import { getPrefs, setPref, SAVE_LABELS, CONN_LABELS } from './prefs.js';
 import { canRemote, openRemoteOverlay } from './remote.js';
+import { openAccountLogin } from './accounts.js';
 import { canServerRecord, startServerRecording, captureIntoJob, serverDownloadIntoJob } from './serverrec.js';
 import { attachPreview, grabFrame, probePreview } from './preview.js';
 import { subLabel, subCode, loadCues, toSrt, toVtt, shiftCues } from './subs.js';
@@ -91,7 +92,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     if (photos) photos.subscribe((snap) => { photosSnap = snap; paintPhotos(); });
     let autoHops = 0;
     let entryUrl = '';    // algılamanın başladığı adres (sayfadan videoya geçilse de)     // sayfadan medyaya otomatik geçişte sonsuz döngüyü engeller
-    let remote = null;    // açık "kendim dokunayım" oturumu
+    let remote = null;    // açık "kendim dokunayım" oturumu (medya seçilince gizlenir, geri gelince açılır)
+    let fromRemote = false; // sonuç, kendim dokunayım listesinden seçilen medyanın
     let stickyAudio = false; // "Yalnızca ses" seçimi kalite değişince de korunur
     let bulkMode = false; // toplu eklemede: önizleme/konum sorusu/uyarılar yok
     let preview = null;   // açık önizleme oynatıcısı
@@ -99,6 +101,16 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     const thumbs = new Map(); // sayfa listesi: adres → {ok, thumb, duration, height}
 
     analyzeBtn.addEventListener('click', () => onAnalyzeClick());
+    // Kutu boşken ana düğme "Yapıştır ve algıla", bir şey yazılınca "Algıla".
+    const urlbar = urlInput.closest('.urlbar');
+    function syncAnalyzeBtn() {
+        const empty = !urlInput.value.trim();
+        analyzeBtn.textContent = empty ? 'Yapıştır ve algıla' : 'Algıla';
+        if (urlbar) urlbar.classList.toggle('empty', empty);
+    }
+    urlInput.addEventListener('input', syncAnalyzeBtn);
+    urlInput.addEventListener('change', syncAnalyzeBtn);
+    syncAnalyzeBtn();
     urlInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') onAnalyzeClick();
     });
@@ -211,12 +223,9 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     async function onAnalyzeClick() {
         showShared('');
-        let url = firstUrl(urlInput.value);
-        if (!url) {
-            try {
-                url = firstUrl(await readClipboard());
-            } catch (_) { /* pano izni yok */ }
-        }
+        const url = firstUrl(urlInput.value);
+        // Kutu boşken düğme "Yapıştır ve algıla"dır: panodaki bağlantı alınır (izin yoksa yapıştırma kutusu).
+        if (!url) return pasteAndAnalyze();
         urlInput.value = url;
         urlInput.blur(); // telefonda klavye kapansın, sonuç görünsün
         start(url);
@@ -304,13 +313,14 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
      * bakalım?" diye sorar ya da hatırlanan/ayardaki yöntemi kullanır.
      */
     async function start(url) {
+        syncAnalyzeBtn();
         const big = isHttpUrl(url) ? bigSiteOf(url) : null;
         // Site başına ayar varsa hep onunla açılır.
         const site = isHttpUrl(url) ? siteSettingFor(url) : null;
         if (site && site.method === 'remote' && canRemote()) {
             entryUrl = url;
             if (remote) remote.close();
-            remote = openRemoteOverlay(url, { onPick: (u) => analyze(u), shortUrl, onClose: () => { remote = null; } });
+            remote = openRemote(url);
             return;
         }
         if (site && site.method === 'page') return analyze(url, { noExtract: true });
@@ -370,7 +380,14 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         return 0;
     }
 
-    function showProgress(text) {
+    function showProgress(text, extra) {
+        // Sunucuda arama başladı: adım çubuğu yerine canlı panel (sunucunun ne yaptığı).
+        if (extra && extra.sniff && getRenderServer()) return showLive(extra);
+        const live = statusBox.querySelector('.sv');
+        if (live) {
+            live.querySelector('.sv-stage').textContent = text;
+            return;
+        }
         const idx = Math.max(progress ? progress.idx : 0, stepOf(text));
         if (!progress || !statusBox.querySelector('.detect-progress')) {
             statusBox.innerHTML = `
@@ -405,6 +422,153 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     function stopProgress() {
         if (progress) clearInterval(progress.timer);
         progress = null;
+    }
+
+    /* ---------------- Sunucuda arama: canlı panel ----------------
+     * Sunucudaki sayfanın canlı görüntüsü (son dokunulan yer işaretli), sayılar (istek, engellenen
+     * reklam, video) ve adımlar. Arama bitince panel yerini sonuca bırakır. */
+    function showLive({ sniff, url, trace }) {
+        stopProgress();
+        const server = getRenderServer();
+        const q = `?token=${encodeURIComponent(server.token || '')}`;
+        statusBox.innerHTML = `<div class="sv" data-trace="${sniff}">
+            <div class="sv-top"><span class="sv-url">${escapeHtml(shortUrl(url))}</span><span class="sv-time mono">0:00</span></div>
+            <div class="sv-screen"><img alt="" class="sv-wait">
+                <span class="sv-live"><i></i>sunucunda canlı</span><span class="sv-tap hidden"></span><span class="sv-note hidden"></span></div>
+            <div class="sv-stats">
+                <span><b data-c="requests">0</b><small>istek</small></span>
+                <span class="sv-blk"><b data-c="blocked">0</b><small>reklam engellendi</small></span>
+                <span class="sv-med"><b data-c="media">0</b><small>video</small></span>
+            </div>
+            <div class="sv-steps"></div>
+            <div class="sv-stage muted"></div>
+            <div class="sv-btns">${canRemote() ? '<button class="btn-ghost" data-sv="remote">Beklemeden kendim dokunayım</button>' : ''}<button class="link-btn" data-cancel>İptal</button></div>
+        </div>`;
+        const box = statusBox.querySelector('.sv');
+        box.querySelector('[data-cancel]').addEventListener('click', cancelAnalyze);
+        const rb = box.querySelector('[data-sv="remote"]');
+        if (rb) rb.addEventListener('click', () => {
+            cancelAnalyze();
+            if (remote) remote.close();
+            remote = openRemote(url);
+        });
+        const img = box.querySelector('img');
+        // Akış, sunucu sayfayı açınca bağlanır (önce açılırsa arama kaydı henüz yoktur).
+        img.addEventListener('load', () => img.classList.remove('sv-wait'));
+        img.addEventListener('error', () => {
+            // Arama bitti (canlı akış kapandı): son görüntü gösterilir.
+            if (!img.dataset.shot) {
+                img.dataset.shot = '1';
+                img.src = `${server.url}/sniff/${sniff}/shot${q}&t=${Date.now()}`;
+            }
+        });
+        const started = Date.now();
+        const icons = { ok: 'check', fail: 'close', skip: 'minus' };
+        const paint = (st) => {
+            if (!box.isConnected) return;
+            const sec = Math.floor((Date.now() - started) / 1000);
+            box.querySelector('.sv-time').textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+            if (!st) return;
+            if (st.live && !img.getAttribute('src')) img.src = `${server.url}/sniff/${sniff}/stream${q}`;
+            for (const k of ['requests', 'blocked', 'media']) box.querySelector(`[data-c="${k}"]`).textContent = st.counts[k];
+            const tap = box.querySelector('.sv-tap');
+            if (st.tap && st.tap.at) {
+                tap.style.left = `${st.tap.at.x * 100}%`;
+                tap.style.top = `${st.tap.at.y * 100}%`;
+                tap.classList.remove('hidden');
+            }
+            const note = box.querySelector('.sv-note');
+            note.textContent = st.phase;
+            note.classList.toggle('hidden', !st.phase);
+            const done = (trace || []).filter((t) => t.key !== 'server' && t.key !== 'play');
+            box.querySelector('.sv-steps').innerHTML = [...done.map((t) => `<div class="sv-step ${t.state}"><span class="sv-ic">${icon(icons[t.state] || 'minus')}</span>
+                    <span class="sv-t"><b>${escapeHtml(t.label)}</b><small>${escapeHtml(t.note || '')}</small></span><span class="sv-ms mono">${t.ms ? (t.ms / 1000).toFixed(1).replace('.', ',') + ' sn' : ''}</span></div>`),
+                `<div class="sv-step run"><span class="sv-ic"><span class="spinner"></span></span><span class="sv-t"><b>Sunucunda açıldı, video aranıyor</b><small>${escapeHtml(st.phase || '')}</small></span><span class="sv-ms mono">${Math.round(st.elapsed / 1000)} sn</span></div>`].join('');
+        };
+        (async () => {
+            let last = null;
+            while (box.isConnected) {
+                try {
+                    last = await renderApi(`/sniff/${sniff}`, {}, 8000);
+                } catch (_) { /* henüz başlamadı */ }
+                paint(last);
+                if (last && last.done) break;
+                await new Promise((r) => setTimeout(r, 700));
+            }
+        })();
+    }
+
+    /** Bulunamadı ekranı: sunucunun teşhisi, son görüntü ve son dokunulan yer, önerilen çözüm. */
+    async function fillVerdict() {
+        const slot = resultBox.querySelector('.sv-verdict');
+        if (!slot) return;
+        const id = slot.dataset.trace;
+        let st;
+        try {
+            st = await renderApi(`/sniff/${id}`, {}, 8000);
+        } catch (_) {
+            slot.remove();
+            return;
+        }
+        if (!slot.isConnected || !st.verdict) return slot.remove();
+        const server = getRenderServer();
+        const v = st.verdict;
+        const action = v.action === 'capture' && canServerRecord() ? ['capture', 'Oynatıp kaydet']
+            : v.action === 'page' ? ['focus-url', 'Videonun kendi sayfasını dene']
+                : canRemote() ? ['remote', v.code === 'login' ? 'Kendim dokunayım · giriş yap' : 'Kendim dokunayım · kendin geç'] : null;
+        // Site giriş istiyorsa: kayıtlı hesabı düşmüşse yeniden giriş, hiç yoksa hesap ekleme önerilir.
+        const acc = st.account;
+        const needsLogin = ['login', 'denied'].includes(v.code);
+        const accHtml = !acc || acc.status === 'on' ? ''
+            : acc.status === 'lost' ? `<div class="sv-acc lost"><span class="acc-ic">${escapeHtml(acc.name[0].toUpperCase())}</span>
+                <span><b>${escapeHtml(acc.name)} girişin düşmüş</b><small>Bu video girişli açılıyor olabilir. Bir kez yeniden girince video kendiliğinden yeniden aranır.</small></span>
+                <button class="btn-big" data-act="acc-login" data-domain="${escapeHtml(acc.domain)}">${escapeHtml(acc.name)} hesabına yeniden gir</button></div>`
+                : `<div class="sv-acc"><span><b>${needsLogin ? 'Sayfa giriş istiyor' : 'Video üyelere açık olabilir'}</b>
+                    <small>${escapeHtml(acc.name)} hesabını ekle, bir kez gir; sonra hep girili kalır ve video yeniden aranır.</small></span>
+                <button class="btn-ghost" data-act="acc-login" data-domain="${escapeHtml(acc.domain)}">Hesap ekle</button></div>`;
+        slot.innerHTML = `${accHtml}<div class="sv-why"><span class="sv-why-ic">${icon('alert')}</span><span><b>${escapeHtml(v.title)}</b><small>${escapeHtml(v.text)}</small></span></div>
+            ${st.shot ? `<div class="sv-last"><span class="sv-last-img"><img alt="Sunucudaki son görüntü" src="${escapeHtml(`${server.url}/sniff/${id}/shot?token=${encodeURIComponent(server.token || '')}`)}">
+                ${st.tap && st.tap.at ? `<i class="sv-tap" style="left:${st.tap.at.x * 100}%;top:${st.tap.at.y * 100}%"></i>` : ''}</span>
+                <span><b>Sunucudaki son görüntü</b><small>${st.tap ? `Sarı halka son basılan yer (${escapeHtml(st.tap.what || '')}). ` : ''}${st.counts.requests} istek · ${st.counts.blocked} reklam engellendi · ${st.counts.media} video</small></span></div>` : ''}
+            <div class="sv-acts">${action && !(accHtml && (needsLogin || acc.status === 'lost')) ? `<button class="btn-big" data-act="${action[0]}">${action[1]}</button>` : ''}
+                <button class="btn-ghost" data-act="net-log" data-trace="${id}">İstekleri gör</button></div>`;
+    }
+
+    /** Sayfanın istekleri: tümü / medya / engellenen / hatalı. */
+    async function openNetLog(id) {
+        let data;
+        try {
+            data = await renderApi(`/sniff/${id}/log`, {}, 8000);
+        } catch (err) {
+            return toast(err.message);
+        }
+        const all = data.items || [];
+        const groups = {
+            all: ['Tümü', all],
+            media: ['Medya', all.filter((e) => ['video', 'audio', 'hls', 'dash'].includes(e.k))],
+            blocked: ['Engellenen', all.filter((e) => e.blocked)],
+            failed: ['Hatalı', all.filter((e) => !e.blocked && (e.s >= 400 || e.err))]
+        };
+        const TYPE = { document: 'SAYFA', script: 'JS', stylesheet: 'CSS', image: 'IMG', media: 'MEDYA', xhr: 'XHR', fetch: 'XHR', font: 'FONT', other: 'DİĞER' };
+        const tagOf = (e) => (e.blocked ? 'ENG' : e.err ? 'HATA' : e.s >= 400 ? String(e.s) : ['video', 'audio', 'hls', 'dash'].includes(e.k) ? e.k.toUpperCase() : TYPE[e.t] || 'DİĞER');
+        const cls = (e) => (e.blocked ? 'ad' : e.err || e.s >= 400 ? 'err' : ['video', 'audio', 'hls', 'dash'].includes(e.k) ? 'med' : '');
+        const el = document.createElement('div');
+        el.className = 'sheet-backdrop net-sheet';
+        const paint = (key) => {
+            const list = groups[key][1];
+            el.innerHTML = `<div class="net-box" role="dialog" aria-label="Sayfanın istekleri"><span class="cf-grip"></span>
+                <div class="net-head"><b>Sayfanın istekleri · ${all.length}</b><button class="link-btn" data-net="close">Kapat</button></div>
+                <div class="net-tabs">${Object.entries(groups).map(([k, [l, items]]) => `<button class="${k === key ? 'on' : ''}" data-net-tab="${k}">${l} · ${items.length}</button>`).join('')}</div>
+                <div class="net-list">${list.slice(0, 300).map((e) => `<div class="net-row"><span class="net-tag ${cls(e)}">${escapeHtml(tagOf(e))}</span>
+                    <span class="net-u">${escapeHtml(String(e.u).replace(/^https?:\/\//, ''))}</span></div>`).join('') || '<p class="muted" style="padding:12px">Bu grupta istek yok.</p>'}</div></div>`;
+        };
+        paint(groups.media[1].length ? 'media' : groups.failed[1].length ? 'failed' : 'all');
+        document.body.appendChild(el);
+        el.addEventListener('click', (e) => {
+            if (e.target === el || e.target.closest('[data-net="close"]')) return el.remove();
+            const t = e.target.closest('[data-net-tab]');
+            if (t) paint(t.dataset.netTab);
+        });
     }
 
     function cancelAnalyze() {
@@ -523,10 +687,13 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         photosPage = page || null;
         if (!page) entryUrl = url; // "Son algılananlar"a yazılacak, kullanıcının verdiği adres
         analyzeBtn.disabled = true;
-        if (remote) {
+        // Kendim dokunayım listesinden seçildiyse oturum açık kalır (geri gelince aynı sayfa ve liste).
+        if (remote && !keepRemote) {
             remote.close();
             remote = null;
         }
+        fromRemote = Boolean(remote && keepRemote);
+        keepRemote = false;
         closePreview();
         info = null;
         resultBox.innerHTML = '';
@@ -541,7 +708,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
                 signal,
                 // yt-dlp yalnızca Ayarlar'dan açıldıysa; varsayılan: sayfa doğrudan bizim sunucuda taranır.
                 noExtract: noExtract || !(useExtract || getPrefs().useYtdlp),
-                onStage: (text) => mySeq === seq && showProgress(text)
+                onStage: (text, extra) => mySeq === seq && showProgress(text, extra)
             });
             if (mySeq !== seq) return;
             info = result;
@@ -1114,8 +1281,6 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             if (d.audioOnly) bits.push('yalnızca ses');
             else if (ui.audioUrl) bits.push('ses ayrı · birleştirilecek');
             if (d.encryption) bits.push(d.drm ? `DRM (${d.drm})` : 'AES-128 şifreli');
-            const adSec = (ui.media && ui.media.adSeconds) || d.adSeconds;
-            if (adSec) bits.push(`${shortDur(adSec)} reklam atlanacak`);
         } else {
             bits.push(KIND_LABEL[info.kind] || info.kind);
             bits.push(String(info.format).toUpperCase());
@@ -1485,6 +1650,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
 
     function reportHtml() {
         const steps = traceSteps();
+        const traceId = info.details.sniffTrace;
+        if (traceId) queueMicrotask(fillVerdict);
         const login = steps.some((t) => t.note === 'sayfa giriş istiyor');
         const tips = [
             canRemote() ? ['remote', 'Kendim dokunayım ile aç', 'Sayfa senin dokunuşlarınla oynatılır, istekler yakalanır'] : null,
@@ -1493,6 +1660,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             getRenderServer() ? null : ['setup', 'Kendi sunucunu kur', 'Sayfa gerçek bir tarayıcıda açılır, çok daha fazla site çalışır']
         ].filter(Boolean);
         return `<div class="rp">
+            ${traceId ? `<div class="sv-verdict" data-trace="${traceId}"></div>` : ''}
             <div class="rp-steps">${steps.map((t) => `<div class="rp-step ${t.state}">
                 <span class="rp-ic">${icon(t.state === 'ok' ? 'check' : t.state === 'fail' ? 'close' : 'minus')}</span>
                 <span class="rp-main"><b>${escapeHtml(t.label)}</b><small>${[t.ms ? secText(t.ms) : '', escapeHtml(t.note)].filter(Boolean).join(' · ')}</small></span></div>`).join('')}</div>
@@ -1581,6 +1749,27 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         else setRange(a, Math.max(v, a + 1));
     }
 
+    /** Kendim dokunayım: medya seçilince ekran gizlenir, seçilen algılanır; geri gelince ekran açılır. */
+    let keepRemote = false;
+    function openRemote(url) {
+        const r = openRemoteOverlay(url, {
+            onPick: (u) => {
+                keepRemote = true;
+                analyze(u);
+            },
+            onCapture: (pageUrl) => {
+                r.close();
+                startCapture(pageUrl);
+            },
+            shortUrl,
+            onClose: () => {
+                if (remote === r) remote = null;
+                fromRemote = false;
+            }
+        });
+        return r;
+    }
+
     function goIdle() {
         closePreview();
         info = null;
@@ -1588,9 +1777,17 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         showShared('');
         renderIdle();
         paintSuggest();
+        syncAnalyzeBtn();
     }
     resTop.addEventListener('click', (e) => {
-        if (e.target.closest('[data-act="back"]')) goIdle();
+        if (!e.target.closest('[data-act="back"]')) return;
+        // Kendim dokunayım listesinden gelindiyse: aynı sayfaya ve aynı listeye dön.
+        if (fromRemote && remote && remote.hidden) {
+            closePreview();
+            remote.show();
+            return;
+        }
+        goIdle();
     });
 
     resultBox.addEventListener('click', async (e) => {
@@ -1601,6 +1798,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (act === 'new-link') {
             goIdle();
             urlInput.value = '';
+            syncAnalyzeBtn();
             urlInput.focus();
             return;
         }
@@ -1631,6 +1829,12 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             });
         }
         if (act === 'capture') return startCapture(btn.dataset.url || info.url);
+        if (act === 'net-log') return openNetLog(btn.dataset.trace);
+        if (act === 'acc-login') {
+            const again = info && info.url;
+            // Bilinen sitede kendi giriş sayfası, diğerlerinde videonun sayfası (giriş orada istenir) açılır.
+            return openAccountLogin(again || btn.dataset.domain, { toast, onDone: () => { if (again) analyze(again); } });
+        }
         if (act === 'recent') {
             urlInput.value = btn.dataset.url;
             return start(btn.dataset.url);
@@ -1675,7 +1879,7 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
         if (act === 'images') return openImages(info.url, info.details.images || [], info.details.title);
         if (act === 'remote') {
             if (remote) remote.close();
-            remote = openRemoteOverlay(info.url, { onPick: (url) => analyze(url), shortUrl, onClose: () => { remote = null; } });
+            remote = openRemote(info.url);
             return;
         }
         if (act === 'variant') return pickVariant(Number(btn.dataset.i));

@@ -17,6 +17,7 @@ import { randomBytes, createDecipheriv } from 'node:crypto';
 import { mergeFmp4 } from './fmp4.mjs';
 import { parsePlaylist, createMuxer } from './recorder.mjs';
 import { installRouting, guardNavigation, installPageGuards } from './adblock.mjs';
+import { stopCast, serveStream, liveAction, liveFocus } from './live.mjs';
 
 const MAX_ACTIVE = Number(process.env.MAX_CAPTURES) || 4;
 const SPEED = 16;                 // Chrome'un izin verdiği en yüksek oynatma hızı
@@ -149,29 +150,9 @@ function driveVideo(speed) {
     for (const v of window.__indiriciMedia || []) {
         if (v && v.tagName === 'VIDEO') videos.add(v);
     }
-    // Reklam oynatıcısındaki video (IMA, VAST, video.js/JW reklam katmanı) asıl video sayılmaz;
-    // oynuyorsa sonuna sarılır ki oynatıcı asıl videoya geçsin. "Reklamı geç" varsa basılır.
-    const AD_BOX = '[class*="ima-ad" i], [id*="ima-ad" i], [class*="videoAdUi" i], [class*="ytp-ad" i], ' +
-        '[class*="vast" i], [id*="vast" i], [class*="preroll" i], [id*="preroll" i], [class*="ad-container" i], ' +
-        '[id*="ad-container" i], [class*="adContainer" i], [class*="jw-flag-ads" i], [class*="vjs-ad-playing" i], ' +
-        '[class*="ad-playing" i], [class*="ad-showing" i]';
-    const isAd = (v) => { try { return Boolean(v.closest(AD_BOX)); } catch (_) { return false; } };
-    for (const b of document.querySelectorAll('.ytp-ad-skip-button, .ytp-skip-ad-button, .videoAdUiSkipButton, ' +
-        '.jw-skip, .vast-skip-button, .skip-ad, .skipAd, [class*="skip-ad" i], [class*="skipad" i], ' +
-        'button[aria-label*="skip ad" i], button[aria-label*="reklamı geç" i]')) {
-        const r = b.getBoundingClientRect();
-        if (r.width && r.height) { try { b.click(); } catch (_) { /* geçilemedi */ } }
-    }
     let best = null;
     let bestScore = -1;
     for (const v of videos) {
-        if (isAd(v)) {
-            v.muted = true;
-            if (isFinite(v.duration) && v.duration > 0 && !v.ended) {
-                try { v.currentTime = v.duration; } catch (_) { /* izin vermedi */ }
-            }
-            continue;
-        }
         const r = v.getBoundingClientRect();
         const dur = isFinite(v.duration) ? v.duration : (v.duration === Infinity ? 1e6 : 0);
         const score = dur * 1000 + r.width * r.height + (v.currentTime > 0 ? 1e9 : 0);
@@ -534,6 +515,7 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
                 try { fs.closeSync(track.fd); } catch (_) { /* zaten kapalı */ }
             }
             if (!cap.cancelled) await logins?.save(context);
+            stopCast(cap); // açık canlı görüntü kapansın
             await context.close().catch(() => {});
             cap.context = null;
             cap.page = null;
@@ -877,11 +859,51 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
             if (!cap || !cap.page) return null;
             return cap.page.screenshot({ type: 'jpeg', quality: 55, timeout: 8000 });
         },
+        /** Canlı görüntü (kendi ekranın gibi): kayıt sayfası telefonda tam ekran gösterilir. */
+        stream(id, req, res, headers) {
+            const cap = captures.get(id);
+            if (!cap || !cap.page) return false;
+            cap.viewers = cap.viewers || new Set();
+            cap.viewport = cap.viewport || { dpr: 1 };
+            serveStream(cap, req, res, headers);
+            return true;
+        },
         /** Kullanıcının dokunuşu/kaydırması sayfaya uygulanır. */
         async action(id, action) {
             const cap = captures.get(id);
             if (!cap || !cap.page) throw new Error('Kayıt sayfası kapalı');
             const page = cap.page;
+            // Canlı ekrandan gelen gerçek dokunuş / klavye: ortak ekran işlemleri.
+            if (action.type === 'touch') {
+                // Kayıt sayfası masaüstü tarayıcısı gibi açılır (oynatıcılar en iyi öyle çalışır): parmak
+                // fareye çevrilir. Kısa dokunuş tıklar, sürükleme sayfayı kaydırır.
+                const { width, height } = page.viewportSize() || { width: 1280, height: 720 };
+                const pt = (action.points || [])[0];
+                const at = pt ? { x: Math.min(1, Math.max(0, Number(pt.x) || 0)) * width, y: Math.min(1, Math.max(0, Number(pt.y) || 0)) * height } : null;
+                const t = cap.touch || {};
+                if (action.phase === 'start' && at) {
+                    cap.touch = { start: at, last: at, dragging: false };
+                    await page.mouse.move(at.x, at.y);
+                } else if (action.phase === 'move' && at && t.last) {
+                    if (!t.dragging && Math.hypot(at.x - t.start.x, at.y - t.start.y) > 10) t.dragging = true;
+                    if (t.dragging) await page.mouse.wheel(t.last.x - at.x, t.last.y - at.y);
+                    t.last = at;
+                } else if (action.phase === 'end' && t.start) {
+                    if (!t.dragging) await page.mouse.click(t.start.x, t.start.y);
+                    cap.touch = null;
+                    await new Promise((r) => setTimeout(r, 120));
+                    return { ...publicState(cap), focus: await liveFocus(page) };
+                } else if (action.phase === 'cancel') {
+                    cap.touch = null;
+                }
+                return { ok: true };
+            }
+            if (['text', 'wheel', 'forward'].includes(action.type)) {
+                cap.viewers = cap.viewers || new Set();
+                cap.viewport = cap.viewport || { dpr: 1 };
+                await liveAction(cap, action);
+                return { ok: true };
+            }
             const { width, height } = page.viewportSize() || { width: 1280, height: 720 };
             const fraction = (v) => Math.min(1, Math.max(0, Number(v) || 0));
             if (action.type === 'tap') await page.mouse.click(fraction(action.x) * width, fraction(action.y) * height);
