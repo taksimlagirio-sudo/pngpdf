@@ -12,6 +12,7 @@ export function sameSite(cookieDomain, domain) {
 
 /** Bilinen siteler: giriş sayfası ve girişi taşıyan çerezler. */
 export const KNOWN_SITES = [
+    { domain: 'google.com', name: 'Google', login: 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmyaccount.google.com%2F', auth: ['SID', '__Secure-1PSID', '__Secure-3PSID'] },
     { domain: 'instagram.com', name: 'Instagram', login: 'https://www.instagram.com/accounts/login/', auth: ['sessionid'] },
     { domain: 'x.com', name: 'X (Twitter)', login: 'https://x.com/i/flow/login', auth: ['auth_token'], alias: ['twitter.com'] },
     { domain: 'tiktok.com', name: 'TikTok', login: 'https://www.tiktok.com/login', auth: ['sessionid', 'sessionid_ss'] },
@@ -25,6 +26,46 @@ export const KNOWN_SITES = [
 
 export function knownSite(domain) {
     return KNOWN_SITES.find((k) => k.domain === domain || (k.alias || []).includes(domain)) || null;
+}
+
+/**
+ * Dışarıdan çerez metni: Netscape cookies.txt ya da JSON (Cookie-Editor dizisi, Playwright storageState).
+ * Playwright çerez biçimine çevrilir.
+ */
+export function parseCookies(text) {
+    const out = [];
+    const sameSite = (v) => {
+        const x = String(v || '').toLowerCase();
+        return x === 'strict' ? 'Strict' : x === 'none' || x === 'no_restriction' ? 'None' : 'Lax';
+    };
+    const t = String(text || '').trim();
+    if (t.startsWith('[') || t.startsWith('{')) {
+        let data = JSON.parse(t);
+        if (!Array.isArray(data)) data = data.cookies || [];
+        for (const c of data) {
+            if (!c || !c.name || !c.domain) continue;
+            const exp = Number(c.expires ?? c.expirationDate ?? -1);
+            const host = c.hostOnly ? String(c.domain).replace(/^\./, '') : String(c.domain);
+            out.push({ name: String(c.name), value: String(c.value ?? ''), domain: host, path: c.path || '/',
+                expires: c.session || !(exp > 0) ? -1 : Math.round(exp), httpOnly: Boolean(c.httpOnly), secure: Boolean(c.secure), sameSite: sameSite(c.sameSite) });
+        }
+        return out;
+    }
+    for (let line of t.split(/\r?\n/)) {
+        let httpOnly = false;
+        if (line.startsWith('#HttpOnly_')) {
+            httpOnly = true;
+            line = line.slice(10);
+        }
+        if (!line || line.startsWith('#')) continue;
+        const f = line.split('\t');
+        if (f.length < 7) continue;
+        const [domain, sub, pth, secure, expiry, name, ...rest] = f;
+        const exp = Number(expiry);
+        out.push({ name, value: rest.join('\t'), domain: sub === 'TRUE' && !domain.startsWith('.') ? `.${domain}` : domain, path: pth || '/',
+            expires: exp > 0 ? exp : -1, httpOnly, secure: secure === 'TRUE', sameSite: 'Lax' });
+    }
+    return out;
 }
 
 /** Girişe benzeyen çerez adı (oturum, kimlik, anahtar); izleme çerezleri sayılmaz. */
@@ -146,6 +187,29 @@ export function createLoginStore(file, { enabled = true } = {}) {
             a.lostAt = 0;
             if (authNames.length) a.auth = [...new Set(authNames)].slice(0, 12);
             write();
+        },
+
+        /** Dışarıdan alınan çerezleri ekler; girişi taşıyan bilinen siteler hesap olarak işaretlenir. */
+        importCookies(list) {
+            const now = Date.now() / 1000;
+            const map = new Map(state.cookies.map((c) => [cookieKey(c), c]));
+            let added = 0;
+            for (const c of list) {
+                if (c.expires > 0 && c.expires < now) continue;
+                map.set(cookieKey(c), c);
+                added++;
+            }
+            state.cookies = [...map.values()];
+            const names = [];
+            for (const k of KNOWN_SITES) {
+                const auth = list.filter((c) => sameSite(c.domain, k.domain) && k.auth.includes(c.name)).map((c) => c.name);
+                if (auth.length) {
+                    this.markLoggedIn(k.domain, auth, k.name);
+                    names.push(k.name);
+                }
+            }
+            write();
+            return { added, accounts: names };
         },
 
         /** Site giriş sayfası gösterdi: kayıtlı giriş artık geçmiyor. */

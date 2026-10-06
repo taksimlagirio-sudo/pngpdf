@@ -226,6 +226,20 @@ try {
     }
 } catch (_) { /* depolama kapalı */ }
 
+// Paylaşım kaydı: uygulama açıkken ilk paylaşımın neden gelmediğini görmek için telefonun ne yaptığı
+// (sayfa yüklendi mi, adreste bağlantı var mıydı, launchQueue geldi mi, öne/arkaya geçişler) saklanır.
+// Ayarlar › Paylaşım kaydı'nda görünür.
+function shareLog(entry) {
+    try {
+        const list = JSON.parse(localStorage.getItem('indirici.shareLog') || '[]');
+        list.push({ at: Date.now(), ...entry });
+        localStorage.setItem('indirici.shareLog', JSON.stringify(list.slice(-40)));
+    } catch (_) { /* depolama kapalı */ }
+}
+shareLog({ ev: 'açıldı', nav: (performance.getEntriesByType('navigation')[0] || {}).type || '', q: location.search.slice(0, 120), link: Boolean(shared) });
+document.addEventListener('visibilitychange', () => shareLog({ ev: document.visibilityState === 'visible' ? 'öne geldi' : 'arkaya gitti' }));
+window.addEventListener('pageshow', (e) => { if (e.persisted) shareLog({ ev: 'önbellekten döndü' }); });
+
 // QR ile bağlanma: sunucunun "/baglan" QR'ı telefon kamerasıyla okutulunca …/?pair=KOD açılır.
 const pairLink = params.get('pair') ? parsePairLink(location.href) : null;
 if (pairLink) {
@@ -302,6 +316,9 @@ window.addEventListener('popstate', (e) => {
     else history.back();
 });
 
+// Bu sayfada işlenen paylaşımlar: aynı bağlantı (adres, launchQueue, gelen kutusu) iki kez işlenmesin.
+const handledShares = new Set(shared ? [shared] : []);
+
 /* ---- Paylaşım uygulama açıkken gelirse (launch_handler) ----
  * Manifest "navigate-existing" kullanır: "focus-existing" Android'de paylaşılan bağlantıyı düşürüyordu
  * (uygulama öne gelir ama bağlantı gelmez, ikinci paylaşım gerekir). Açık pencere paylaşım adresine
@@ -309,16 +326,44 @@ window.addEventListener('popstate', (e) => {
 if ('launchQueue' in window) {
     let lastShared = shared || '';
     window.launchQueue.setConsumer((launch) => {
+        shareLog({ ev: 'launchQueue', q: launch && launch.targetURL ? new URL(launch.targetURL).search.slice(0, 120) : '(boş)' });
         if (!launch || !launch.targetURL) return;
         const p = new URL(launch.targetURL).searchParams;
         const link = [p.get('url'), p.get('text'), p.get('title')].filter(Boolean)
             .map((v) => (v.match(/https?:\/\/\S+/) || [])[0]).find(Boolean);
-        if (!link || link === lastShared) return;
+        if (!link || link === lastShared || handledShares.has(link)) return;
         lastShared = link;
+        handledShares.add(link);
         navigate('detect');
         detectTab.prefill(link, true, { shared: true });
     });
 }
+
+/* ---- Paylaşım gelen kutusu (sw.js) ----
+ * Sayfa paylaşım bilgisi olmadan açıldıysa: service worker paylaşım adresini gördüyse bağlantı oradadır.
+ * Uygulama öne geldiğinde de bakılır (Android sayfayı yenilemeden öne getirebiliyor). */
+async function takeInbox(reason) {
+    if (!('caches' in window)) return;
+    try {
+        const cache = await caches.open('indirici-inbox');
+        const r = await cache.match('/__share');
+        if (!r) return;
+        const item = await r.json();
+        await cache.delete('/__share');
+        if (!item || !item.url || Date.now() - item.at > 120000) return;
+        shareLog({ ev: `gelen kutusundan alındı (${reason})`, link: true });
+        if (handledShares.has(item.url)) return;
+        handledShares.add(item.url);
+        navigate('detect');
+        detectTab.prefill(item.url, true, { shared: true });
+    } catch (_) { /* önbellek kapalı */ }
+}
+// Adresle gelen paylaşım zaten işlendi: kutudaki aynı bağlantı yeniden işlenmesin.
+if (shared && 'caches' in window) caches.open('indirici-inbox').then((c) => c.delete('/__share')).catch(() => {});
+else takeInbox('açılış');
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') setTimeout(() => takeInbox('öne gelince'), 300);
+});
 
 /* ---- Service worker ---- */
 if ('serviceWorker' in navigator) {
@@ -335,7 +380,8 @@ if ('serviceWorker' in navigator) {
         reloading = true;
         location.reload();
     });
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js').catch((err) => console.warn('SW kaydı başarısız:', err));
-    });
+    // Başlangıçtaki bekleme (yerel sunucu ayarı) "load" anını kaçırabilir: o zaman hemen kaydedilir.
+    const registerSw = () => navigator.serviceWorker.register('sw.js').catch((err) => console.warn('SW kaydı başarısız:', err));
+    if (document.readyState === 'complete') registerSw();
+    else window.addEventListener('load', registerSw);
 }
