@@ -251,7 +251,7 @@ const PLAY_SELECTORS = [
  * Kayıt tutan bir sayfa açar: sayfanın (ve çerçevelerinin) yaptığı medya istekleri `state.found`a
  * toplanır. Hem otomatik koklama hem de kullanıcının dokunduğu etkileşimli oturum bunu kullanır.
  */
-async function openRecordedPage(pageUrl, contextOptions, { interactive = false } = {}) {
+async function openRecordedPage(pageUrl, contextOptions, { interactive = false, log = null } = {}) {
     const browser = await getBrowser();
     const context = logins.attach(await browser.newContext({ storageState: logins.storageState(), bypassCSP: true, ...contextOptions }));
     await context.addInitScript(CODEC_SPOOF);
@@ -261,7 +261,7 @@ async function openRecordedPage(pageUrl, contextOptions, { interactive = false }
     const state0 = { blockedAds: 0 };
     const blocked = new Set(); // engellenen reklam istekleri "başarısız istek" diye listeye girmesin
     if (!interactive) {
-        await installRouting(context, { onBlocked: (url) => { state0.blockedAds++; blocked.add(url); } });
+        await installRouting(context, { onBlocked: (url) => { state0.blockedAds++; blocked.add(url); if (log) log({ u: url, blocked: true }); } });
         await installPageGuards(context);
     }
     const page = await context.newPage();
@@ -287,7 +287,7 @@ async function openRecordedPage(pageUrl, contextOptions, { interactive = false }
             state.found.set(key, item);
         }
         rememberReferer(url, referer || pageUrl);
-        if (!state.firstMediaAt && (kind === 'hls' || kind === 'video' || kind === 'dash')) state.firstMediaAt = Date.now();
+        if (!failed && !state.firstMediaAt && (kind === 'hls' || kind === 'video' || kind === 'dash')) state.firstMediaAt = Date.now();
 
         // Liste içeriği tarayıcının aldığı anda saklanır: ana listenin adresi çoğu zaman tek kullanımlık
         // ya da kısa ömürlü bir anahtar taşır; uygulama yeniden isteyince 403 alır, kaliteler kaybolur.
@@ -329,10 +329,12 @@ async function openRecordedPage(pageUrl, contextOptions, { interactive = false }
             const ct = (headers['content-type'] || '').split(';')[0].trim();
             const size = Number(headers['content-length']) || 0;
             record(response.url(), headers['content-type'] || '', size, request.headers().referer, { response, failed: response.status() >= 400 });
+            if (log) log({ u: response.url(), t: request.resourceType(), s: response.status(), ct, k: classify(response.url(), ct) || '' });
             if (interactive && AMBIGUOUS.test(ct) && !classify(response.url(), ct)) peek(response, ct, size).catch(() => {});
         });
         pg.on('requestfailed', (request) => {
             record(request.url(), '', 0, request.headers().referer, { failed: true });
+            if (log && !blocked.has(request.url())) log({ u: request.url(), t: request.resourceType(), s: 0, err: (request.failure() || {}).errorText || 'başarısız', k: classify(request.url(), '') || '' });
         });
     };
     watch(page);
@@ -377,6 +379,12 @@ async function tryPlay(page) {
  * bir adım ilerler; `nudge` çağrılar arasında durumu tutar.
  */
 async function nudgePlayback(page, started, nudge) {
+    // Ne yapıldığı (arama ekranında canlı gösterilir): kaçıncı deneme, son dokunulan yer.
+    const note = (what, at = null) => {
+        nudge.attempts = (nudge.attempts || 0) + 1;
+        const size = page.viewportSize() || { width: 1280, height: 800 };
+        nudge.last = { what, at: at ? { x: at.x / size.width, y: at.y / size.height } : null, time: Date.now() };
+    };
     // Adımlar bitince birkaç tur daha denenir: ilk tıklama reklama yönlendirip geri dönüldüyse
     // oynat düğmesine yeniden basılması gerekir.
     if (nudge.steps && !nudge.steps.length) {
@@ -395,12 +403,18 @@ async function nudgePlayback(page, started, nudge) {
                 await disarmOverlays(page);
                 return false;
             },
-            () => clickConsent(page),
+            async () => {
+                const done = await clickConsent(page);
+                if (done) note('çerez/izin onayına');
+                return done;
+            },
             async () => {
                 for (const frame of page.frames()) {
                     const button = await frame.$(PLAY_SELECTORS).catch(() => null);
                     if (button && await button.isVisible().catch(() => false)) {
+                        const b = await button.boundingBox().catch(() => null);
                         await button.click({ timeout: 2000, force: true }).catch(() => {});
+                        note('oynat düğmesine', b && { x: b.x + b.width / 2, y: b.y + b.height / 2 });
                         return true;
                     }
                 }
@@ -418,11 +432,13 @@ async function nudgePlayback(page, started, nudge) {
                 }).catch(() => null);
                 if (!box) return false;
                 await page.mouse.click(box.x, box.y).catch(() => {});
+                note('oynatıcının ortasına', box);
                 return true;
             },
             async () => {
                 const size = page.viewportSize() || { width: 1280, height: 800 };
                 await page.mouse.click(size.width / 2, size.height / 2).catch(() => {});
+                note('sayfanın ortasına', { x: size.width / 2, y: size.height / 2 });
                 return true;
             }
         ];
@@ -456,9 +472,89 @@ function codecSupport() {
     return codecPromise;
 }
 
-async function sniff(pageUrl, waitMs) {
+/* ---- Aramayı izleme: sunucunun ne yaptığı uygulamada canlı ve sonradan görünür ----
+ * Her arama (uygulama bir izleme kimliği verdiyse) bir kayıt tutar: aşama, sayılar, son dokunulan yer,
+ * sayfanın istekleri; sayfa açıkken canlı görüntü, bitince son görüntü ve "neden bulunamadı" teşhisi.
+ * Kayıtlar 10 dakika saklanır. */
+const sniffTraces = new Map();
+const TRACE_KEEP_MS = 10 * 60 * 1000;
+
+function newTrace(id, url) {
+    if (!/^[0-9a-f]{16,32}$/.test(String(id || ''))) return null;
+    const t = { id, url, startedAt: Date.now(), endedAt: 0, phase: 'Sayfa açılıyor', done: false,
+        counts: { requests: 0, blocked: 0, media: 0, failed: 0 }, log: [], tap: null, attempts: 0, verdict: null,
+        lastShot: null, title: '', viewers: new Set(), frame: null, viewport: { dpr: 1 }, context: null, page: null };
+    sniffTraces.set(id, t);
+    setTimeout(() => sniffTraces.delete(id), TRACE_KEEP_MS + 60000).unref();
+    return t;
+}
+
+function traceLog(t, entry) {
+    t.counts.requests++;
+    if (entry.blocked) t.counts.blocked++;
+    else if (entry.s >= 400 || entry.err) t.counts.failed++;
+    if (['video', 'audio', 'hls', 'dash'].includes(entry.k) && !entry.blocked && !(entry.s >= 400 || entry.err)) t.counts.media++;
+    if (t.log.length < 600) t.log.push({ ...entry, at: Date.now() - t.startedAt });
+}
+
+function publicTrace(t) {
+    return { id: t.id, url: t.url, phase: t.phase, done: t.done, elapsed: (t.endedAt || Date.now()) - t.startedAt,
+        counts: t.counts, tap: t.tap, attempts: t.attempts, verdict: t.verdict, title: t.title, live: Boolean(t.page), shot: Boolean(t.lastShot || t.frame) };
+}
+
+/** Sayfa neden video vermedi? Sayfanın son hâline ve isteklerine bakılır. */
+async function diagnose(page) {
+    const out = { videos: 0, playing: 0, blob: 0, iframes: 0, password: false, robot: false };
+    for (const frame of page.frames()) {
+        const r = await Promise.race([frame.evaluate(() => {
+            const vids = [...document.querySelectorAll('video')];
+            const text = (document.title + ' ' + (document.body ? document.body.innerText.slice(0, 3000) : '')).toLowerCase();
+            return {
+                videos: vids.length,
+                playing: vids.filter((v) => v.currentTime > 0).length,
+                blob: vids.filter((v) => /^blob:/.test(v.currentSrc || v.src || '')).length,
+                iframes: document.querySelectorAll('iframe').length,
+                password: Boolean(document.querySelector('input[type="password"]')),
+                robot: /just a moment|attention required|checking your browser|verify you are human|robot değil|captcha/.test(text)
+                    || Boolean(document.querySelector('iframe[src*="captcha"], iframe[src*="challenges.cloudflare"]'))
+            };
+        }).catch(() => null), new Promise((res) => setTimeout(() => res(null), 1500))]);
+        if (!r) continue;
+        out.videos += r.videos; out.playing += r.playing; out.blob += r.blob; out.iframes += r.iframes;
+        out.password = out.password || r.password; out.robot = out.robot || r.robot;
+    }
+    return out;
+}
+
+function verdictOf(t, main, items, d) {
+    if (items.some((i) => !i.failed)) return null;
+    const failedMedia = t.log.filter((e) => ['video', 'audio', 'hls', 'dash'].includes(e.k) && (e.s >= 400 || e.err));
+    if (main && main.status >= 400) {
+        return main.status === 401 || main.status === 403
+            ? { code: 'denied', title: `Sayfa HTTP ${main.status} döndü`, text: 'Site bu sayfayı sunucuna açmadı: giriş, bölge izni ya da robot kontrolü istiyor olabilir.', action: 'remote' }
+            : { code: 'http', title: `Sayfa HTTP ${main.status} döndü`, text: main.status === 404 ? 'Sayfa bulunamadı; adres yanlış ya da video kaldırılmış.' : 'Site sayfayı vermedi.', action: 'page' };
+    }
+    if (d && d.robot) return { code: 'robot', title: 'Site robot kontrolü istiyor', text: 'Sayfa "insan mısın" doğrulaması gösteriyor. Kendim dokunayım ile bir kez geçince sonraki aramalar da geçer.', action: 'remote' };
+    if (d && d.password) return { code: 'login', title: 'Sayfa giriş istiyor', text: 'Sayfada giriş kutusu var. Kendim dokunayım ile bir kez giriş yaparsan sunucunda saklanır.', action: 'remote' };
+    if (failedMedia.length) {
+        const s = failedMedia[0].s;
+        return { code: 'media-denied', title: s ? `Video isteği reddedildi (HTTP ${s})` : 'Video isteği tamamlanamadı', text: `Oynatıcı ${failedMedia.length} video isteği yaptı ama site vermedi: oturum, bölge izni ya da süreli anahtar istiyor olabilir.`, action: 'remote' };
+    }
+    if (d && d.blob && d.playing) return { code: 'blob', title: 'Video oynadı ama bağlantısı görünmedi', text: 'Video parça parça, gizlenmiş isteklerle yükleniyor. Oynatıp kaydet bunu çoğu zaman aşar.', action: 'capture' };
+    if (d && (d.videos || d.iframes)) {
+        return { code: 'nostart', title: 'Video başlatılamadı', text: `Sayfa açıldı${d.videos ? ', oynatıcı bulundu' : ''}. ${t.attempts ? `Oynat'a ${t.attempts} kez basıldı ama` : 'Ama'} oynatıcı hiç video istemedi. Büyük ihtimalle önce bir onay, reklam ya da giriş bekliyor.`, action: 'remote' };
+    }
+    return { code: 'noplayer', title: 'Sayfada oynatıcı görünmüyor', text: 'Sayfada video ya da oynatıcı çerçevesi yok. Liste veya ana sayfa olabilir; videonun kendi sayfasını dene.', action: 'page' };
+}
+
+async function sniff(pageUrl, waitMs, traceId = '') {
+    const t = newTrace(traceId, pageUrl);
     const { context, page, state } = await openRecordedPage(pageUrl,
-        { userAgent: DESKTOP_UA, viewport: { width: 1280, height: 800 } });
+        { userAgent: DESKTOP_UA, viewport: { width: 1280, height: 800 } }, { log: t ? (e) => traceLog(t, e) : null });
+    if (t) {
+        t.context = context;
+        t.page = page;
+    }
 
     const started = Date.now();
     let title = '';
@@ -475,6 +571,7 @@ async function sniff(pageUrl, waitMs) {
         } catch (err) {
             if (/Download is starting|net::ERR_ABORTED/i.test(err.message)) {
                 main = { status: 200, contentType: '', download: true };
+                if (t) Object.assign(t, { done: true, endedAt: Date.now(), phase: 'Adres doğrudan dosya' });
                 return { title: '', finalUrl, items: [], main, elapsedMs: Date.now() - started };
             }
             throw err;
@@ -482,7 +579,13 @@ async function sniff(pageUrl, waitMs) {
         if (response) main = { status: response.status(), contentType: (response.headers()['content-type'] || '').toLowerCase() };
         finalUrl = page.url();
         guard.arm(finalUrl);
+        if (t) t.phase = 'Sayfa açıldı, oynatıcı aranıyor';
         if (main && (main.status >= 400 || /^(video|audio)\/|mpegurl|dash\+xml/.test(main.contentType))) {
+            if (t) {
+                t.lastShot = await page.screenshot({ type: 'jpeg', quality: 55, timeout: 5000 }).catch(() => null);
+                t.verdict = main.status >= 400 ? verdictOf(t, main, [], null) : null;
+                Object.assign(t, { done: true, endedAt: Date.now(), phase: main.status >= 400 ? t.verdict.title : 'Adres doğrudan medya' });
+            }
             return { title: '', finalUrl, items: [], main, elapsedMs: Date.now() - started };
         }
 
@@ -495,13 +598,30 @@ async function sniff(pageUrl, waitMs) {
             if (state.firstMediaAt && Date.now() - state.firstMediaAt > 2000) break;
             await page.waitForTimeout(400);
             if (!state.firstMediaAt) await nudgePlayback(page, started, nudge);
+            if (t) {
+                t.attempts = nudge.attempts || 0;
+                if (nudge.last) t.tap = nudge.last;
+                t.phase = state.firstMediaAt ? 'Video bulundu, kaliteler bekleniyor'
+                    : nudge.last ? `${nudge.last.what[0].toUpperCase()}${nudge.last.what.slice(1)} basıldı · ${t.attempts}. deneme` : 'Oynatıcı bekleniyor';
+            }
         }
         title = await page.title().catch(() => '');
         // Saklanan liste içerikleri okunsun (sayfa kapanmadan).
         await Promise.race([Promise.allSettled(state.pending), new Promise((r) => setTimeout(r, 3000))]);
         // Sayfanın verdiği çerezler (ör. TikTok'un video için istediği) indirmede kullanılsın.
         cookieJar.add(await context.cookies().catch(() => []));
+        if (t) {
+            t.phase = 'Sonuç hazırlanıyor';
+            t.title = title;
+            t.lastShot = await page.screenshot({ type: 'jpeg', quality: 55, timeout: 5000 }).catch(() => null);
+            if (![...state.found.values()].some((i) => !i.failed)) t.diag = await diagnose(page);
+        }
     } finally {
+        if (t) {
+            stopCast(t);
+            t.page = null;
+            t.context = null;
+        }
         await context.close().catch(() => {});
     }
 
@@ -511,7 +631,13 @@ async function sniff(pageUrl, waitMs) {
         if (!(await isAdRequest(item.url, pageUrl, 'media'))) items.push(item);
         else countVideoAd();
     }
-    return { title, finalUrl, items, main, blockedAds: state.blockedAds, elapsedMs: Date.now() - started };
+    if (t) {
+        t.verdict = verdictOf(t, main, items, t.diag);
+        t.done = true;
+        t.endedAt = Date.now();
+        t.phase = !t.verdict && items.length ? `${items.length} medya bulundu` : t.verdict ? t.verdict.title : 'Bitti';
+    }
+    return { title, finalUrl, items, main, blockedAds: state.blockedAds, elapsedMs: Date.now() - started, trace: t ? publicTrace(t) : null };
 }
 
 /* ---------------- Etkileşimli oturum: kullanıcı sayfaya kendisi dokunur ---------------- */
@@ -1938,10 +2064,28 @@ const server = http.createServer(async (req, res) => {
             const waitMs = Math.min(MAX_WAIT_MS, Math.max(1000, Number(body.waitMs) || DEFAULT_WAIT_MS));
             activeSniffs++;
             try {
-                return sendJson(res, 200, await sniff(target.href, waitMs));
+                return sendJson(res, 200, await sniff(target.href, waitMs, body.traceId));
             } finally {
                 activeSniffs--;
             }
+        }
+
+        const traceMatch = url.pathname.match(/^\/sniff\/([0-9a-f]{16,32})(\/stream|\/shot|\/log)?$/);
+        if (traceMatch && req.method === 'GET') {
+            const t = sniffTraces.get(traceMatch[1]);
+            const sub = traceMatch[2] || '';
+            if (!t) return sendJson(res, 404, { error: 'Arama kaydı yok (10 dakikadan eski olabilir)' });
+            if (sub === '') return sendJson(res, 200, publicTrace(t));
+            if (sub === '/log') return sendJson(res, 200, { items: t.log, counts: t.counts });
+            if (sub === '/stream') {
+                if (!t.page) return sendJson(res, 404, { error: 'Arama bitti' });
+                serveLive(t, req, res, CORS_HEADERS);
+                return;
+            }
+            const image = t.lastShot || t.frame;
+            if (!image) return sendJson(res, 404, { error: 'Görüntü yok' });
+            res.writeHead(200, { ...CORS_HEADERS, 'content-type': 'image/jpeg', 'content-length': image.length, 'cache-control': 'no-store' });
+            return res.end(image);
         }
 
         if (url.pathname === '/fetch' && (req.method === 'GET' || req.method === 'HEAD')) {

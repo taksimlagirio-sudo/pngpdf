@@ -409,10 +409,15 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
     } else {
         trace(result, 'ytdlp', 'Gelişmiş bulma', 'skip', 'Atlandı — Ayarlar\'da kapalı');
     }
-    onStage('Sayfa kendi sunucunda çalıştırılıyor (oynatıcının istekleri bekleniyor)...');
+    // İzleme kimliği: arama sürerken uygulama sunucunun ne yaptığını canlı gösterir (görüntü, adımlar,
+    // istekler); bulunamazsa nedeni bu kayıttan okunur.
+    const traceId = [...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    result.details.sniffTrace = traceId;
+    onStage('Sayfa kendi sunucunda çalıştırılıyor (oynatıcının istekleri bekleniyor)...', { sniff: traceId, url, trace: (result.details.trace = result.details.trace || []) });
     const ts = Date.now();
     try {
-        const sniffed = await renderSniff(url, { signal });
+        const sniffed = await renderSniff(url, { signal, traceId });
+        if (sniffed.trace) result.details.sniffInfo = sniffed.trace;
         const status = sniffed.main && sniffed.main.status;
         trace(result, 'server', 'Sunucunda açıldı', status >= 400 ? 'fail' : 'ok',
             status >= 400 ? `sayfa HTTP ${status} döndü` : `${sniffed.blockedAds || 0} reklam engellendi`, ts);
@@ -433,6 +438,11 @@ async function sniffOnServer(result, url, signal, onStage, { noExtract = false }
         }
         merged.delete(url); // sayfanın kendisi medya değil; listede olursa aynı ekrana döner
         result.details.links = [...merged.values()];
+        // Yalnızca yarıda kalan / reddedilen istekler görüldüyse bunlar video sayılmaz: "neden bulunamadı" gösterilir.
+        if (result.details.links.length && result.details.links.every((l) => l.failed)) {
+            result.details.hiddenLinks = (result.details.hiddenLinks || 0) + result.details.links.length;
+            result.details.links = [];
+        }
         await verifyPageLinks(result, 'auto', signal, onStage);
         result.details.fromRender = sniffed.items.length > 0;
         result.details.images = mergeImages(result.details.images || [], sniffed.items.filter((i) => i.kind === 'image').map((i) => i.url));
