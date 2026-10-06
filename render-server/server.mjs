@@ -2276,7 +2276,7 @@ const server = http.createServer(async (req, res) => {
             if (!known && /^https?:\/\//i.test(String(body.url || ''))) login = String(body.url);
             await assertPublicTarget(new URL(login));
             const a = logins.addAccount(domain, known ? known.name : domain);
-            return sendJson(res, 200, { domain, name: a.name, login });
+            return sendJson(res, 200, { domain, name: a.name, login, auth: known ? known.auth : [] });
         }
         if (url.pathname === '/accounts/import' && req.method === 'POST') {
             // Başka bir tarayıcıdan dışa aktarılan çerezler (cookies.txt ya da JSON).
@@ -2288,7 +2288,16 @@ const server = http.createServer(async (req, res) => {
                 return sendJson(res, 400, { error: 'Çerez metni okunamadı (cookies.txt ya da JSON olmalı)' });
             }
             if (!list.length) return sendJson(res, 400, { error: 'Metinde çerez bulunamadı' });
-            return sendJson(res, 200, logins.importCookies(list));
+            const result = logins.importCookies(list);
+            // Telefonda yapılan giriş (APK): bilinmeyen sitede de hesap girili sayılır.
+            const domain = body.domain ? accountDomain(body.domain) : '';
+            if (domain && !result.accounts.length) {
+                const known = knownSite(domain);
+                const auth = list.filter((c) => authLike(c.name)).map((c) => c.name);
+                logins.markLoggedIn(domain, auth.length ? auth : list.map((c) => c.name).slice(0, 12), known ? known.name : domain);
+                result.accounts.push(known ? known.name : domain);
+            }
+            return sendJson(res, 200, result);
         }
         if (url.pathname === '/accounts' && req.method === 'DELETE') {
             const domain = accountDomain(url.searchParams.get('domain'));
