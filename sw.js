@@ -1,5 +1,5 @@
 // Service worker: çevrimdışı kabuk + arka plan indirmeleri (Background Fetch)
-const VERSION = 'v78';
+const VERSION = 'v79';
 const SHELL_CACHE = `shell-${VERSION}`;
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -99,8 +99,25 @@ async function noteNavigation(url) {
     } catch (_) { /* önbellek kapalı */ }
 }
 
+/** Paylaşım (POST): bağlantı gelen kutusuna yazılır, sayfa bağlantıyla açılır. */
+async function receiveShare(request) {
+    let link = '';
+    try {
+        const form = await request.formData();
+        link = ['url', 'text', 'title'].map((k) => String(form.get(k) || ''))
+            .map((v) => (v.match(/https?:\/\/\S+/) || [])[0]).find(Boolean) || '';
+        await noteNavigation(new URL(`${self.registration.scope}?text=${encodeURIComponent(link)}`));
+    } catch (_) { /* boş paylaşım */ }
+    const target = link ? `${self.registration.scope}?text=${encodeURIComponent(link)}#detect` : `${self.registration.scope}#detect`;
+    return Response.redirect(target, 303);
+}
+
 self.addEventListener('fetch', (event) => {
     const { request } = event;
+    if (request.method === 'POST' && new URL(request.url).pathname.endsWith('/paylas')) {
+        event.respondWith(receiveShare(request));
+        return;
+    }
     if (request.method !== 'GET') return;
 
     const url = new URL(request.url);
