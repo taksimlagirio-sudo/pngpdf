@@ -211,7 +211,11 @@ async function getBrowser() {
             const { chromium } = await loadPlaywright();
             // AutomationControlled kapalı: navigator.webdriver ve "otomasyonla kontrol ediliyor" izi olmasın
             // (Google girişi bu izleri görünce "tarayıcı güvenli olmayabilir" deyip reddediyor).
-            const args = ['--autoplay-policy=no-user-gesture-required', '--mute-audio', '--disable-blink-features=AutomationControlled'];
+            // FedCm kapalı: "Google ile devam et" düğmesi hesap seçimini tarayıcının kendi penceresinde açar;
+            // sunucudaki tarayıcının ekranı olmadığından o pencere görünmez, düğme çalışmıyor gibi kalır.
+            // Kapalıyken Google normal açılır pencereye geçer; o da "Kendim dokunayım" ekranında görünür.
+            const args = ['--autoplay-policy=no-user-gesture-required', '--mute-audio', '--disable-blink-features=AutomationControlled',
+                '--disable-features=FedCm'];
             const ignoreDefaultArgs = ['--enable-automation'];
             // Termux'ta (Android) Chromium'un kum havuzu çalışmıyor; orada sandbox'sız başlat.
             if (process.platform === 'android' || process.env.NO_SANDBOX === '1') args.push('--no-sandbox');
