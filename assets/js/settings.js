@@ -40,7 +40,7 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             </div>
         </div>
 
-        <div class="st-sub" data-sub=""adblock">
+        <div class="st-sub" data-sub="adblock">
             <div class="wz-top"><button class="back-btn" data-set="sub-back" aria-label="Geri">${icon('back')}</button><span>Reklam engelleme</span></div>
             <div class="settings-sec-head"><span class="sec-label">Durum</span>
                 <span class="status-chip" id="adblockChip">Sunucu yok</span></div>
@@ -64,7 +64,7 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
             </div>
         </div>
 
-        <div class="st-sub" data-sub=""logins">
+        <div class="st-sub" data-sub="logins">
             <div class="wz-top"><button class="back-btn" data-set="sub-back" aria-label="Geri">${icon('back')}</button><span>Sitelere girişler</span></div>
             <div class="settings-sec-head"><span class="sec-label">Kayıtlı girişler</span>
                 <span class="status-chip" id="loginsChip">Sunucu yok</span></div>
