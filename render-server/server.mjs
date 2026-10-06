@@ -466,6 +466,56 @@ async function tryPlay(page) {
 }
 
 /**
+ * Basılacak öğenin üstünü açar: öğenin birkaç noktasında en üstte ne olduğuna bakılır; oynatıcıya ait
+ * olmayan bir şey (oynatma çubuğunun üstüne konan reklam görseli/çerçevesi) varsa gizlenir.
+ * Öğe bir çerçevenin içindeyse, çerçeveyi örten şeyler üst sayfada da temizlenir. Gizlenen sayısı döner.
+ */
+async function uncover(frame, handle) {
+    let n = await handle.evaluate((target) => {
+        let hidden = 0;
+        for (let round = 0; round < 6; round++) {
+            const r = target.getBoundingClientRect();
+            if (!r.width || !r.height) break;
+            const points = [[0.5, 0.5], [0.5, 0.92], [0.15, 0.9], [0.85, 0.9], [0.5, 0.1]]
+                .map(([fx, fy]) => [r.left + r.width * fx, r.top + r.height * fy])
+                .filter(([x, y]) => x >= 0 && y >= 0 && x < innerWidth && y < innerHeight);
+            let cover = null;
+            for (const [x, y] of points) {
+                const top = document.elementFromPoint(x, y);
+                if (top && top !== target && !target.contains(top) && !top.contains(target)) {
+                    cover = top;
+                    break;
+                }
+            }
+            if (!cover) break;
+            // Yalnızca reklama benzeyen şey gizlenir; oynatıcının kendi düğmeleri/katmanları dokunulmaz.
+            const AD = /(^|[\s_-])(ad|ads|advert|banner|sponsor|promo|popup|reklam|preroll)([\s_-]|$)|adsbygoogle|google_ads|taboola|outbrain|popads|exo/i;
+            const adLike = (node) => {
+                for (let x = node; x && x !== document.body && !x.contains(target); x = x.parentElement) {
+                    if (x.tagName === 'IFRAME' || x.tagName === 'INS') return true;
+                    if (AD.test(`${x.id || ''} ${typeof x.className === 'string' ? x.className : ''}`)) return true;
+                    if (x.tagName === 'A' && x.href && (x.target === '_blank' || new URL(x.href, location.href).host !== location.host)) return true;
+                }
+                return false;
+            };
+            if (!adLike(cover)) break;
+            // Örten şeyin, hedefi içermeyen en dıştaki konumlandırılmış atası gizlenir (reklam kutusunun tamamı).
+            let el = cover;
+            for (let p = cover.parentElement; p && p !== document.body && !p.contains(target); p = p.parentElement) {
+                if (getComputedStyle(p).position !== 'static') el = p;
+            }
+            el.style.setProperty('visibility', 'hidden', 'important');
+            el.style.setProperty('pointer-events', 'none', 'important');
+            hidden++;
+        }
+        return hidden;
+    }).catch(() => 0);
+    const owner = frame.parentFrame() && await frame.frameElement().catch(() => null);
+    if (owner) n += await uncover(frame.parentFrame(), owner);
+    return n;
+}
+
+/**
  * Oynatıcı özel bir "oynat" düğmesi bekliyorsa sırayla dener: çerez onayı, bilinen düğmeler,
  * en büyük video/oynatıcı alanının ortası, en son sayfanın ortası. Her çağrıda (zamanı geldiyse)
  * bir adım ilerler; `nudge` çağrılar arasında durumu tutar.
@@ -501,30 +551,44 @@ async function nudgePlayback(page, started, nudge) {
                 return done;
             },
             async () => {
-                for (const frame of page.frames()) {
-                    const button = await frame.$(PLAY_SELECTORS).catch(() => null);
+                // Seçiciler öncelik sırasıyla denenir: virgüllü tek seçici belge sırasındaki ilk eşleşmeyi
+                // verir; "player-wrap" gibi kutular gerçek düğmeden önce gelip kutunun kendisine basılıyordu.
+                for (const frame of page.frames()) for (const sel of PLAY_SELECTORS.split(', ')) {
+                    const button = await frame.$(sel).catch(() => null);
                     if (button && await button.isVisible().catch(() => false)) {
+                        const covered = await uncover(frame, button);
                         const b = await button.boundingBox().catch(() => null);
                         await button.click({ timeout: 2000, force: true }).catch(() => {});
-                        note('oynat düğmesine', b && { x: b.x + b.width / 2, y: b.y + b.height / 2 });
+                        // Üstünde hâlâ bir şey kalmış olsa da basılsın: tıklama doğrudan düğmeye verilir.
+                        await button.evaluate((el) => el.click()).catch(() => {});
+                        note(covered ? 'üstündeki reklamı kaldırıp oynat düğmesine' : 'oynat düğmesine', b && { x: b.x + b.width / 2, y: b.y + b.height / 2 });
                         return true;
                     }
                 }
                 return false;
             },
             async () => {
-                const box = await page.evaluate(() => {
+                const player = await page.evaluateHandle(() => {
                     let best = null;
+                    let area = 2000;
                     document.querySelectorAll('video, iframe, [class*="player" i], [id*="player" i], .poster, [class*="poster" i]')
                         .forEach((el) => {
                             const r = el.getBoundingClientRect();
-                            if (r.width * r.height > (best ? best.width * best.height : 2000)) best = r;
+                            if (r.width * r.height > area) {
+                                area = r.width * r.height;
+                                best = el;
+                            }
                         });
-                    return best && { x: best.x + best.width / 2, y: best.y + best.height / 2 };
+                    return best;
                 }).catch(() => null);
-                if (!box) return false;
+                const el = player && player.asElement();
+                if (!el) return false;
+                const covered = await uncover(page.mainFrame(), el);
+                const b = await el.boundingBox().catch(() => null);
+                if (!b) return false;
+                const box = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
                 await page.mouse.click(box.x, box.y).catch(() => {});
-                note('oynatıcının ortasına', box);
+                note(covered ? 'üstündeki reklamı kaldırıp oynatıcının ortasına' : 'oynatıcının ortasına', box);
                 return true;
             },
             async () => {

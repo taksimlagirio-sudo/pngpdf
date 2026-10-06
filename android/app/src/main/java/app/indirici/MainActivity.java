@@ -325,11 +325,18 @@ public class MainActivity extends Activity {
             exitFullscreen();
             return;
         }
-        if (web.canGoBack()) {
-            web.goBack();
+        if (offline || !pageReady) {
+            if (web.canGoBack()) web.goBack();
+            else moveTaskToBack(true);
             return;
         }
-        moveTaskToBack(true);
+        // Önce sayfaya sorulur: açık ekranı kapatır ya da "Kendim dokunayım"da sunucudaki sayfada geri
+        // gider. Sayfanın geçmiş kaydına güvenilmez: dokunuşsuz eklenen kayıtları tarayıcı atlıyor.
+        web.evaluateJavascript("(function(){try{return window.__indiriciBack?window.__indiriciBack():null}catch(e){return null}})()", (r) -> {
+            if ("true".equals(r)) return;
+            if ("null".equals(r) && web.canGoBack()) web.goBack();
+            else moveTaskToBack(true);
+        });
     }
 
     @Override
