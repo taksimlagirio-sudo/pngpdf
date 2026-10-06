@@ -38,3 +38,10 @@
   to = "/.netlify/functions/paylas"
   status = 200
   force = true
+
+# Android uygulaması (APK) doğru türle insin.
+[[headers]]
+  for = "/assets/indirici.apk"
+  [headers.values]
+    Content-Type = "application/vnd.android.package-archive"
+    Cache-Control = "no-cache"

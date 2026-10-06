@@ -38,8 +38,33 @@ export function escapeHtml(str) {
     ));
 }
 
+/** Android uygulaması (APK) içinde mi çalışıyor? Paylaşım, kaydetme ve geri tuşu kabuğa bırakılır. */
+export const inApk = typeof window !== 'undefined' && Boolean(window.IndiriciAndroid);
+
+/** APK: dosya parça parça kabuğa verilir, kabuk telefonun İndirilenler klasörüne yazar. */
+export async function saveToAndroid(blob, filename) {
+    const bridge = window.IndiriciAndroid;
+    const id = bridge.begin(filename, blob.type || '');
+    if (!id) return false;
+    const CHUNK = 768 * 1024;
+    for (let off = 0; off < blob.size; off += CHUNK) {
+        const buf = new Uint8Array(await blob.slice(off, off + CHUNK).arrayBuffer());
+        let bin = '';
+        for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+        if (!bridge.append(id, btoa(bin))) {
+            bridge.abort(id);
+            return false;
+        }
+    }
+    return Boolean(bridge.finish(id));
+}
+
 // Blob'u kullanıcının diskine indirir.
 export function saveBlob(blob, filename) {
+    if (inApk) {
+        saveToAndroid(blob, filename).catch(() => {});
+        return;
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

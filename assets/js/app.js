@@ -1,5 +1,5 @@
 // Uygulama kabuğu: bölümler (alt sekme / kenar çubuğu), tema, PWA kurulumu, paylaşım hedefi.
-import { $, autoConfigureLocalServer } from './util.js';
+import { $, autoConfigureLocalServer, saveToAndroid } from './util.js';
 import { getPrefs, setPref, onPrefs } from './prefs.js';
 import { initDownloads, setCurrentView, setFloatOpen, getJobs, interruptedCount } from './downloads.js';
 import { initDetectTab } from './detect-tab.js';
@@ -216,9 +216,23 @@ let shared = [params.get('url'), params.get('text'), params.get('title')]
     .filter(Boolean)
     .map((value) => (value.match(/https?:\/\/\S+/) || [])[0])
     .find(Boolean);
+// Android arka plandaki uygulamayı (bellek için) kapatınca yeni paylaşımı iletmiyor; uygulamayı ilk
+// açıldığı paylaşımla yeniden kuruyor. Aynı bağlantı kısa süre içinde yeniden gelirse bu odur:
+// eski bağlantı yeniden aranmaz, kullanıcıya yeni paylaşımın ulaşmadığı söylenir.
+let staleShare = '';
+try {
+    const last = JSON.parse(localStorage.getItem('indirici.lastShare') || 'null');
+    if (shared && !window.IndiriciAndroid && last && last.url === shared && Date.now() - last.at < 30 * 60 * 1000) {
+        staleShare = shared;
+        shared = undefined;
+    } else if (shared) {
+        localStorage.setItem('indirici.lastShare', JSON.stringify({ url: shared, at: Date.now() }));
+    }
+} catch (_) { /* depolama kapalı */ }
 // Paylaşımdan hemen sonra sayfa (güncelleme yüzünden) yenilenirse bağlantı kaybolmasın.
 try {
     if (shared) sessionStorage.setItem('indirici.share', JSON.stringify({ url: shared, at: Date.now() }));
+    else if (staleShare) sessionStorage.removeItem('indirici.share');
     else {
         const saved = JSON.parse(sessionStorage.getItem('indirici.share') || 'null');
         if (saved && Date.now() - saved.at < 20000) shared = saved.url;
@@ -235,6 +249,11 @@ function shareLog(entry) {
         list.push({ at: Date.now(), ...entry });
         localStorage.setItem('indirici.shareLog', JSON.stringify(list.slice(-40)));
     } catch (_) { /* depolama kapalı */ }
+}
+if (staleShare) {
+    shareLog({ ev: 'eski paylaşım yeniden geldi (yok sayıldı)' });
+    history.replaceState(null, '', location.pathname + '#detect');
+    setTimeout(() => toast('Son paylaşımın uygulamaya ulaşmadı (Android uygulamayı arka planda kapatmıştı). Bağlantıyı bir kez daha paylaş.'), 600);
 }
 shareLog({ ev: 'açıldı', nav: (performance.getEntriesByType('navigation')[0] || {}).type || '', q: location.search.slice(0, 120), link: Boolean(shared) });
 document.addEventListener('visibilitychange', () => shareLog({ ev: document.visibilityState === 'visible' ? 'öne geldi' : 'arkaya gitti' }));
@@ -313,11 +332,35 @@ window.addEventListener('popstate', (e) => {
     if (!e.state || !e.state.root) return;
     // Kök kaydın adresi eski sekmeyi gösterebilir; bekçi şu anki sekmeyle yeniden eklenir.
     if (handleBack()) history.pushState({ guard: true }, '', `${location.pathname}${location.search}#${document.body.dataset.view}`);
-    else history.back();
+    else if (window.IndiriciAndroid) {
+        // APK: uygulama arka plana alınır; geri dönünce geri tuşu yine çalışsın diye bekçi yeniden eklenir.
+        history.pushState({ guard: true }, '', `${location.pathname}${location.search}#${document.body.dataset.view}`);
+        window.IndiriciAndroid.exit();
+    } else history.back();
 });
 
+/* ---- Android uygulaması (APK) ----
+ * Uygulama açıkken paylaşılan bağlantıyı kabuk doğrudan buraya verir (sayfa yeniden yüklenmez).
+ * Sayfanın belleğindeki dosya (blob:) indirilmek istenirse kabuk onu buradan ister. */
+if (window.IndiriciAndroid) {
+    document.documentElement.classList.add('in-apk');
+    window.__indiriciShare = (link) => {
+        if (!/^https?:\/\//.test(String(link || ''))) return false;
+        shareLog({ ev: 'APK paylaşımı', link: true });
+        navigate('detect');
+        detectTab.prefill(link, true, { shared: true });
+        return true;
+    };
+    window.__indiriciSaveBlobUrl = (url) => {
+        fetch(url).then((r) => r.blob()).then((blob) => {
+            const ext = (blob.type.split('/')[1] || 'bin').replace(/[^a-z0-9].*$/i, '');
+            return saveToAndroid(blob, `indirici-${Date.now()}.${ext}`);
+        }).catch(() => toast('Dosya kaydedilemedi'));
+    };
+}
+
 // Bu sayfada işlenen paylaşımlar: aynı bağlantı (adres, launchQueue, gelen kutusu) iki kez işlenmesin.
-const handledShares = new Set(shared ? [shared] : []);
+const handledShares = new Set([shared, staleShare].filter(Boolean));
 
 /* ---- Paylaşım uygulama açıkken gelirse (launch_handler) ----
  * Manifest "navigate-existing" kullanır: "focus-existing" Android'de paylaşılan bağlantıyı düşürüyordu
@@ -359,7 +402,7 @@ async function takeInbox(reason) {
     } catch (_) { /* önbellek kapalı */ }
 }
 // Adresle gelen paylaşım zaten işlendi: kutudaki aynı bağlantı yeniden işlenmesin.
-if (shared && 'caches' in window) caches.open('indirici-inbox').then((c) => c.delete('/__share')).catch(() => {});
+if ((shared || staleShare) && 'caches' in window) caches.open('indirici-inbox').then((c) => c.delete('/__share')).catch(() => {});
 else takeInbox('açılış');
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') setTimeout(() => takeInbox('öne gelince'), 300);

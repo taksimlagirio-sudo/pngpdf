@@ -202,8 +202,10 @@ async function loadPlaywright() {
 }
 
 let browserPromise = null;
+let browserUsedAt = 0; // tarayıcı en son ne zaman istendi (boşta kapatma, yeni açılan sayfayla çakışmasın)
 
 async function getBrowser() {
+    browserUsedAt = Date.now();
     if (!browserPromise) {
         browserPromise = (async () => {
             const { chromium } = await loadPlaywright();
@@ -226,6 +228,22 @@ async function getBrowser() {
                 ignoreDefaultArgs
             });
             browser.on('disconnected', () => { browserPromise = null; });
+            // Boştayken (açık sayfa yok) tarayıcı kapatılır: telefonda yüzlerce MB bellek boşalır, Android
+            // arka plandaki uygulamaları (İndirici dahil) daha az kapatır. Sonraki istekte yeniden açılır.
+            const idleMs = Math.max(30, Number(process.env.BROWSER_IDLE_SEC) || 180) * 1000;
+            let idleSince = Date.now();
+            const idleTimer = setInterval(() => {
+                if (browser.contexts().length) {
+                    idleSince = Date.now();
+                    return;
+                }
+                if (Date.now() - Math.max(idleSince, browserUsedAt) < idleMs) return;
+                clearInterval(idleTimer);
+                browserPromise = null;
+                browser.close().catch(() => {});
+            }, 15000);
+            idleTimer.unref();
+            browser.on('disconnected', () => clearInterval(idleTimer));
             return browser;
         })().catch((err) => {
             browserPromise = null;
@@ -1321,7 +1339,8 @@ const STATIC_TYPES = {
     '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
     '.css': 'text/css; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8',
     '.mjs': 'text/javascript; charset=utf-8',
-    '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8'
+    '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8',
+    '.apk': 'application/vnd.android.package-archive'
 };
 
 function staticFile(pathname) {
@@ -2152,8 +2171,17 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { ok: true });
         }
         if (url.pathname === '/push/test' && req.method === 'POST') {
+            const listening = push.listening();
             const sent = await push.send({ title: 'İndirici', body: 'Bildirimler çalışıyor', url: '#follow', kind: 'test' });
-            return sendJson(res, 200, { sent });
+            return sendJson(res, 200, { sent: sent + (listening ? 1 : 0) });
+        }
+        if (url.pathname === '/push/feed' && req.method === 'GET') {
+            // Android uygulamasının bildirim dinleyicisi (uzun bekleyen istek, en fazla 30 sn).
+            const ac = new AbortController();
+            req.on('close', () => ac.abort());
+            const after = Number(url.searchParams.get('after'));
+            const wait = Math.min(30000, Math.max(0, Number(url.searchParams.get('wait')) || 0));
+            return sendJson(res, 200, await push.feed(Number.isFinite(after) ? after : -1, wait, ac.signal));
         }
 
         if (url.pathname === '/health' && req.method === 'GET') {

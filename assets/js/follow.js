@@ -626,6 +626,13 @@ export function initFollow({ navigate, toast }) {
     /* ---------------- Bildirim aboneliği ---------------- */
 
     async function ensurePush() {
+        // Android uygulaması (APK): bildirimleri kabuktaki dinleyici gösterir (Web Push yok).
+        if (window.IndiriciAndroid && window.IndiriciAndroid.notifications) {
+            const server = getRenderServer();
+            if (!server) return false;
+            const base = new URL(server.url || location.href);
+            return window.IndiriciAndroid.notifications(true, `${base.origin}/`, server.token || '');
+        }
         if (!('serviceWorker' in navigator) || !('PushManager' in window) || !getRenderServer()) return false;
         const perm = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
         if (perm !== 'granted') return false;
@@ -662,7 +669,14 @@ export function initFollow({ navigate, toast }) {
     window.addEventListener('resize', () => {
         if (document.body.dataset.view === 'follow') render();
     });
-    load().then(schedule);
+    load().then(() => {
+        schedule();
+        // APK'ya geçildiyse: bildirimli takipler varken dinleyici kendiliğinden açılsın.
+        const bridge = window.IndiriciAndroid;
+        if (bridge && bridge.notificationsEnabled && !bridge.notificationsEnabled() && items.some((w) => w.notify !== false)) {
+            ensurePush().catch(() => {});
+        }
+    });
 
     return {
         refresh() {

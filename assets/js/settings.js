@@ -144,7 +144,13 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
                 row('sub-logins', 'user', 'Hesaplar', { value: !srv.logins ? '' : srv.logins.lost ? `${srv.logins.lost} giriş düştü` : srv.logins.total ? `${srv.logins.total} hesap` : 'Yok' }),
                 row('libSync', 'sync', 'Cihazlar arası eşitleme', { sub: 'Kitaplık sunucun üzerinden', toggle: Boolean(prefs.libSync) })
             ]) : '',
-            group('Kitaplık', [row('storage', 'folder', 'Kitaplık ve depolama', { value: srv.usage ? formatSize(srv.usage) : '' })])
+            group('Kitaplık', [row('storage', 'folder', 'Kitaplık ve depolama', { value: srv.usage ? formatSize(srv.usage) : '' })]),
+            // Android uygulaması (APK): paylaşım ve kaydetme Chrome'dan bağımsız, daha sorunsuz.
+            window.IndiriciAndroid
+                ? group('Uygulama', [row('apk', 'download', 'Android uygulaması', { sub: 'Yeni sürümü indir', value: `v${window.IndiriciAndroid.version()}` })])
+                : /Android/i.test(navigator.userAgent)
+                    ? group('Uygulama', [row('apk', 'download', 'Android uygulamasını indir', { sub: 'Paylaşım ve kaydetme daha sorunsuz çalışır' })])
+                    : ''
         ];
         groupsBox.innerHTML = groups.join('');
     }
@@ -166,6 +172,7 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
         }
         if (key === 'setup') return openSetup(1);
         if (key === 'sharelog') return openShareLog();
+        if (key === 'apk') return downloadApk();
         if (key === 'libSync') setPref('libSync', !prefs.libSync);
         if (key === 'storage') return openStorage();
         if (key === 'save') {
@@ -242,6 +249,24 @@ export function initSettings({ onServerChange, install, toast = () => {}, openSe
         }
     });
     const loadLogins = () => accounts.reload();
+
+    /** APK, uygulamanın kendi adresinden (Termux sunucusu ya da Netlify) indirilir. */
+    async function downloadApk() {
+        const url = new URL('assets/indirici.apk', location.href).href;
+        try {
+            const r = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+            if (!r.ok) throw new Error();
+        } catch (_) {
+            return toast('APK henüz hazır değil; sunucunu güncelle (git pull) ve biraz sonra yeniden dene');
+        }
+        toast('İndiriliyor · bitince bildirimden ya da İndirilenler\'den açıp kur');
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'indirici.apk';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }
 
     /** Paylaşım kaydı: telefonun paylaşımda ne yaptığı (sorun bildirmek için kopyalanır). */
     async function openShareLog() {
