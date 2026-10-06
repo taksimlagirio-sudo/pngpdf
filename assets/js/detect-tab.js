@@ -1118,8 +1118,6 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
             if (d.audioOnly) bits.push('yalnızca ses');
             else if (ui.audioUrl) bits.push('ses ayrı · birleştirilecek');
             if (d.encryption) bits.push(d.drm ? `DRM (${d.drm})` : 'AES-128 şifreli');
-            const adSec = (ui.media && ui.media.adSeconds) || d.adSeconds;
-            if (adSec) bits.push(`${shortDur(adSec)} reklam atlanacak`);
         } else {
             bits.push(KIND_LABEL[info.kind] || info.kind);
             bits.push(String(info.format).toUpperCase());

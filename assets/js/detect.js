@@ -721,7 +721,6 @@ export function describeMediaPlaylist(playlist) {
         targetDuration: playlist.targetDuration,
         drm: drm ? drm.key.method : '',
         encryption: drm ? drm.key.method : encrypted ? 'AES-128' : '',
-        adSeconds: playlist.adSeconds || 0, // videoya gömülü, indirmede atlanacak reklam
         playlist
     };
 }

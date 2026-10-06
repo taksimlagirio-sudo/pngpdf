@@ -9,7 +9,6 @@
 // süre sınırı dolunca dosya kapanır.
 import { formatSize, smartFetch, fileNameFromUrl, hms, sleep, isNetworkError } from './util.js';
 import { Mp4Builder, initHasVideo, tsHasVideo } from './mp4mux.mjs';
-import { createAdTracker, dropAds } from './hlsads.mjs';
 
 const MAX_PARALLEL = 4;
 const SEGMENT_RETRY = 3;
@@ -86,10 +85,8 @@ export function parsePlaylist(text, baseUrl) {
     let lastByteEnd = 0;
     let targetDuration = 0;
     const isLive = !lines.includes('#EXT-X-ENDLIST');
-    const ads = createAdTracker();
 
     for (const line of lines) {
-        ads.line(line);
         if (line.startsWith('#EXT-X-MEDIA-SEQUENCE')) {
             seq = parseInt(line.split(':')[1], 10) || 0;
         } else if (line.startsWith('#EXT-X-TARGETDURATION')) {
@@ -121,8 +118,7 @@ export function parsePlaylist(text, baseUrl) {
                 range: pendingRange,
                 key,
                 map,
-                seq: seq + segments.length,
-                ad: ads.tag()
+                seq: seq + segments.length
             });
             totalDuration += duration;
             if (pendingRange) lastByteEnd = pendingRange.offset + pendingRange.length;
@@ -131,16 +127,7 @@ export function parsePlaylist(text, baseUrl) {
         }
     }
 
-    // Videoya gömülü reklam parçaları çıkarılır; zaman çizelgesi reklamsız haliyle yeniden kurulur.
-    const clean = dropAds(segments, { live: isLive, base: baseUrl, ranges: ads.ranges });
-    const allDuration = totalDuration;
-    totalDuration = 0;
-    for (const s of clean.segments) {
-        s.start = totalDuration;
-        totalDuration += s.duration;
-    }
-    // allSegments: ayıklanmamış hâli (ses ayrı listeden geliyorsa ikisi senkron kalsın diye bu kullanılır).
-    return { type: 'media', segments: clean.segments, allSegments: segments, allDuration, map, totalDuration, isLive, targetDuration, adCount: clean.adCount, adSeconds: clean.adSeconds };
+    return { type: 'media', segments, map, totalDuration, isLive, targetDuration };
 }
 
 function parseAttributes(input) {
@@ -175,14 +162,6 @@ function ivFromSequence(seq) {
     const iv = new Uint8Array(16);
     new DataView(iv.buffer).setUint32(12, seq >>> 0);
     return iv;
-}
-
-/**
- * Parçalar: reklamlar ayıklanmış hâli; ses ayrı bir listeden geliyorsa ayıklanmamış hâli (ses listesinde
- * reklam işareti olmayabilir; yalnızca görüntüden reklam atılırsa ses ve görüntü kayar).
- */
-export function segmentsOf(playlist, separateAudio) {
-    return separateAudio && playlist.allSegments ? playlist.allSegments : playlist.segments;
 }
 
 export function findDrm(segments) {
@@ -396,8 +375,7 @@ export async function downloadHlsVod({
 
     // Tüm parçalar zamana göre tek sırada: indirme paralel, dosyaya yazma bu sırayla.
     const items = streams
-        .flatMap((s) => sliceRange(segmentsOf(s.playlist, streams.length > 1), range, streams.length > 1 ? s.playlist.allDuration || s.playlist.totalDuration : s.playlist.totalDuration)
-            .map((seg) => ({ stream: s.id, seg })))
+        .flatMap((s) => sliceRange(s.playlist.segments, range, s.playlist.totalDuration).map((seg) => ({ stream: s.id, seg })))
         .sort((a, b) => (a.seg.start - b.seg.start) || (a.stream === 'v' ? -1 : 1));
     if (!items.length) throw new Error(range ? 'Seçilen aralıkta parça yok' : 'Playlist içinde parça bulunamadı');
 
@@ -536,7 +514,7 @@ export async function recordHlsLive({
 
             let ended = false;
             for (const s of streams) {
-                const all = segmentsOf(s.playlist, streams.length > 1);
+                const all = s.playlist.segments;
                 let fresh;
                 if (s.lastSeq === null) {
                     fresh = all.slice(-1); // şu andan itibaren: en yeni parçadan başla
@@ -545,9 +523,8 @@ export async function recordHlsLive({
                     const newest = all.length ? all[all.length - 1].seq : s.lastSeq;
                     if (!fresh.length && newest < s.lastSeq - 10) {
                         fresh = all.slice(-1); // yayın sıra numarasını sıfırladı
-                    } else if (fresh.length && fresh[0].seq - (fresh[0].adsBefore || 0) > s.lastSeq + 1 && s.id === 'v') {
-                        // sekme donduysa parçalar kaçtı (atlanan reklamlar sayılmaz)
-                        job.rec.missed += fresh[0].seq - (fresh[0].adsBefore || 0) - s.lastSeq - 1;
+                    } else if (fresh.length && fresh[0].seq > s.lastSeq + 1 && s.id === 'v') {
+                        job.rec.missed += fresh[0].seq - s.lastSeq - 1; // sekme donduysa parçalar kaçtı
                     }
                 }
                 for (const segment of fresh) {
