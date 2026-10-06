@@ -2171,8 +2171,17 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { ok: true });
         }
         if (url.pathname === '/push/test' && req.method === 'POST') {
+            const listening = push.listening();
             const sent = await push.send({ title: 'İndirici', body: 'Bildirimler çalışıyor', url: '#follow', kind: 'test' });
-            return sendJson(res, 200, { sent });
+            return sendJson(res, 200, { sent: sent + (listening ? 1 : 0) });
+        }
+        if (url.pathname === '/push/feed' && req.method === 'GET') {
+            // Android uygulamasının bildirim dinleyicisi (uzun bekleyen istek, en fazla 30 sn).
+            const ac = new AbortController();
+            req.on('close', () => ac.abort());
+            const after = Number(url.searchParams.get('after'));
+            const wait = Math.min(30000, Math.max(0, Number(url.searchParams.get('wait')) || 0));
+            return sendJson(res, 200, await push.feed(Number.isFinite(after) ? after : -1, wait, ac.signal));
         }
 
         if (url.pathname === '/health' && req.method === 'GET') {

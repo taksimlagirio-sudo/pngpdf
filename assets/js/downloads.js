@@ -408,6 +408,10 @@ function markExported(job) {
 
 function notifyFinished(job) {
     if (document.visibilityState === 'visible') return;
+    if (window.IndiriciAndroid && window.IndiriciAndroid.notify) {
+        window.IndiriciAndroid.notify(job.status === 'done' ? `Bitti: ${job.name}` : `Başarısız: ${job.name}`, job.detail || '', job.id, '#downloads');
+        return;
+    }
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
     const title = job.status === 'done' ? `Bitti: ${job.name}` : `Başarısız: ${job.name}`;
     navigator.serviceWorker?.ready.then((reg) => reg.showNotification(title, {

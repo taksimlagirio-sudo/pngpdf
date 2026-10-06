@@ -114,7 +114,19 @@ public class MainActivity extends Activity {
             web.restoreState(savedInstanceState);
         } else {
             String link = sharedLink(getIntent());
-            web.loadUrl(link != null ? shareUrl(link) : server());
+            String open = getIntent().getStringExtra("open");
+            web.loadUrl(link != null ? shareUrl(link) : open != null ? server() + open.replaceFirst("^/", "") : server());
+        }
+        // Takip bildirimleri açıksa dinleyici çalışsın (telefon yeniden başlamış ya da servis kapanmış olabilir).
+        if (NotifyService.isEnabled(this)) NotifyService.setEnabled(this, true, null, null);
+    }
+
+    /** Bildirime dokunulunca: ilgili ekran açılır ("#follow" gibi yalnızca sekme ise sayfa yenilenmez). */
+    private void openFromNotification(String open) {
+        if (open.startsWith("#") && pageReady && !offline) {
+            web.evaluateJavascript("location.hash=" + JSONObject.quote(open), null);
+        } else {
+            web.loadUrl(server() + open.replaceFirst("^/", ""));
         }
     }
 
@@ -130,6 +142,8 @@ public class MainActivity extends Activity {
         setIntent(intent);
         String link = sharedLink(intent);
         if (link != null) deliverShare(link);
+        String open = intent.getStringExtra("open");
+        if (link == null && open != null) openFromNotification(open);
     }
 
     /* ---------------- Paylaşım ---------------- */
@@ -514,6 +528,28 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String server() {
             return MainActivity.this.server();
+        }
+
+        /** Takip bildirimlerini aç/kapat (sunucu adresi ve anahtarı uygulamadan gelir). */
+        @JavascriptInterface
+        public boolean notifications(boolean on, String serverUrl, String token) {
+            if (on && Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                ui.post(() -> requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 3));
+            }
+            NotifyService.setEnabled(MainActivity.this, on, serverUrl, token);
+            return on;
+        }
+
+        @JavascriptInterface
+        public boolean notificationsEnabled() {
+            return NotifyService.isEnabled(MainActivity.this);
+        }
+
+        /** Uygulamanın kendi bildirimi (ör. indirme bitti). */
+        @JavascriptInterface
+        public void notify(String title, String body, String tag, String open) {
+            NotifyService.show(MainActivity.this, title, body, tag, open);
         }
     }
 }

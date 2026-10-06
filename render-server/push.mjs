@@ -75,9 +75,48 @@ export function createPush({ keyFile, subsFile, subject = 'mailto:indirici@local
         return res.status;
     }
 
+    // Bildirim akışı: Android uygulaması (APK) Web Push alamaz; bildirimleri bu kısa listeden dinler
+    // (sunucu aynı telefonda olduğundan uzun bekleyen bir istekle, anında). Kimlikler zaman damgası:
+    // sunucu yeniden başlasa da sıra bozulmaz.
+    const feed = [];
+    const waiters = new Set();
+    let lastId = 0;
+    let lastPoll = 0;
+    function addFeed(message) {
+        lastId = Math.max(Date.now(), lastId + 1);
+        feed.push({ id: lastId, at: Date.now(), ...message });
+        if (feed.length > 50) feed.shift();
+        for (const wake of waiters) wake();
+        waiters.clear();
+    }
+
     return {
         publicKey: keys.publicKey,
         count: () => subs.length,
+        /** APK son 90 sn içinde dinlediyse bildirimleri alıyor demektir. */
+        listening: () => Date.now() - lastPoll < 90000,
+        /**
+         * after'dan sonraki bildirimler; yoksa wait ms'ye kadar beklenir. after < 0: yalnızca güncel
+         * kimlik döner (ilk bağlantıda eski bildirimler yeniden gösterilmesin).
+         */
+        feed(after, wait = 0, signal = null) {
+            lastPoll = Date.now();
+            const pick = () => ({ last: lastId, items: after < 0 ? [] : feed.filter((i) => i.id > after) });
+            const now = pick();
+            if (after < 0 || now.items.length || !wait) return Promise.resolve(now);
+            return new Promise((resolve) => {
+                let timer = null;
+                const wake = () => {
+                    clearTimeout(timer);
+                    waiters.delete(wake);
+                    lastPoll = Date.now();
+                    resolve(pick());
+                };
+                timer = setTimeout(wake, wait);
+                waiters.add(wake);
+                if (signal) signal.addEventListener('abort', wake, { once: true });
+            });
+        },
         subscribe(sub) {
             if (!sub || !/^https:\/\//.test(sub.endpoint || '') || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
                 throw new Error('Geçersiz abonelik');
@@ -93,6 +132,7 @@ export function createPush({ keyFile, subsFile, subject = 'mailto:indirici@local
         },
         /** Tüm aboneliklere gönderir; süresi dolmuş abonelikler (404/410) silinir. */
         async send(message) {
+            addFeed(message);
             const results = await Promise.allSettled(subs.map((s) => sendOne(s, message)));
             const dead = subs.filter((_, i) => results[i].status === 'fulfilled' && [404, 410].includes(results[i].value));
             if (dead.length) {
