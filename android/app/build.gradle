@@ -1,0 +1,42 @@
+// İndirici Android kabuğu: uygulamanın kendisi (sayfalar) Termux'taki sunucudan yüklenir; bu kabuk
+// paylaşım alma, İndirilenler'e kaydetme, tam ekran video ve geri tuşunu Android'in kendi yoluyla yapar.
+plugins {
+    id 'com.android.application'
+}
+
+def runNumber = (System.getenv('GITHUB_RUN_NUMBER') ?: '1') as int
+
+android {
+    namespace 'app.indirici'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'app.indirici'
+        minSdk 24
+        targetSdk 34
+        versionCode runNumber
+        versionName "1.${runNumber}"
+    }
+
+    // Sabit imza: güncellemeler eskisinin üstüne kurulabilsin (kişisel kullanım; anahtar depoda).
+    signingConfigs {
+        release {
+            storeFile file('indirici.keystore')
+            storePassword 'indirici'
+            keyAlias 'indirici'
+            keyPassword 'indirici'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

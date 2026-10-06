@@ -1,5 +1,5 @@
 // Service worker: çevrimdışı kabuk + arka plan indirmeleri (Background Fetch)
-const VERSION = 'v80';
+const VERSION = 'v81';
 const SHELL_CACHE = `shell-${VERSION}`;
 const BG_CACHE = 'bg-downloads';
 const META_PREFIX = '/__bg-meta__/';
@@ -126,7 +126,7 @@ self.addEventListener('fetch', (event) => {
     if (url.origin !== self.location.origin) return;
     const isAppPage = url.pathname === '/' || url.pathname.endsWith('/index.html');
     const isAppFile = (request.mode === 'navigate' && isAppPage) ||
-        url.pathname.startsWith('/assets/') || url.pathname.endsWith('.webmanifest');
+        (url.pathname.startsWith('/assets/') && !url.pathname.endsWith('.apk')) || url.pathname.endsWith('.webmanifest');
     if (!isAppFile) return;
 
     if (request.mode === 'navigate') {

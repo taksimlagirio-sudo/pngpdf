@@ -1,5 +1,5 @@
 // Uygulama kabuğu: bölümler (alt sekme / kenar çubuğu), tema, PWA kurulumu, paylaşım hedefi.
-import { $, autoConfigureLocalServer } from './util.js';
+import { $, autoConfigureLocalServer, saveToAndroid } from './util.js';
 import { getPrefs, setPref, onPrefs } from './prefs.js';
 import { initDownloads, setCurrentView, setFloatOpen, getJobs, interruptedCount } from './downloads.js';
 import { initDetectTab } from './detect-tab.js';
@@ -222,7 +222,7 @@ let shared = [params.get('url'), params.get('text'), params.get('title')]
 let staleShare = '';
 try {
     const last = JSON.parse(localStorage.getItem('indirici.lastShare') || 'null');
-    if (shared && last && last.url === shared && Date.now() - last.at < 30 * 60 * 1000) {
+    if (shared && !window.IndiriciAndroid && last && last.url === shared && Date.now() - last.at < 30 * 60 * 1000) {
         staleShare = shared;
         shared = undefined;
     } else if (shared) {
@@ -332,8 +332,32 @@ window.addEventListener('popstate', (e) => {
     if (!e.state || !e.state.root) return;
     // Kök kaydın adresi eski sekmeyi gösterebilir; bekçi şu anki sekmeyle yeniden eklenir.
     if (handleBack()) history.pushState({ guard: true }, '', `${location.pathname}${location.search}#${document.body.dataset.view}`);
-    else history.back();
+    else if (window.IndiriciAndroid) {
+        // APK: uygulama arka plana alınır; geri dönünce geri tuşu yine çalışsın diye bekçi yeniden eklenir.
+        history.pushState({ guard: true }, '', `${location.pathname}${location.search}#${document.body.dataset.view}`);
+        window.IndiriciAndroid.exit();
+    } else history.back();
 });
+
+/* ---- Android uygulaması (APK) ----
+ * Uygulama açıkken paylaşılan bağlantıyı kabuk doğrudan buraya verir (sayfa yeniden yüklenmez).
+ * Sayfanın belleğindeki dosya (blob:) indirilmek istenirse kabuk onu buradan ister. */
+if (window.IndiriciAndroid) {
+    document.documentElement.classList.add('in-apk');
+    window.__indiriciShare = (link) => {
+        if (!/^https?:\/\//.test(String(link || ''))) return false;
+        shareLog({ ev: 'APK paylaşımı', link: true });
+        navigate('detect');
+        detectTab.prefill(link, true, { shared: true });
+        return true;
+    };
+    window.__indiriciSaveBlobUrl = (url) => {
+        fetch(url).then((r) => r.blob()).then((blob) => {
+            const ext = (blob.type.split('/')[1] || 'bin').replace(/[^a-z0-9].*$/i, '');
+            return saveToAndroid(blob, `indirici-${Date.now()}.${ext}`);
+        }).catch(() => toast('Dosya kaydedilemedi'));
+    };
+}
 
 // Bu sayfada işlenen paylaşımlar: aynı bağlantı (adres, launchQueue, gelen kutusu) iki kez işlenmesin.
 const handledShares = new Set([shared, staleShare].filter(Boolean));
