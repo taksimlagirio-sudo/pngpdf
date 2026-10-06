@@ -2069,6 +2069,25 @@ const server = http.createServer(async (req, res) => {
 
     if ((url.pathname === '/gonder' || url.pathname === '/yerimi') && handleInboxPublic(req, res, url)) return;
 
+    // Paylaşım hedefi (POST): uygulamanın service worker'ı yoksa (ilk açılış) sunucu karşılar.
+    if (url.pathname === '/paylas' && req.method === 'POST') {
+        let link = '';
+        try {
+            const chunks = [];
+            let size = 0;
+            for await (const chunk of req) {
+                size += chunk.length;
+                if (size > 1024 * 1024) break;
+                chunks.push(chunk);
+            }
+            const form = await new Response(Buffer.concat(chunks), { headers: { 'content-type': req.headers['content-type'] || '' } }).formData();
+            link = ['url', 'text', 'title'].map((k) => String(form.get(k) || ''))
+                .map((v) => (v.match(/https?:\/\/\S+/) || [])[0]).find(Boolean) || '';
+        } catch (_) { /* boş paylaşım */ }
+        res.writeHead(303, { location: link ? `/?text=${encodeURIComponent(link)}#detect` : '/#detect' });
+        return res.end();
+    }
+
     if (req.method === 'GET' || req.method === 'HEAD') {
         const file = staticFile(url.pathname);
         if (file) return serveStatic(req, res, file);

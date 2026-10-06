@@ -31,3 +31,10 @@
   for = "/*.mjs"
   [headers.values]
     Content-Type = "text/javascript; charset=utf-8"
+
+# Paylaşım hedefi POST ile gelir; service worker yoksa Netlify işlevi karşılar.
+[[redirects]]
+  from = "/paylas"
+  to = "/.netlify/functions/paylas"
+  status = 200
+  force = true
