@@ -202,8 +202,10 @@ async function loadPlaywright() {
 }
 
 let browserPromise = null;
+let browserUsedAt = 0; // tarayıcı en son ne zaman istendi (boşta kapatma, yeni açılan sayfayla çakışmasın)
 
 async function getBrowser() {
+    browserUsedAt = Date.now();
     if (!browserPromise) {
         browserPromise = (async () => {
             const { chromium } = await loadPlaywright();
@@ -226,6 +228,22 @@ async function getBrowser() {
                 ignoreDefaultArgs
             });
             browser.on('disconnected', () => { browserPromise = null; });
+            // Boştayken (açık sayfa yok) tarayıcı kapatılır: telefonda yüzlerce MB bellek boşalır, Android
+            // arka plandaki uygulamaları (İndirici dahil) daha az kapatır. Sonraki istekte yeniden açılır.
+            const idleMs = Math.max(30, Number(process.env.BROWSER_IDLE_SEC) || 180) * 1000;
+            let idleSince = Date.now();
+            const idleTimer = setInterval(() => {
+                if (browser.contexts().length) {
+                    idleSince = Date.now();
+                    return;
+                }
+                if (Date.now() - Math.max(idleSince, browserUsedAt) < idleMs) return;
+                clearInterval(idleTimer);
+                browserPromise = null;
+                browser.close().catch(() => {});
+            }, 15000);
+            idleTimer.unref();
+            browser.on('disconnected', () => clearInterval(idleTimer));
             return browser;
         })().catch((err) => {
             browserPromise = null;
