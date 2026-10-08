@@ -4,6 +4,7 @@ import { $, escapeHtml, formatSize, clock, getRenderServer, renderApi, isHttpUrl
 import { downloadsTabs, setFollowCount } from './downloads.js';
 import { icon } from './icons.js';
 import { confirmSheet } from './sheet.js';
+import { deviceInfo } from './sync.js';
 
 const QUALITIES = [['best', 'En iyi'], ['1080', '1080p'], ['720', '720p']];
 const EVERY_LIVE = [1, 5, 15, 30];
@@ -128,6 +129,11 @@ export function initFollow({ navigate, toast }) {
             items = data.items || [];
             events = data.events || [];
             error = '';
+            // Cihazı belli olmayan (eski) takipleri ilk açan cihaz üstlenir; kayıtları bundan sonra ona iner.
+            for (const w of items.filter((x) => !x.device)) {
+                w.device = deviceInfo().id;
+                renderApi(`/watch/${w.id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device: w.device }) }, 10000).catch(() => {});
+            }
             showAlerts(events);
         } catch (err) {
             error = err.status === 404 ? 'Sunucun takip özelliğini içermeyen eski bir sürüm; güncelleyip yeniden başlat.' : err.message;
@@ -432,7 +438,8 @@ export function initFollow({ navigate, toast }) {
         if (!isHttpUrl(a.url)) return toast('Geçerli bir adres gir');
         try {
             if (a.draft.notify !== false) ensurePush().catch(() => {});
-            const w = await api('/watch', { type: a.type, url: a.url, ...a.draft });
+            // Takibi kuran cihaz: kayıtlar bitince yalnızca bu cihaza aktarılır.
+            const w = await api('/watch', { type: a.type, url: a.url, ...a.draft, device: deviceInfo().id });
             ui.adding = null;
             ui.selected = w.id;
             ui.desk = a.type === 'channel' ? 'channels' : 'streams';

@@ -208,7 +208,7 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
             startedAt: rec.startedAt, endedAt: rec.endedAt, mediaSec: rec.mediaSec, bytes: rec.bytes,
             missed: rec.missed, reason: rec.reason, error: rec.error, warning: rec.warning,
             maxHeight: rec.maxHeight || 0, vod: Boolean(rec.vod), keepMs: rec.keepMs || 0, source: rec.source || '',
-            total: rec.total || 0, download: Boolean(rec.download)
+            total: rec.total || 0, download: Boolean(rec.download), device: rec.device || ''
         };
     }
 
@@ -279,7 +279,8 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
         let muxer = null;
         try {
             // Master verildiyse en yüksek kalite (ya da istenen üst sınırın altındaki en iyisi) + varsayılan ses.
-            let first = await loadPlaylist(rec.url, signal);
+            let first = rec.playlistText ? parsePlaylist(rec.playlistText, rec.url) : await loadPlaylist(rec.url, signal);
+            rec.playlistText = '';
             if (first.type === 'master') {
                 const capped = rec.maxHeight ? first.variants.filter((v) => !v.height || v.height <= rec.maxHeight) : [];
                 const best = capped[0] || first.variants[0];
@@ -421,7 +422,7 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
             const rec = recordings.get(id);
             return rec ? publicState(rec) : null;
         },
-        async start({ url, audioUrl, name, limitSec, limitLabel, quality, maxHeight = 0, vod = false, keepMs = 0, source = '' }) {
+        async start({ url, audioUrl, playlistText = '', device = '', name, limitSec, limitLabel, quality, maxHeight = 0, vod = false, keepMs = 0, source = '' }) {
             const target = new URL(url);
             await assertPublicTarget(target);
             const audio = audioUrl ? new URL(audioUrl) : null;
@@ -437,7 +438,12 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
                 limitLabel: String(limitLabel || '').slice(0, 20),
                 state: 'recording', startedAt: Date.now(), endedAt: 0, mediaSec: 0, bytes: 0, missed: 0,
                 reason: '', error: '', warning: '', stopRequested: false, controller: new AbortController(),
-                maxHeight: Number(maxHeight) || 0, vod: Boolean(vod), keepMs: Number(keepMs) || 0, source: String(source || '').slice(0, 2000)
+                maxHeight: Number(maxHeight) || 0, vod: Boolean(vod), keepMs: Number(keepMs) || 0, source: String(source || '').slice(0, 2000),
+                // Kaydı isteyen cihaz (takibi kuran ya da kaydı başlatan): bitince yalnızca o cihaza aktarılır.
+                device: String(device || '').replace(/[^0-9a-f]/gi, '').slice(0, 32),
+                // Sayfanın oynatıcısının aldığı liste içeriği: ana liste tek kullanımlık anahtar taşıyorsa
+                // yeniden istenince reddedilir; ilk okuma buradan yapılır.
+                playlistText: typeof playlistText === 'string' && playlistText.length < 1024 * 1024 ? playlistText : ''
             };
             recordings.set(id, rec);
             persist(rec);
@@ -448,14 +454,14 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
          * Düz bir dosyayı (ör. kanalın yeni videosu) sunucuya indirir; bitince kayıtlar gibi listelenir.
          * @param {(file: string, onBytes: (n: number) => void, signal: AbortSignal) => Promise<void>} fetchTo
          */
-        importFile({ name, ext = 'mp4', fetchTo, keepMs = 0, source = '', quality = '', download = false }) {
+        importFile({ name, ext = 'mp4', fetchTo, keepMs = 0, source = '', quality = '', download = false, device = '' }) {
             const id = randomBytes(12).toString('hex');
             const baseName = String(name || 'video').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 100) || 'video';
             const rec = {
                 id, url: source, audioUrl: null, baseName, quality, ext, file: `${id}.bin`, fileName: `${baseName}.${ext}`,
                 limitSec: 0, limitLabel: '', state: 'recording', startedAt: Date.now(), endedAt: 0, mediaSec: 0, bytes: 0, missed: 0,
                 reason: '', error: '', warning: '', stopRequested: false, controller: new AbortController(), keepMs, source, vod: true,
-                total: 0, download
+                total: 0, download, device: String(device || '').replace(/[^0-9a-f]/gi, '').slice(0, 32)
             };
             recordings.set(id, rec);
             persist(rec);

@@ -12,7 +12,7 @@
 //
 // captureId verilirse aynı ekran "aç ve kaydet"in kendin başlat ekranıdır: video başlayınca kayıt
 // başlar, üstteki şerit kaydın durumunu gösterir.
-import { escapeHtml, renderApi, getRenderServer, formatSize, clock } from './util.js';
+import { escapeHtml, renderApi, getRenderServer, formatSize, clock, readClipText } from './util.js';
 import { rememberManifests } from './detect.js';
 import { attachPreview } from './preview.js';
 import { icon } from './icons.js';
@@ -298,7 +298,7 @@ export function openLiveSession(pageUrl, { onPick = () => {}, onCapture = null, 
                 <button class="lv-goto-btn" type="submit">Git</button></form>
             <button class="lv-back-btn" data-s="close-sheet">Vazgeç</button>`);
         const input = sh.querySelector('input');
-        navigator.clipboard?.readText?.().then((t) => { if (/^https?:\/\//.test(t.trim()) && !input.value) input.value = t.trim(); }).catch(() => {});
+        readClipText().then((t) => { if (/^https?:\/\//.test(t.trim()) && !input.value) input.value = t.trim(); }).catch(() => {});
         setTimeout(() => input.focus(), 150);
         sh.addEventListener('click', (e) => { if (e.target.closest('[data-s="close-sheet"]')) closeSheet(sh); });
         sh.querySelector('form').addEventListener('submit', (e) => {

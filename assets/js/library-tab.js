@@ -9,6 +9,7 @@ import { confirmSheet } from './sheet.js';
 const KIND_LABEL = { video: 'Video', photo: 'Fotoğraf', audio: 'Ses', rec: 'Kayıt', file: 'Dosya' };
 const TYPES = [['Tümü', null], ['Video', 'video'], ['Fotoğraf', 'photo'], ['Ses', 'audio'], ['Kayıt', 'rec']];
 const SOURCES = [['all', 'Tümü'], ['device', 'Bu cihaz'], ['server', 'Sunucum']];
+const APK_SOURCES = [['all', 'Tümü'], ['device', 'Kitaplık'], ['gallery', 'Galeri'], ['server', 'Sunucum']];
 const STYLES = [['grid', 'Izgara'], ['wall', 'Duvar'], ['list', 'Liste']];
 
 /** Öğenin türü (kayıtlar ayrı sayılır). */
@@ -27,6 +28,7 @@ export function itemMeta(item) {
 /** Nerede: Sunucuda / Galeride / Yalnız burada */
 export function itemWhere(item) {
     if (item.server) return ['Sunucuda', 'srv'];
+    if (item.gallery) return ['Telefonda', 'ok'];
     if (item.exportedAt) return ['Galeride', 'ok'];
     return ['Yalnız burada', 'only'];
 }
@@ -61,6 +63,26 @@ async function serverItems() {
         } catch (_) { /* sunucu kapalı ya da eski */ }
     }
     return out;
+}
+
+/**
+ * APK: telefon galerisindeki videolar ve fotoğraflar (izin verildiyse). Dosyalara uygulamanın kendi
+ * adresi altından ulaşılır (/__galeri/…; kabuk telefonun medya deposundan verir).
+ */
+function galleryItems(known) {
+    const bridge = window.IndiriciAndroid;
+    if (!bridge || !bridge.galleryList || bridge.galleryState() !== 'granted') return [];
+    let list = [];
+    try {
+        list = JSON.parse(bridge.galleryList(0, 600) || '[]');
+    } catch (_) { /* okunamadı */ }
+    // Kitaplıkta zaten olan (İndirilenler'e de kaydedilmiş) dosyalar iki kez görünmesin.
+    const have = new Set(known.map((i) => `${i.name}|${i.size}`));
+    return list.filter((g) => !have.has(`${g.name}|${g.size}`)).map((g) => ({
+        id: `g:${g.id}`, gallery: true, name: g.name || 'dosya', kind: g.kind === 'image' ? 'photo' : 'video',
+        mime: g.mime || '', size: g.size || 0, duration: g.duration || 0, width: g.width || 0, height: g.height || 0,
+        createdAt: g.at || 0, url: `/__galeri/dosya/${g.id}`, thumb: `/__galeri/kucuk/${g.id}`
+    }));
 }
 
 /** Sunucudaki öğeleri siler (kayıt, açıp-kaydet ya da eşitlenmiş kitaplık kopyası). */
@@ -104,6 +126,11 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
     const desktop = () => window.matchMedia('(min-width: 960px)').matches;
     let items = [];
     let remote = [];
+    let phone = []; // telefon galerisi (APK, izinle)
+    let galleryAsked = false;
+    try {
+        galleryAsked = localStorage.getItem('indirici.galleryAsk') === 'no';
+    } catch (_) { /* depolama kapalı */ }
     let usage = null;
     let visible = [];
     let focusSearch = false;
@@ -114,14 +141,14 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
     const all = () => {
         const ids = new Set(items.map((i) => i.id));
         const synced = syncOn() ? syncedItems(syncState, ids) : [];
-        return [...items, ...remote, ...synced].sort((a, b) => b.createdAt - a.createdAt);
+        return [...items, ...remote, ...synced, ...phone].sort((a, b) => b.createdAt - a.createdAt);
     };
 
     function filtered() {
         const q = ui.query.trim().toLocaleLowerCase('tr');
         const c = ui.collection;
         return all()
-            .filter((i) => ui.source === 'all' || (ui.source === 'server' ? i.server : !i.server))
+            .filter((i) => ui.source === 'all' || (ui.source === 'server' ? i.server : ui.source === 'gallery' ? i.gallery : !i.server && !i.gallery))
             .filter((i) => !c || (c.kind === 'rec' ? i.rec : c.kind === 'edited' ? i.edited : c.kind === 'page' ? i.page === c.value
                 : c.kind === 'coll' ? (i.collections || []).includes(c.value) : c.kind === 'tag' ? (i.tags || []).includes(c.value) : i.site === c.value))
             .filter((i) => !q || `${i.name} ${i.site || ''}`.toLocaleLowerCase('tr').includes(q));
@@ -137,7 +164,7 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
     }
 
     function tileBadges(item) {
-        return `${item.rec ? '<span class="lib-badge rec">KAYIT</span>' : ''}${item.server ? '<span class="lib-badge srv">SUNUCU</span>' : ''}`;
+        return `${item.rec ? '<span class="lib-badge rec">KAYIT</span>' : ''}${item.server ? '<span class="lib-badge srv">SUNUCU</span>' : ''}${item.gallery ? '<span class="lib-badge gal">GALERİ</span>' : ''}`;
     }
 
     function tileLabel(item) {
@@ -198,12 +225,13 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
                 <button class="link-btn" data-l="pick-cancel">Vazgeç</button></div>` : '';
         root.innerHTML = `<div class="lib-layout"><div class="lib-main">
             ${pickBar}
+            ${galleryCardHtml()}
             ${syncOn() && !ui.picking ? syncCardHtml() : ''}
             ${ui.searching ? `<div class="lib-search"><input class="input" type="search" data-l-q placeholder="Ad ya da site ara" value="${escapeHtml(ui.query)}"></div>` : ''}
             ${usageHtml()}
             <div class="lib-ctrls">
                 <label class="lib-desk-search"><input class="input" type="search" data-l-q placeholder="Ad, site ya da tür ara" value="${escapeHtml(ui.query)}"><kbd>Ctrl K</kbd></label>
-                <div class="seg lib-seg">${(syncOn() ? [['all', 'Hepsi'], ['device', 'Bu cihazda'], ['server', 'Öbür cihazda']] : SOURCES).map(([k, l]) => `<button class="${ui.source === k ? 'on' : ''}" data-l="source" data-v="${k}">${l}</button>`).join('')}</div>
+                <div class="seg lib-seg">${(syncOn() ? [['all', 'Hepsi'], ['device', 'Bu cihazda'], ['server', 'Öbür cihazda']] : window.IndiriciAndroid && window.IndiriciAndroid.galleryList ? APK_SOURCES : SOURCES).map(([k, l]) => `<button class="${ui.source === k ? 'on' : ''}" data-l="source" data-v="${k}">${l}</button>`).join('')}</div>
                 <div class="seg lib-seg">${STYLES.map(([k, l]) => `<button class="${style === k ? 'on' : ''}" data-l="style" data-v="${k}">${l}</button>`).join('')}</div>
             </div>
             <div class="lib-chips">${TYPES.map(([l, k], i) => `<button class="lib-chip${ui.type === k ? ' on' : ''}" data-l="type" data-v="${k || ''}">${l} <small>${counts[i]}</small></button>`).join('')}
@@ -238,6 +266,18 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
             input.focus();
             input.setSelectionRange(input.value.length, input.value.length);
         }
+    }
+
+    /** APK: telefon galerisini de göstermek için izin kartı (bir kez sorulur, "Şimdi değil" denince gizlenir). */
+    function galleryCardHtml() {
+        const bridge = window.IndiriciAndroid;
+        if (ui.picking || !bridge || !bridge.galleryState || bridge.galleryState() === 'granted') return '';
+        if (galleryAsked && ui.source !== 'gallery') return '';
+        return `<div class="gal-card"><span class="gal-ic">${icon('image')}</span>
+            <span class="gal-t"><b>Telefon galerin de burada görünsün mü?</b>
+                <small>Videoların ve fotoğrafların, indirdiklerin ve sunucundakilerle birlikte listelenir. Dosyalar telefonda kalır, hiçbir yere gönderilmez.</small></span>
+            <span class="gal-btns"><button class="btn-ac" data-l="gal-allow">İzin ver</button>
+                ${galleryAsked ? '' : '<button class="link-btn" data-l="gal-later">Şimdi değil</button>'}</span></div>`;
     }
 
     const fetching = new Map();
@@ -307,7 +347,7 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
     }
 
     function pickedVideos() {
-        return pickedItems().filter((i) => i.kind === 'video' && !i.server);
+        return pickedItems().filter((i) => i.kind === 'video' && !i.server && !i.gallery);
     }
 
     function selectedItem() {
@@ -321,13 +361,13 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
             ['Boyut', it.size ? formatSize(it.size) : '—'],
             ['Süre / ölçü', it.duration ? clock(it.duration) : it.width ? `${it.width}×${it.height}` : '—'],
             ['Kaynak', it.site || '—'],
-            ['Nerede', it.server ? 'Sunucum (akıtılır)' : it.exportedAt ? 'Bu cihaz · galeride de var' : 'Yalnızca bu cihaz'],
+            ['Nerede', it.server ? 'Sunucum (akıtılır)' : it.gallery ? 'Telefon galerisi' : it.exportedAt ? 'Bu cihaz · galeride de var' : 'Yalnızca bu cihaz'],
             ['İndirildi', new Date(it.createdAt).toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })]
         ];
         return `
             <button class="lib-insp-prev" data-l="insp-open" style="${thumbStyle(it)}">${it.kind === 'photo' ? '' : `<span class="lib-insp-play">${icon('play')}</span>`}</button>
             <div class="lib-insp-t">${escapeHtml(it.name)}</div>
-            <div class="lib-insp-m">${KIND_LABEL[typeOf(it)] || 'Dosya'} · ${it.server ? 'sunucunda' : 'bu cihazda'}</div>
+            <div class="lib-insp-m">${KIND_LABEL[typeOf(it)] || 'Dosya'} · ${it.server ? 'sunucunda' : it.gallery ? 'telefon galerisinde' : 'bu cihazda'}</div>
             <div class="lib-insp-rows">${rows.map(([k, v]) => `<div><span>${k}</span><b>${escapeHtml(v)}</b></div>`).join('')}</div>
             <div class="lib-insp-btns">
                 <button class="btn-ac" data-l="insp-open">Aç</button>
@@ -397,6 +437,7 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
         items = await libList();
         usage = await libUsage();
         if (server) remote = applyProgress(await serverItems());
+        phone = applyProgress(galleryItems(items));
         render();
     }
 
@@ -407,6 +448,17 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
         if (act === 'source') {
             ui.source = btn.dataset.v;
             if (ui.source !== 'device') refresh({ server: true });
+        }
+        if (act === 'gal-allow') {
+            window.__indiriciGalleryPerm = (st) => {
+                if (st !== 'granted') toast('İzin verilmedi; Ayarlar › Uygulamalar › İndirici › İzinler\'den açabilirsin');
+                refresh().catch(() => {});
+            };
+            return window.IndiriciAndroid.galleryRequest();
+        }
+        if (act === 'gal-later') {
+            galleryAsked = true;
+            try { localStorage.setItem('indirici.galleryAsk', 'no'); } catch (_) { /* depolama kapalı */ }
         }
         if (act === 'style') setPref('libStyle', btn.dataset.v);
         if (act === 'type') ui.type = btn.dataset.v || null;
@@ -448,7 +500,7 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
         }
         if (act === 'pick-delete') {
             const picked = pickedItems();
-            const list = picked.filter((i) => !i.server);
+            const list = picked.filter((i) => !i.server && !i.gallery);
             const remote = picked.filter((i) => i.server);
             if (!picked.length) return;
             const only = list.filter((i) => !i.exportedAt).length;
@@ -480,7 +532,7 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
             return openSelected(btn.dataset.id);
         }
         if (act === 'insp-open') return openSelected(ui.selected);
-        if (act === 'insp-edit' && selectedItem()) return viewer.edit(selectedItem(), visible.filter((i) => i.kind === 'photo' && !i.server));
+        if (act === 'insp-edit' && selectedItem()) return viewer.edit(selectedItem(), visible.filter((i) => i.kind === 'photo' && !i.server && !i.gallery));
         if (act === 'insp-export' && selectedItem()) return viewer.toGallery(selectedItem());
         if (act === 'insp-share' && selectedItem()) return viewer.share(selectedItem());
         if (act === 'insp-delete' && selectedItem()) {
@@ -522,8 +574,8 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
 
     /* ---- Koleksiyona ekle / etiketler ---- */
     function openCollectionSheet() {
-        const items = pickedItems().filter((i) => !i.server);
-        if (!items.length) return toast('Sunucudaki öğeler koleksiyona eklenemez');
+        const items = pickedItems().filter((i) => !i.server && !i.gallery);
+        if (!items.length) return toast('Sunucudaki ve galerideki öğeler koleksiyona eklenemez');
         const colls = collectionsOf(all());
         const tags = tagsOf(all());
         const st = { coll: null, newName: '', tags: new Set(), newTag: '' };
@@ -644,7 +696,7 @@ export function initLibraryTab({ toast, viewer, onMerge = null }) {
             e.preventDefault();
             openSelected(it.id);
         }
-        if (e.key.toLowerCase() === 'e') viewer.edit(it, visible.filter((i) => i.kind === 'photo' && !i.server));
+        if (e.key.toLowerCase() === 'e') viewer.edit(it, visible.filter((i) => i.kind === 'photo' && !i.server && !i.gallery));
         if (e.key === 'Delete' || e.key === 'Backspace') viewer.remove(it);
     });
 

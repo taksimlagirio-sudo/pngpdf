@@ -223,7 +223,7 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
             fileName: cap.fileName, file: cap.file, ext: cap.ext, startedAt: cap.startedAt, endedAt: cap.endedAt,
             mediaSec: cap.mediaSec, duration: cap.duration, bytes: cap.bytes, total: cap.total || 0, speed: cap.speed,
             reason: cap.reason, error: cap.error, warning: cap.warning, phase: cap.phase, blockedAds: cap.blockedAds || 0,
-            needsUser: cap.state === 'waiting', mode: 'capture'
+            needsUser: cap.state === 'waiting', mode: 'capture', device: cap.device || ''
         };
     }
     const persist = (cap) => {
@@ -802,7 +802,7 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
          * pageUrl: videonun bulunduğu sayfa (biliniyorsa). mediaUrl: videonun/yayının kendi adresi.
          * Eski istemciler için `url` sayfa adresi sayılır.
          */
-        async start({ url, pageUrl, mediaUrl, kind, name, maxSec, sameDevice }) {
+        async start({ url, pageUrl, mediaUrl, kind, name, maxSec, sameDevice, device = '' }) {
             pageUrl = pageUrl || (!mediaUrl ? url : '');
             if (!pageUrl && !mediaUrl) throw new Error('Adres gerekli');
             for (const u of [pageUrl, mediaUrl]) if (u) await assertPublicTarget(new URL(u));
@@ -817,7 +817,7 @@ export function createCapturer({ dir, appRoot, getBrowser, logins, nudgePlayback
                 kind: kind || '', baseName, fileName: `${baseName}.mp4`, file: '', ext: 'mp4', work,
                 state: 'capturing', phase: 'Başlıyor', startedAt: Date.now(), endedAt: 0, mediaSec: 0, duration: 0,
                 bytes: 0, speed: 0, maxSec: Math.max(0, Number(maxSec) || 0), reason: '', error: '', warning: '',
-                stopRequested: false, cancelled: false, sameDevice: Boolean(sameDevice)
+                stopRequested: false, cancelled: false, sameDevice: Boolean(sameDevice), device: String(device || '').replace(/[^0-9a-f]/gi, '').slice(0, 32)
             };
             const codecs = await codecSupport().catch(() => null);
             if (codecs && !codecs.h264) {

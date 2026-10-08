@@ -13,7 +13,7 @@ const speedLabel = (v) => `${String(v).replace('.', ',')}×`;
 
 /** Öğenin oynatılabilir adresi (bu cihazdaysa Blob adresi). */
 async function sourceOf(item) {
-    if (item.server) return { url: item.url, revoke() {} };
+    if (item.server || item.gallery) return { url: item.url, revoke() {} };
     const blob = await libFile(item.id);
     const url = URL.createObjectURL(blob);
     return { url, blob, revoke: () => URL.revokeObjectURL(url) };
@@ -171,6 +171,7 @@ function attachScrub(zone, video, host) {
 export function createViewer({ toast, edit = null }) {
     /** Galeriye (paylaşım sayfası) ya da İndirilenler'e kaydeder. */
     async function toGallery(item) {
+        if (item.gallery) return toast('Bu dosya zaten telefonun galerisinde');
         if (item.server) {
             window.open(item.url, '_blank', 'noopener');
             return;
@@ -193,6 +194,7 @@ export function createViewer({ toast, edit = null }) {
     }
 
     async function share(item) {
+        if (item.gallery) return toast('Telefon galerisindeki dosyayı galeriden paylaş');
         if (item.server) {
             if (navigator.share) navigator.share({ url: item.page || item.url, title: item.name }).catch(() => {});
             return;
@@ -209,6 +211,10 @@ export function createViewer({ toast, edit = null }) {
     }
 
     async function remove(item) {
+        if (item.gallery) {
+            toast('Bu dosya telefonun galerisinde; oradan silebilirsin');
+            return false;
+        }
         if (item.server) {
             if (!(await confirmServerDelete([item]))) return false;
             await deleteServerItems([item]);
@@ -226,6 +232,7 @@ export function createViewer({ toast, edit = null }) {
     function startEdit(item, closeFn, list = []) {
         if (!edit) return;
         if (item.server) return toast('Düzenlemek için önce telefona al');
+        if (item.gallery) return toast('Telefon galerisindeki dosya burada düzenlenemiyor');
         closeFn();
         edit(item, list);
     }
@@ -262,7 +269,7 @@ export function createViewer({ toast, edit = null }) {
         function draw() {
             const isAudio = item.kind === 'audio';
             const meta = [item.height ? `${item.height}p` : '', item.size ? formatSize(item.size) : '',
-                item.server ? 'sunucunda' : 'bu cihazda', item.site || ''].filter(Boolean).join(' · ');
+                item.server ? 'sunucunda' : item.gallery ? 'telefon galerisinde' : 'bu cihazda', item.site || ''].filter(Boolean).join(' · ');
             const rel = related();
             el.innerHTML = `
                 <div class="vw-stage${isAudio ? ' audio' : ''}">

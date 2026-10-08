@@ -124,9 +124,9 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
 
     const stamp = () => new Date().toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
-    async function startRecording(w, liveUrl, limitSec) {
+    async function startRecording(w, live, limitSec) {
         const rec = await recorder.start({
-            url: liveUrl, name: `${w.name || 'yayin'} ${stamp()}`.replace(/[:]/g, '.'),
+            url: live.url, audioUrl: live.audioUrl || null, playlistText: live.text || '', device: w.device || '', name: `${w.name || 'yayin'} ${stamp()}`.replace(/[:]/g, '.'),
             limitSec, limitLabel: '', quality: '', maxHeight: QUALITY[w.quality] || 0, keepMs: KEEP_MS, source: w.url
         });
         w.recId = rec.id;
@@ -195,7 +195,7 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
             const [, e] = occurrence(w);
             limit = Math.max(60, Math.round((e + (w.late || 0) * 60000 - Date.now()) / 1000));
         }
-        await startRecording(w, result.live.url, limit);
+        await startRecording(w, result.live, limit);
     }
 
     async function checkChannel(w) {
@@ -234,7 +234,7 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
             w.recent = [entry, ...(w.recent || [])].slice(0, 12);
             if (w.auto) {
                 try {
-                    const rec = await downloadEntry(e, { maxHeight: QUALITY[w.quality] || 0, keepMs: KEEP_MS, source: w.url });
+                    const rec = await downloadEntry(e, { maxHeight: QUALITY[w.quality] || 0, keepMs: KEEP_MS, source: w.url, device: w.device || '' });
                     entry.recId = rec.id;
                     entry.state = 'downloading';
                 } catch (err) {
@@ -340,6 +340,8 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
             out.name = String(body.name).slice(0, 80);
             out.nameSet = Boolean(out.name);
         }
+        // Takibi kuran cihaz: kayıtlar bitince yalnızca ona aktarılır (sunucuyu kullanan her cihaza değil).
+        if (body.device !== undefined) out.device = String(body.device).replace(/[^0-9a-f]/gi, '').slice(0, 32);
         if (body.every !== undefined) out.every = clamp(Number(body.every) || 5, 1, 24 * 60);
         if (body.maxSec !== undefined) out.maxSec = clamp(Number(body.maxSec) || 0, 0, 24 * 3600);
         if (body.quality !== undefined) out.quality = Object.hasOwn(QUALITY, body.quality) ? String(body.quality) : 'best';

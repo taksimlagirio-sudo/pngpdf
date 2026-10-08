@@ -1547,25 +1547,105 @@ async function fetchText(url) {
 }
 
 /** Sayfada (ya da doğrudan .m3u8 adresinde) şu an canlı bir yayın var mı? */
+/** Adresin ilk baytları (en fazla max): parçanın ses mi görüntü mü taşıdığını anlamak için. */
+async function fetchHead(url, max = 512 * 1024) {
+    const headers = { 'user-agent': DESKTOP_UA, accept: '*/*', range: `bytes=0-${max - 1}` };
+    const referer = refererByUrl.get(url) || refererByHost.get(new URL(url).host);
+    if (referer) headers.referer = referer;
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 20000);
+    try {
+        const res = await fetchUpstream(url, headers, { signal: ac.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const chunks = [];
+        let size = 0;
+        for await (const c of res.body) {
+            chunks.push(c);
+            size += c.length;
+            if (size >= max) break;
+        }
+        ac.abort();
+        return Buffer.concat(chunks).subarray(0, max);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/**
+ * Tek bir yayın listesi (ana liste değil) ne taşıyor: { video, audio }. İlk parçaya (fMP4'te başlangıç
+ * parçasına) bakılır: fMP4'te iz türleri (vide/soun), TS'de PES akış kimlikleri, uzantısı ses olanlar ses.
+ */
+async function playlistTracks(list) {
+    const seg = list.segments && list.segments[0];
+    if (!seg) return { video: false, audio: false };
+    if (/\.(aac|mp3|m4a|ac3|ec3|opus)(\?|$)/i.test(seg.url)) return { video: false, audio: true };
+    const buf = await fetchHead(seg.map ? seg.map.url : seg.url).catch(() => null);
+    if (!buf) return { video: true, audio: true }; // anlaşılamadı: tek başına kaydedilir
+    if (seg.map || buf.includes('ftyp') || buf.includes('moov') || buf.includes('moof')) {
+        return { video: buf.includes('vide'), audio: buf.includes('soun') };
+    }
+    // MPEG-TS: video PES 00 00 01 E0–EF, ses PES 00 00 01 C0–DF (parça şifreliyse anlaşılamaz).
+    let video = false;
+    let audio = false;
+    for (let i = 0; i + 3 < buf.length && !(video && audio); i++) {
+        if (buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 1) {
+            const id = buf[i + 3];
+            if (id >= 0xe0 && id <= 0xef) video = true;
+            else if (id >= 0xc0 && id <= 0xdf) audio = true;
+        }
+    }
+    if (!video && !audio) {
+        if (buf[0] === 0xff && (buf[1] & 0xf0) === 0xf0) return { video: false, audio: true }; // çıplak AAC
+        return { video: true, audio: true };
+    }
+    return { video, audio };
+}
+
+/**
+ * Takip: sayfada canlı yayın var mı? Varsa ses ve görüntü birlikte kaydedilecek şekilde döner:
+ * { url, audioUrl?, text? }. Sayfanın oynatıcısının aldığı ana liste (ses + görüntü bilgisi) önce
+ * kullanılır; içeriği koklama sırasında saklandığından tek kullanımlık anahtarlı listeler de çalışır.
+ * Ana liste yoksa bulunan listelerin ne taşıdığına bakılır, görüntü ve ses listesi eşleştirilir
+ * (yalnızca ilk canlı liste alınınca kayıt rastgele yalnızca ses ya da yalnızca görüntü oluyordu).
+ */
 async function findLive(pageUrl) {
     let candidates = [];
     let title = '';
     if (/\.m3u8(\?|$)/i.test(pageUrl)) {
-        candidates = [pageUrl];
+        candidates = [{ url: pageUrl }];
     } else {
         const r = await sniff(pageUrl, 20000);
         if (r.main && r.main.status >= 400) return { reachable: false, error: `Sayfa HTTP ${r.main.status} döndü` };
         title = r.title || '';
-        if (r.main && /mpegurl/.test(r.main.contentType)) candidates = [pageUrl];
-        candidates.push(...r.items.filter((i) => i.kind === 'hls').map((i) => i.url));
+        if (r.main && /mpegurl/.test(r.main.contentType)) candidates = [{ url: pageUrl }];
+        candidates.push(...r.items.filter((i) => i.kind === 'hls' && !i.failed).map((i) => ({ url: i.url, text: i.text || '' })));
     }
-    for (const url of candidates) {
+    const lists = [];
+    for (const c of candidates) {
         try {
-            const list = parsePlaylist(await fetchText(url), url);
-            const media = list.type === 'master' ? parsePlaylist(await fetchText(list.variants[0].url), list.variants[0].url) : list;
-            if (media.isLive) return { reachable: true, live: { url }, title };
+            const text = c.text || await fetchText(c.url);
+            lists.push({ url: c.url, text, list: parsePlaylist(text, c.url) });
         } catch (_) { /* bu aday açılmadı */ }
     }
+    // 1) Ana liste: kaydedici en iyi kaliteyi ve varsayılan sesi kendisi seçer.
+    for (const m of lists.filter((l) => l.list.type === 'master')) {
+        try {
+            const v = m.list.variants[0];
+            const media = parsePlaylist(await fetchText(v.url), v.url);
+            if (media.isLive) return { reachable: true, live: { url: m.url, text: m.text }, title };
+        } catch (_) { /* bu ana listenin kalitesi açılmadı */ }
+    }
+    // 2) Ana liste yok: canlı listelerin ne taşıdığına bakılır.
+    const media = [];
+    for (const l of lists.filter((x) => x.list.type !== 'master' && x.list.isLive)) {
+        media.push({ ...l, tracks: await playlistTracks(l.list) });
+    }
+    const both = media.find((m) => m.tracks.video && m.tracks.audio);
+    const video = media.find((m) => m.tracks.video && !m.tracks.audio);
+    const audio = media.find((m) => m.tracks.audio && !m.tracks.video);
+    if (video && audio) return { reachable: true, live: { url: video.url, audioUrl: audio.url }, title };
+    const pick = both || video || audio;
+    if (pick) return { reachable: true, live: { url: pick.url, audioOnly: !pick.tracks.video }, title };
     return { reachable: true, live: null, title };
 }
 
@@ -1598,7 +1678,7 @@ async function saveStream(streamUrl, file, onBytes, signal) {
 }
 
 /** Kanalın yeni videosunu sunucuya indirir (en uygun kalite; sesli tek dosya ya da HLS). */
-async function downloadEntry(entry, { maxHeight = 0, keepMs = 0, source = '' } = {}) {
+async function downloadEntry(entry, { maxHeight = 0, keepMs = 0, source = '', device = '' } = {}) {
     const r = await extractWithYtdlp(entry.url);
     if (!r.ok) throw new Error(r.reason || 'Video bulunamadı');
     const name = (r.title || entry.title || 'video').slice(0, 100);
@@ -1608,11 +1688,11 @@ async function downloadEntry(entry, { maxHeight = 0, keepMs = 0, source = '' } =
     const single = r.items.filter((i) => i.kind === 'video' && !i.audioUrl).sort(byHeight).find(fits);
     const hlsBetter = hls && (!single || (hls.height || 0) > (single.height || 0));
     if (hls && (hlsBetter || !single)) {
-        return recorder.start({ url: hls.url, name, vod: true, maxHeight, keepMs, source: source || entry.url });
+        return recorder.start({ url: hls.url, name, vod: true, maxHeight, keepMs, source: source || entry.url, device });
     }
     if (single) {
         return recorder.importFile({
-            name, ext: single.ext || 'mp4', keepMs, source: source || entry.url, quality: single.height ? `${single.height}p` : '',
+            name, ext: single.ext || 'mp4', keepMs, source: source || entry.url, quality: single.height ? `${single.height}p` : '', device,
             fetchTo: (file, onBytes, signal) => saveStream(single.url, file, onBytes, signal)
         });
     }
