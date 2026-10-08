@@ -279,7 +279,8 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
         let muxer = null;
         try {
             // Master verildiyse en yüksek kalite (ya da istenen üst sınırın altındaki en iyisi) + varsayılan ses.
-            let first = await loadPlaylist(rec.url, signal);
+            let first = rec.playlistText ? parsePlaylist(rec.playlistText, rec.url) : await loadPlaylist(rec.url, signal);
+            rec.playlistText = '';
             if (first.type === 'master') {
                 const capped = rec.maxHeight ? first.variants.filter((v) => !v.height || v.height <= rec.maxHeight) : [];
                 const best = capped[0] || first.variants[0];
@@ -421,7 +422,7 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
             const rec = recordings.get(id);
             return rec ? publicState(rec) : null;
         },
-        async start({ url, audioUrl, name, limitSec, limitLabel, quality, maxHeight = 0, vod = false, keepMs = 0, source = '' }) {
+        async start({ url, audioUrl, playlistText = '', name, limitSec, limitLabel, quality, maxHeight = 0, vod = false, keepMs = 0, source = '' }) {
             const target = new URL(url);
             await assertPublicTarget(target);
             const audio = audioUrl ? new URL(audioUrl) : null;
@@ -437,7 +438,10 @@ export function createRecorder({ dir, appRoot, assertPublicTarget, refererFor, u
                 limitLabel: String(limitLabel || '').slice(0, 20),
                 state: 'recording', startedAt: Date.now(), endedAt: 0, mediaSec: 0, bytes: 0, missed: 0,
                 reason: '', error: '', warning: '', stopRequested: false, controller: new AbortController(),
-                maxHeight: Number(maxHeight) || 0, vod: Boolean(vod), keepMs: Number(keepMs) || 0, source: String(source || '').slice(0, 2000)
+                maxHeight: Number(maxHeight) || 0, vod: Boolean(vod), keepMs: Number(keepMs) || 0, source: String(source || '').slice(0, 2000),
+                // Sayfanın oynatıcısının aldığı liste içeriği: ana liste tek kullanımlık anahtar taşıyorsa
+                // yeniden istenince reddedilir; ilk okuma buradan yapılır.
+                playlistText: typeof playlistText === 'string' && playlistText.length < 1024 * 1024 ? playlistText : ''
             };
             recordings.set(id, rec);
             persist(rec);

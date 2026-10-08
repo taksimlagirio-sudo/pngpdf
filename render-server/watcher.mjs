@@ -124,9 +124,9 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
 
     const stamp = () => new Date().toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
-    async function startRecording(w, liveUrl, limitSec) {
+    async function startRecording(w, live, limitSec) {
         const rec = await recorder.start({
-            url: liveUrl, name: `${w.name || 'yayin'} ${stamp()}`.replace(/[:]/g, '.'),
+            url: live.url, audioUrl: live.audioUrl || null, playlistText: live.text || '', name: `${w.name || 'yayin'} ${stamp()}`.replace(/[:]/g, '.'),
             limitSec, limitLabel: '', quality: '', maxHeight: QUALITY[w.quality] || 0, keepMs: KEEP_MS, source: w.url
         });
         w.recId = rec.id;
@@ -195,7 +195,7 @@ export function createWatcher({ file, recorder, findLive, listEntries, downloadE
             const [, e] = occurrence(w);
             limit = Math.max(60, Math.round((e + (w.late || 0) * 60000 - Date.now()) / 1000));
         }
-        await startRecording(w, result.live.url, limit);
+        await startRecording(w, result.live, limit);
     }
 
     async function checkChannel(w) {
