@@ -250,7 +250,7 @@ export function addJob({ name, kind = 'file', thumb = null, run = null, now = fa
         done(detail) {
             setStatus(job, 'done', detail || 'Tamamlandı');
             notifyFinished(job);
-            keepInLibrary(job);
+            job.libSaved = keepInLibrary(job);
         },
         fail(detail) {
             setStatus(job, 'error', detail || 'Başarısız');

@@ -1,9 +1,13 @@
 // Canlı yayını kendi sunucunda kaydetme. Telefonda ekran kapanınca tarayıcı sekmeyi dondurur ve
 // tarayıcıdaki kayıt parça kaçırır; sunucu (bilgisayar veya Termux) ise uyumaz. Kayıt orada sürer,
 // uygulama yalnızca durumu izler; bitince dosya sunucudan indirilir.
-import { renderApi, getRenderServer, formatSize, hms, pumpToSink, sleep } from './util.js';
+import { renderApi, getRenderServer, formatSize, hms, pumpToSink, sleep, saveBlob } from './util.js';
 import { addJob, getJobs, createSink, effectiveSaveMode } from './downloads.js';
 import { getPrefs } from './prefs.js';
+import { deviceInfo } from './sync.js';
+
+/** Bu cihazın kimliği: sunucudaki kayıt bitince yalnızca onu isteyen cihaza aktarılır. */
+const myDevice = () => deviceInfo().id;
 
 const POLL_MS = 2000;
 
@@ -16,7 +20,7 @@ export async function startServerRecording({ url, audioUrl, name, limitSec, limi
     const state = await renderApi('/record', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ url, audioUrl, name, limitSec, limitLabel, quality })
+        body: JSON.stringify({ url, audioUrl, name, limitSec, limitLabel, quality, device: myDevice() })
     }, 20000);
     return track(state, thumb, 'record');
 }
@@ -29,7 +33,7 @@ export async function startServerCapture({ url, name, thumb }) {
     const state = await renderApi('/capture', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ url, name })
+        body: JSON.stringify({ url, name, device: myDevice() })
     }, 30000);
     return track(state, thumb, 'capture');
 }
@@ -70,7 +74,7 @@ export async function captureIntoJob(job, { pageUrl = '', mediaUrl = '', kind = 
     const start = await renderApi('/capture', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ pageUrl, mediaUrl, kind, name })
+        body: JSON.stringify({ pageUrl, mediaUrl, kind, name, device: myDevice() })
     }, 30000);
     setPendingTransfer(start.id, { saveMode: job.saveMode === 'disk' ? 'downloads' : job.saveMode, why, at: Date.now() });
     return followCapture(job, start, { createSinkFor, why });
@@ -278,6 +282,9 @@ async function doRestore() {
         if (!items) continue;
         for (const state of items) {
             if (getJobs().some((j) => j.serverRec === state.id || j.captureId === state.id)) continue;
+            // Başka bir cihazın kaydı (o cihazın kurduğu takip ya da başlattığı kayıt): burada izlenmez,
+            // o cihaza aktarılır. Kitaplık'ta "sunucuda" olarak yine görünür.
+            if (state.device && state.device !== myDevice()) continue;
             // Sunucuda indirme: bitince (ya da sürüyorsa bitince) telefona alınır.
             if (state.download) {
                 const transfer = pending[state.id];
@@ -380,6 +387,14 @@ async function transferToDevice(job, kind, state) {
         job.saved = true;
         markAutoSaved(state.id);
         job.done(`${baseDetail(job, state) || formatSize(received)} · telefona kaydedildi`);
+        // Telefona alındı (ve Kitaplık'a eklendi): sunucudaki kopya silinir, sunucuda yer kalmasın.
+        // Yalnızca dosya gerçekten bir yerde duruyorsa: Kitaplık'ta ya da İndirilenler/galeride.
+        await (job.libSaved || Promise.resolve()).catch(() => {});
+        if ((job.libIds && job.libIds.length) || mode !== 'memory') {
+            renderApi(`/${kind}/${state.id}`, { method: 'DELETE' }, 10000)
+                .then(() => { job.serverDeleted = true; })
+                .catch(() => {});
+        }
     } catch (err) {
         if (sink) await sink.abort().catch(() => {});
         if (job.status !== 'active') return;
@@ -423,6 +438,12 @@ function track(state, thumb = null, kind = 'record') {
     };
     // Kayıt sunucuda diske yazıldı; tarayıcı belleğine almadan doğrudan indirme olarak açılır.
     job.hooks.save = () => {
+        // Telefona alınıp sunucudan silindiyse elimizdeki kopya kaydedilir.
+        if (job.serverDeleted && job.blob) {
+            saveBlob(job.blob, job.name);
+            job.saved = true;
+            return;
+        }
         const a = document.createElement('a');
         a.href = fileUrl(kind, state.id);
         a.download = job.name;

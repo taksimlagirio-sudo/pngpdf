@@ -136,9 +136,14 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     let typing = false;
     async function checkClipboard() {
         try {
-            const st = await navigator.permissions.query({ name: 'clipboard-read' });
-            if (st.state !== 'granted' || !document.hasFocus()) return;
-            const url = firstUrl(await navigator.clipboard.readText());
+            // APK: pano Android'den okunur (izin gerekmez); tarayıcıda yalnızca izin verildiyse.
+            const bridge = window.IndiriciAndroid && window.IndiriciAndroid.readClipboard ? window.IndiriciAndroid : null;
+            if (!bridge) {
+                const st = await navigator.permissions.query({ name: 'clipboard-read' });
+                if (st.state !== 'granted') return;
+            }
+            if (!document.hasFocus() && !bridge) return;
+            const url = firstUrl(bridge ? bridge.readClipboard() : await navigator.clipboard.readText());
             if (isHttpUrl(url) && url !== clipUrl) {
                 clipUrl = url;
                 paintSuggest();
@@ -199,6 +204,8 @@ export function initDetectTab({ navigate, toast, openImages, photos = null, inst
     }
 
     async function readClipboard() {
+        // APK: uygulama içindeki tarayıcı panoyu izin sormadan reddeder; Android'in panosundan okunur.
+        if (window.IndiriciAndroid && window.IndiriciAndroid.readClipboard) return window.IndiriciAndroid.readClipboard();
         if (!navigator.clipboard || !navigator.clipboard.readText) throw new Error('Bu tarayıcı panoyu okumaya izin vermiyor');
         return navigator.clipboard.readText();
     }

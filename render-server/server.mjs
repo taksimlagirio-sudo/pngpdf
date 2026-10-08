@@ -1678,7 +1678,7 @@ async function saveStream(streamUrl, file, onBytes, signal) {
 }
 
 /** Kanalın yeni videosunu sunucuya indirir (en uygun kalite; sesli tek dosya ya da HLS). */
-async function downloadEntry(entry, { maxHeight = 0, keepMs = 0, source = '' } = {}) {
+async function downloadEntry(entry, { maxHeight = 0, keepMs = 0, source = '', device = '' } = {}) {
     const r = await extractWithYtdlp(entry.url);
     if (!r.ok) throw new Error(r.reason || 'Video bulunamadı');
     const name = (r.title || entry.title || 'video').slice(0, 100);
@@ -1688,11 +1688,11 @@ async function downloadEntry(entry, { maxHeight = 0, keepMs = 0, source = '' } =
     const single = r.items.filter((i) => i.kind === 'video' && !i.audioUrl).sort(byHeight).find(fits);
     const hlsBetter = hls && (!single || (hls.height || 0) > (single.height || 0));
     if (hls && (hlsBetter || !single)) {
-        return recorder.start({ url: hls.url, name, vod: true, maxHeight, keepMs, source: source || entry.url });
+        return recorder.start({ url: hls.url, name, vod: true, maxHeight, keepMs, source: source || entry.url, device });
     }
     if (single) {
         return recorder.importFile({
-            name, ext: single.ext || 'mp4', keepMs, source: source || entry.url, quality: single.height ? `${single.height}p` : '',
+            name, ext: single.ext || 'mp4', keepMs, source: source || entry.url, quality: single.height ? `${single.height}p` : '', device,
             fetchTo: (file, onBytes, signal) => saveStream(single.url, file, onBytes, signal)
         });
     }

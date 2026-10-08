@@ -41,6 +41,13 @@ export function escapeHtml(str) {
 /** Android uygulaması (APK) içinde mi çalışıyor? Paylaşım, kaydetme ve geri tuşu kabuğa bırakılır. */
 export const inApk = typeof window !== 'undefined' && Boolean(window.IndiriciAndroid);
 
+/** Panodaki metin: APK'da Android'in panosundan (izin gerekmez), tarayıcıda Clipboard API ile. */
+export async function readClipText() {
+    if (typeof window !== 'undefined' && window.IndiriciAndroid && window.IndiriciAndroid.readClipboard) return window.IndiriciAndroid.readClipboard();
+    if (!navigator.clipboard || !navigator.clipboard.readText) throw new Error('Bu tarayıcı panoyu okumaya izin vermiyor');
+    return navigator.clipboard.readText();
+}
+
 /** APK: dosya parça parça kabuğa verilir, kabuk telefonun İndirilenler klasörüne yazar. */
 export async function saveToAndroid(blob, filename) {
     const bridge = window.IndiriciAndroid;

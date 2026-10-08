@@ -62,6 +62,7 @@ public class MainActivity extends Activity {
     private static final String DEFAULT_SERVER = "http://127.0.0.1:8787/";
     private static final int FILE_REQUEST = 1;
     private static final int LOGIN_REQUEST = 4;
+    private static final int GALLERY_REQUEST = 5;
     private static final Pattern LINK = Pattern.compile("https?://\\S+");
 
     private WebView web;
@@ -107,6 +108,17 @@ public class MainActivity extends Activity {
         CookieManager.getInstance().setAcceptCookie(true);
 
         web.addJavascriptInterface(new Bridge(), "IndiriciAndroid");
+        // Service worker'ın denetlediği sayfada istekler ondan geçer: galeri dosyaları orada da karşılanır.
+        android.webkit.ServiceWorkerController.getInstance().setServiceWorkerClient(new android.webkit.ServiceWorkerClient() {
+            @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
+                Uri u = request.getUrl();
+                if (u.getPath() != null && u.getPath().startsWith("/__galeri/") && sameServer(u) && "granted".equals(Gallery.state(MainActivity.this))) {
+                    return Gallery.serve(MainActivity.this, u, request.getRequestHeaders());
+                }
+                return null;
+            }
+        });
         web.setWebViewClient(new Client());
         web.setWebChromeClient(new Chrome());
         web.setDownloadListener((url, userAgent, disposition, mime, length) -> download(url, userAgent, disposition, mime));
@@ -225,6 +237,16 @@ public class MainActivity extends Activity {
     /* ---------------- Sayfa ---------------- */
 
     private class Client extends WebViewClient {
+        /** Telefon galerisi: uygulamanın kendi adresi altındaki /__galeri/ istekleri medya deposundan karşılanır. */
+        @Override
+        public android.webkit.WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            Uri u = request.getUrl();
+            if (u.getPath() != null && u.getPath().startsWith("/__galeri/") && sameServer(u) && "granted".equals(Gallery.state(MainActivity.this))) {
+                return Gallery.serve(MainActivity.this, u, request.getRequestHeaders());
+            }
+            return null;
+        }
+
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             Uri uri = request.getUrl();
@@ -300,6 +322,15 @@ public class MainActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
         if (fullscreenCallback != null) fullscreenCallback.onCustomViewHidden();
         fullscreenCallback = null;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == GALLERY_REQUEST) {
+            web.evaluateJavascript("window.__indiriciGalleryPerm&&window.__indiriciGalleryPerm("
+                    + JSONObject.quote(Gallery.state(this)) + ")", null);
+        }
     }
 
     @Override
@@ -563,6 +594,54 @@ public class MainActivity extends Activity {
                     .putExtra(LoginActivity.EXTRA_DOMAIN, domain)
                     .putExtra(LoginActivity.EXTRA_NAME, name)
                     .putExtra(LoginActivity.EXTRA_AUTH, authJson), LOGIN_REQUEST));
+        }
+
+        /**
+         * Pano: uygulama içindeki tarayıcı panoyu okumaya izin istemeden reddeder; Android'in panosundan
+         * okunur (uygulama öndeyken izin gerekmez).
+         */
+        @JavascriptInterface
+        public String readClipboard() {
+            final String[] out = {""};
+            final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+            ui.post(() -> {
+                try {
+                    android.content.ClipboardManager cm = getSystemService(android.content.ClipboardManager.class);
+                    android.content.ClipData clip = cm == null ? null : cm.getPrimaryClip();
+                    if (clip != null && clip.getItemCount() > 0) {
+                        CharSequence t = clip.getItemAt(0).coerceToText(MainActivity.this);
+                        out[0] = t == null ? "" : t.toString();
+                    }
+                } catch (Exception ignored) {
+                    // pano okunamadı
+                }
+                done.countDown();
+            });
+            try {
+                done.await(2, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
+                // süre doldu
+            }
+            return out[0];
+        }
+
+        /** Telefon galerisi izni: "granted" / "denied". */
+        @JavascriptInterface
+        public String galleryState() {
+            return Gallery.state(MainActivity.this);
+        }
+
+        /** Galeri izni istenir; sonuç window.__indiriciGalleryPerm(durum) ile gelir. */
+        @JavascriptInterface
+        public void galleryRequest() {
+            ui.post(() -> requestPermissions(Gallery.permissions(), GALLERY_REQUEST));
+        }
+
+        /** Galerideki videolar ve fotoğraflar (en yeniden), JSON dizi. */
+        @JavascriptInterface
+        public String galleryList(int offset, int limit) {
+            if (!"granted".equals(Gallery.state(MainActivity.this))) return "[]";
+            return Gallery.list(MainActivity.this, Math.max(0, offset), Math.max(1, Math.min(500, limit)));
         }
 
         /** Takip bildirimlerini aç/kapat (sunucu adresi ve anahtarı uygulamadan gelir). */

@@ -1,5 +1,5 @@
 // Toplu ekle: birden çok bağlantı (ya da çalma listesi) tek seferde bulunur ve sıraya eklenir.
-import { escapeHtml, formatSize, clock, isHttpUrl, getRenderServer, renderApi } from './util.js';
+import { escapeHtml, formatSize, clock, isHttpUrl, getRenderServer, renderApi, readClipText } from './util.js';
 import { analyzeUrl } from './detect.js';
 import { variantIndexFor } from './sitesettings.js';
 import { getPrefs } from './prefs.js';
@@ -219,7 +219,7 @@ export function openBulk({ text = '', enqueue, toast, navigate }) {
         }
         if (b === 'paste') {
             try {
-                const clip = await navigator.clipboard.readText();
+                const clip = await readClipText();
                 const links = linksIn(clip).filter((u) => !st.text.includes(u));
                 if (!links.length) return toast('Panoda yeni bağlantı yok');
                 st.text = [st.text.trim(), ...links].filter(Boolean).join('\n');
